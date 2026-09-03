@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260903T103307028Z-16856-bd416ff73e97",
+  "runId": "20260903T103307028Z-16856-bd416ff73e97",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "86dcdc74493daa35a981815d065903d3af9580be",
+  "diffHash": "6da7203ba6fc61a6c1743a196ec67e290fdfef3caf83a373e3e0c4f0e5a731ef",
+  "rulesVersion": "unavailable",
+  "sessionHash": "45b3599bdcd997eb2fe0e110d803c2236b061678ecfbb41f58df6c1857ec5cd6",
+  "reportRef": ".mimosa/reports/task-review-sess_17e8444c-7676-4c4e-9612-7ceeff658fe5-20260903T103307028Z-16856-bd416ff73e97.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "worker/src/pipelines/render.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "worker/src/lib/shotstack.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "worker/src/lib/env.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "worker/src/pipelines/finalize.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "frontend/components/auth/auth-form.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-03T10:33:07.543Z"
+}

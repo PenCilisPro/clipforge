@@ -65,9 +65,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setLoading(true);
+    const supabase = createClient();
 
     try {
-      const supabase = createClient();
       if (isSignup) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
@@ -93,15 +93,13 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 
   async function handleGoogle() {
     setOauthLoading(true);
-    try {
-      const supabase = createClient();
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: `${window.location.origin}/auth/callback` },
-      });
-      if (error) throw error;
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Google sign-in failed");
+    const supabase = createClient();
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
+    });
+    if (error) {
+      toast.error(error.message);
       setOauthLoading(false);
     }
   }
