@@ -28,3 +28,6 @@ next-env.d.ts
 tmp/
 temp/
 *.log
+
+# Mimosa scanner local state
+.mimosa/
