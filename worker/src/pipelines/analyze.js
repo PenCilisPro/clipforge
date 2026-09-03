@@ -1,18 +1,8 @@
 import { supabaseAdmin } from "../lib/supabase.js";
-import { setJobStatus, setProjectStatus } from "../lib/jobs.js";
+import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
 import { detectViralClips } from "../lib/zai.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { env } from "../lib/env.js";
-
-async function insertJobRow(projectId, jobType, clipId) {
-  const { data, error } = await supabaseAdmin
-    .from("jobs")
-    .insert({ project_id: projectId, clip_id: clipId, job_type: jobType, status: "queued" })
-    .select("id")
-    .single();
-  if (error) throw error;
-  return data.id;
-}
 
 /**
  * Stage 3 — analyze.

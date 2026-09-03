@@ -31,6 +31,17 @@ export async function setClipStatus(clipId, fields) {
   if (error) console.error("[clip-status]", error.message);
 }
 
+/** Create the public.jobs row that tracks a BullMQ pipeline job in the dashboard. */
+export async function insertJobRow(projectId, jobType, clipId = null) {
+  const { data, error } = await supabaseAdmin
+    .from("jobs")
+    .insert({ project_id: projectId, clip_id: clipId, job_type: jobType, status: "queued" })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
 /** Called after render/finalize so the project flips to done when all clips land. */
 export async function reconcileProjectDone(projectId) {
   const { data: clips } = await supabaseAdmin

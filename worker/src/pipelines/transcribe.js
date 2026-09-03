@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import speech from "@google-cloud/speech";
 import { Storage } from "@google-cloud/storage";
 import { supabaseAdmin } from "../lib/supabase.js";
-import { setJobStatus, setProjectStatus, deductCredits } from "../lib/jobs.js";
+import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
+import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds } from "../lib/ffmpeg.js";
 import { env } from "../lib/env.js";
 
@@ -160,6 +161,9 @@ export async function processTranscribe(job) {
 
     await cleanup(localVideo, localAudio);
     await setJobStatus(jobRowId, "completed");
+    // Chain to the next stage — nothing else enqueues analyze.
+    const analyzeJobRowId = await insertJobRow(projectId, "analyze");
+    await enqueuePipeline("analyze", { projectId, jobRowId: analyzeJobRowId });
     job.log(`Transcribed ${words.length} words`);
     return { projectId, wordCount: words.length };
   } catch (error) {

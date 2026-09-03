@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "../lib/supabase.js";
-import { setJobStatus, setProjectStatus } from "../lib/jobs.js";
+import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
+import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, probeDurationSeconds } from "../lib/ffmpeg.js";
 import { fetchDirectVideoUrl, downloadToFile } from "../lib/rapidapi.js";
 
@@ -52,6 +53,9 @@ export async function processDownload(job) {
 
     await cleanup(localFile);
     await setJobStatus(jobRowId, "completed");
+    // Chain to the next stage — nothing else enqueues transcribe for URL projects.
+    const transcribeJobRowId = await insertJobRow(projectId, "transcribe");
+    await enqueuePipeline("transcribe", { projectId, jobRowId: transcribeJobRowId });
     job.log(`Downloaded ${durationSeconds?.toFixed(0) ?? "?"}s → ${storagePath}`);
     return { projectId, storagePath };
   } catch (error) {
