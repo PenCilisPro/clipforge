@@ -31,8 +31,8 @@ Turn long-form videos (podcasts, YouTube videos, webinars) into short, viral-rea
 1. **download** — RapidAPI downloader fetches the source URL → stored in the `source-videos` bucket (uploads skip this stage)
 2. **transcribe** — FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (`enableWordTimeOffsets`) → word-level transcript saved as JSONB + credits deducted
 3. **analyze** — Kimi (Moonshot AI) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` row per suggestion
-4. **render** (per clip) — FFmpeg trims the segment + thumbnail → raw clip/SRT uploaded to Storage → Shotstack Edit JSON (1080×1920 `fit: crop`, caption track with `#FF5D1C` word highlight) → submit + poll (or webhook)
-5. **finalize** — finished MP4 re-uploaded from Shotstack's CDN into the `clips` bucket for permanent ownership → clip `status=ready`
+4. **render** (per clip) — FFmpeg trims the segment + thumbnail → raw clip/SRT uploaded to Storage → Shotstack Edit JSON (1080×1920 `fit: crop`, caption track with `#FF5D1C` word highlight) → submitted with a webhook callback (`SHOTSTACK_WEBHOOK_URL` is required — the worker never polls)
+5. **finalize** — Shotstack calls the backend's secret-verified webhook → finished MP4 is re-uploaded from Shotstack's CDN into the `clips` bucket for permanent ownership → clip `status=ready`
 
 Scheduling: "Schedule" creates a `scheduled_posts` row + a delayed BullMQ job; when it fires the worker uploads the clip via YouTube Data API / Meta Graph API / TikTok Content Posting API and marks the post `published` or `failed`.
 
@@ -122,8 +122,10 @@ Set the env vars from each service's `.env.example`, plus cross-links:
 - `backend`: `BACKEND_URL=https://<clipforge-api-domain>`, `FRONTEND_URL=https://<clipforge-web-domain>`
 - Social OAuth redirect URIs (in Meta / Google Cloud / TikTok developer consoles):
   `https://<clipforge-api-domain>/api/social/<platform>/callback`
-- Shotstack webhook (dashboard or per-render): `https://<clipforge-api-domain>/webhooks/shotstack`
-  with header/query secret matching `SHOTSTACK_WEBHOOK_SECRET`
+- Shotstack webhook (**required** for render completion): worker env `SHOTSTACK_WEBHOOK_URL`
+  = `https://<clipforge-api-domain>/webhooks/shotstack`, with `SHOTSTACK_WEBHOOK_SECRET`
+  matching the backend's value
+- Shotstack webhook (dashboard, optional belt-and-suspenders): `https://<clipforge-api-domain>/webhooks/shotstack`
 
 `ENCRYPTION_KEY` must be **identical** on backend and worker (tokens are encrypted by the backend, decrypted by the worker).
 

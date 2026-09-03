@@ -121,6 +121,26 @@ export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, captionStyl
   };
 }
 
+const RENDER_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Render outputs may only be pulled from Shotstack-controlled hosts.
+ * Used on every URL before the worker downloads a render (the webhook path
+ * delivers this URL in a request body, so it must never be trusted blindly).
+ */
+export function assertTrustedRenderUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl));
+  } catch {
+    throw new Error("Shotstack render URL is malformed");
+  }
+  if (parsed.protocol !== "https:" || !/(^|\.)shotstack/i.test(parsed.hostname)) {
+    throw new Error(`Refusing to download render from untrusted host: ${parsed.hostname}`);
+  }
+  return parsed.toString();
+}
+
 export async function submitRender(editJson, webhookUrl) {
   if (!env.shotstackApiKey) throw new Error("SHOTSTACK_API_KEY is not configured");
 
@@ -139,33 +159,22 @@ export async function submitRender(editJson, webhookUrl) {
 
   const data = await res.json();
   const renderId = data?.response?.id;
-  if (!renderId) throw new Error("Shotstack did not return a render id");
-  return renderId;
-}
-
-/** Poll until the render completes (or the deadline passes). */
-export async function pollRender(renderId, { intervalMs = 6000, timeoutMs = 20 * 60 * 1000 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const res = await fetch(`${BASE_URL()}render/${renderId}`, {
-      headers: { "X-Api-Key": env.shotstackApiKey },
-    });
-    if (!res.ok) throw new Error(`Shotstack poll failed (${res.status})`);
-
-    const { response } = await res.json();
-    if (response?.status === "done") return response.url;
-    if (response?.status === "failed") {
-      throw new Error(`Shotstack render failed: ${response.error ?? "unknown error"}`);
-    }
-
-    await new Promise((r) => setTimeout(r, intervalMs));
+  if (!renderId || !RENDER_ID_RE.test(String(renderId))) {
+    throw new Error("Shotstack did not return a valid render id");
   }
-  throw new Error("Shotstack render timed out");
+  return String(renderId);
 }
 
+/** Poll-free design: render completion arrives via the Shotstack webhook
+ * (backend /webhooks/shotstack → finalize stage). Nothing to poll here. */
+
+/**
+ * Download a finished render from Shotstack's CDN to a local path.
+ * The URL is host-allowlisted — webhook-provided URLs are never trusted.
+ */
 export async function downloadRenderedClip(url, filePath) {
-  const res = await fetch(url, { redirect: "follow" });
+  const trusted = assertTrustedRenderUrl(url);
+  const res = await fetch(trusted, { redirect: "follow" });
   if (!res.ok || !res.body) throw new Error(`Failed to download rendered clip (${res.status})`);
   const { writeFile } = await import("node:fs/promises");
   const { Readable } = await import("node:stream");

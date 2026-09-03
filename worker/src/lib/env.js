@@ -21,13 +21,11 @@ export const env = {
 
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
-  // Optional: if set, the render submission registers a Shotstack webhook
-  // (e.g. https://<backend>/webhooks/shotstack) in addition to inline polling.
+  // Required: renders complete via the Shotstack webhook → backend
+  // /webhooks/shotstack → finalize stage. Without it renders can't finish.
   shotstackWebhookUrl: process.env.SHOTSTACK_WEBHOOK_URL,
-  shotstackWebhookSecret: process.env.SHOTSTACK_WEBHOOK_SECRET ?? "dev-insecure-hook",
-  // Set WORKER_INLINE_POLL=0 to rely purely on the webhook.
-  inlinePoll: process.env.WORKER_INLINE_POLL !== "0",
-  encryptionKey: process.env.ENCRYPTION_KEY ?? "",
+  shotstackWebhookSecret: process.env.SHOTSTACK_WEBHOOK_SECRET,
+  encryptionKey: process.env.ENCRYPTION_KEY,
 };
 
 export function warnMissing() {
@@ -39,15 +37,23 @@ export function warnMissing() {
   for (const [name, value] of Object.entries(checks)) {
     if (!value) console.warn(`[worker] ${name} is not set — worker cannot run.`);
   }
-  const optional = {
-    RAPIDAPI_KEY: "URL projects cannot be downloaded",
-    "GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_CREDENTIALS_JSON": "transcription will fail",
-    KIMI_API_KEY: "AI analysis falls back to sample clips",
-    SHOTSTACK_API_KEY: "rendering will fail",
-    ENCRYPTION_KEY: "social publishing will fail",
-  };
-  for (const [names, consequence] of Object.entries(optional)) {
-    const missing = names.split("|").every((n) => !process.env[n]);
-    if (missing) console.warn(`[worker] ${names} not set → ${consequence}.`);
+  // [env var names], consequence when all of them are unset
+  const optionalWarnings = [
+    { names: ["RAPIDAPI_KEY"], consequence: "URL projects cannot be downloaded" },
+    {
+      names: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIALS_JSON"],
+      consequence: "transcription will fail",
+    },
+    { names: ["KIMI_API_KEY"], consequence: "AI analysis falls back to sample clips" },
+    { names: ["SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
+    {
+      names: ["SHOTSTACK_WEBHOOK_URL"],
+      consequence: "renders will submit but never complete (webhook-only design)",
+    },
+    { names: ["ENCRYPTION_KEY"], consequence: "social publishing will fail" },
+  ];
+  for (const { names, consequence } of optionalWarnings) {
+    const missing = names.every((n) => !process.env[n]);
+    if (missing) console.warn(`[worker] ${names.join("|")} not set → ${consequence}.`);
   }
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
 import { ensureTmpDir, tmpPath, cleanup } from "../lib/ffmpeg.js";
+import { downloadRenderedClip } from "../lib/shotstack.js";
 
 /**
  * Idempotent finalization: download the finished render from Shotstack's CDN
@@ -28,10 +29,9 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
   await ensureTmpDir();
   const localFinal = tmpPath(`final-${clipId}.mp4`);
 
-  const res = await fetch(renderUrl, { redirect: "follow" });
-  if (!res.ok || !res.body) throw new Error(`Failed to download rendered clip (${res.status})`);
-  const arrayBuffer = await res.arrayBuffer();
-  await fs.writeFile(localFinal, Buffer.from(arrayBuffer));
+  // downloadRenderedClip host-allowlists the URL (webhook-provided, never
+  // trusted blindly) and streams the MP4 to disk.
+  await downloadRenderedClip(renderUrl, localFinal);
 
   const storagePath = `${clip.user_id}/${clipId}.mp4`;
   const { error: uploadError } = await supabaseAdmin.storage

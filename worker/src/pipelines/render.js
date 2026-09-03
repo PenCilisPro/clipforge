@@ -1,9 +1,8 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
-import { ensureTmpDir, tmpPath, cleanup, trimSegment, generateThumbnail, probeDurationSeconds } from "../lib/ffmpeg.js";
+import { ensureTmpDir, tmpPath, cleanup, trimSegment, generateThumbnail } from "../lib/ffmpeg.js";
 import { buildCaptionsForClip } from "../lib/srt.js";
-import { buildEditJson, submitRender, pollRender, BRAND_HIGHLIGHT } from "../lib/shotstack.js";
-import { finalizeClip } from "./finalize.js";
+import { buildEditJson, submitRender, BRAND_HIGHLIGHT } from "../lib/shotstack.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -22,9 +21,9 @@ async function signedSourceUrl(bucket, path) {
  * 2. Generate a vertical thumbnail
  * 3. Upload raw clip / thumbnail / SRT captions
  * 4. Build the Shotstack Edit JSON (9:16 crop + caption track, brand-orange
- *    word highlight) and submit the render
- * 5. Wait for completion (Shotstack webhook may beat the inline poll — both
- *    paths run through the idempotent finalizeClip below)
+ *    word highlight) and submit the render with a webhook callback
+ * 5. The Shotstack webhook hits the backend, which enqueues the finalize
+ *    stage to download and store the finished MP4 (webhook-only completion).
  */
 export async function processRender(job) {
   const { projectId, clipId, jobRowId } = job.data;
@@ -119,9 +118,16 @@ export async function processRender(job) {
       watermarkUrl,
     });
 
-    const webhookUrl = env.shotstackWebhookUrl
-      ? `${env.shotstackWebhookUrl}?secret=${env.shotstackWebhookSecret}`
-      : undefined;
+    // Webhook completion is mandatory: without it the render could never be
+    // finalized, so refuse to submit rather than orphan the clip.
+    if (!env.shotstackWebhookUrl) {
+      throw new Error(
+        "SHOTSTACK_WEBHOOK_URL is not configured — set it to https://<backend>/webhooks/shotstack so renders can complete"
+      );
+    }
+    const webhookUrl = `${env.shotstackWebhookUrl}${
+      env.shotstackWebhookSecret ? `?secret=${encodeURIComponent(env.shotstackWebhookSecret)}` : ""
+    }`;
 
     const renderId = await submitRender(editJson, webhookUrl);
     job.log(`Shotstack render ${renderId} submitted (highlight ${BRAND_HIGHLIGHT})`);
@@ -133,18 +139,11 @@ export async function processRender(job) {
 
     await cleanup(localSource, localRawClip, localThumb);
 
-    // 6. Inline polling (webhook path may complete first — idempotent either way)
-    let renderUrl = null;
-    if (env.inlinePoll) {
-      renderUrl = await pollRender(renderId);
-    } else {
-      // Webhook-only mode: finalize will be enqueued by the backend webhook.
-      await setJobStatus(jobRowId, "completed", null);
-      return { clipId, renderId, awaitingWebhook: true };
-    }
-
-    await finalizeClip({ projectId, clipId, renderUrl, jobRowId });
-    return { clipId, renderId, ready: true };
+    // 6. Done from the worker's perspective — completion arrives via the
+    // Shotstack webhook (backend /webhooks/shotstack), which enqueues the
+    // finalize stage to store the finished MP4.
+    await setJobStatus(jobRowId, "completed", null);
+    return { clipId, renderId, awaitingWebhook: true };
   } catch (error) {
     await setClipStatus(clipId, { status: "failed", error_message: error.message });
     await setJobStatus(jobRowId, "failed", error.message);
