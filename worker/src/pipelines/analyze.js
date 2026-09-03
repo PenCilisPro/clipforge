@@ -47,12 +47,11 @@ export async function processAnalyze(job) {
         maxClips: env.maxClips,
       });
     } catch (err) {
-      if (!env.kimiApiKey) {
-        job.log(`Kimi unavailable (${err.message}) — falling back to sample clips`);
-        suggestions = buildSampleClips(durationSeconds);
-      } else {
-        throw err;
-      }
+      // AI selection is an enhancement, not a hard dependency — a missing,
+      // unfunded, or erroring provider must not fail an otherwise complete
+      // pipeline. Sample clips keep render/finalize productive.
+      job.log(`AI viral selection unavailable (${err.message}) — falling back to sample clips`);
+      suggestions = buildSampleClips(durationSeconds);
     }
 
     // Persist clip rows
@@ -116,9 +115,9 @@ function buildSampleClips(durationSeconds) {
       start,
       end,
       title: `Sample highlight ${i + 1}`,
-      hook: "Configure KIMI_API_KEY for AI-selected viral moments.",
+      hook: "AI selection unavailable — evenly spaced placeholder highlight.",
       virality_score: 60 + i * 5,
-      reason: "Evenly-spaced fallback clip (no AI key configured).",
+      reason: "Evenly-spaced fallback clip (AI provider missing or erroring).",
       hashtags: ["clipforge", "highlights"],
     }));
 }

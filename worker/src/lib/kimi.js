@@ -39,14 +39,16 @@ ${transcriptText}`;
       "Content-Type": "application/json",
       Authorization: `Bearer ${env.kimiApiKey}`,
     },
-    body: JSON.stringify({
-      model: env.kimiModel,
-      temperature: 0.4,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-    }),
+      body: JSON.stringify({
+        model: env.kimiModel,
+        temperature: 0.4,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+      // Bound the call — a stalled provider must not wedge the analyze stage.
+      signal: AbortSignal.timeout(120_000),
   });
 
   if (!res.ok) {
