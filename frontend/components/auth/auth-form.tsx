@@ -36,6 +36,14 @@ function GoogleIcon() {
   );
 }
 
+// HTML autofill hints for password managers (HTML spec tokens, not secrets):
+// "new-password" prompts generation on signup, "current-password" offers
+// the saved credential on login.
+const PASSWORD_AUTOCOMPLETE_HINT = {
+  signup: "new-password",
+  login: "current-password",
+} as const;
+
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -139,7 +147,11 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
-                autoComplete={isSignup ? "new-password" : "current-password"}
+                autoComplete={
+                  isSignup
+                    ? PASSWORD_AUTOCOMPLETE_HINT.signup
+                    : PASSWORD_AUTOCOMPLETE_HINT.login
+                }
               />
               {isSignup && (
                 <p className="text-xs text-muted-foreground">
