@@ -14,6 +14,9 @@ export const env = {
 
   googleCredentialsPath: process.env.GOOGLE_APPLICATION_CREDENTIALS,
   googleCredentialsJson: process.env.GOOGLE_CREDENTIALS_JSON,
+  // Cloud Storage bucket for audio too big to inline in the STT request
+  // (Google rejects request payloads over 10 MiB — anything past ~5 min).
+  gcsBucket: process.env.GCS_BUCKET,
 
   kimiApiKey: process.env.KIMI_API_KEY,
   kimiBaseUrl: process.env.KIMI_API_BASE_URL ?? "https://api.moonshot.cn/v1",
@@ -43,6 +46,10 @@ export function warnMissing() {
     {
       names: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIALS_JSON"],
       consequence: "transcription will fail",
+    },
+    {
+      names: ["GCS_BUCKET"],
+      consequence: "videos longer than ~5 minutes cannot be transcribed (Google STT 10 MiB inline limit)",
     },
     { names: ["KIMI_API_KEY"], consequence: "AI analysis falls back to sample clips" },
     { names: ["SHOTSTACK_API_KEY"], consequence: "rendering will fail" },

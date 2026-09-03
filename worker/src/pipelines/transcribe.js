@@ -1,22 +1,34 @@
 import fs from "node:fs/promises";
 import speech from "@google-cloud/speech";
+import { Storage } from "@google-cloud/storage";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits } from "../lib/jobs.js";
 import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds } from "../lib/ffmpeg.js";
 import { env } from "../lib/env.js";
 
 let speechClient = null;
+let storageClient = null;
+
+function googleAuthOptions() {
+  if (env.googleCredentialsJson) {
+    return { credentials: JSON.parse(env.googleCredentialsJson) };
+  }
+  if (env.googleCredentialsPath) {
+    return { keyFilename: env.googleCredentialsPath };
+  }
+  return {};
+}
 
 function getSpeechClient() {
   if (speechClient) return speechClient;
-  const options = {};
-  if (env.googleCredentialsJson) {
-    options.credentials = JSON.parse(env.googleCredentialsJson);
-  } else if (env.googleCredentialsPath) {
-    options.keyFilename = env.googleCredentialsPath;
-  }
-  speechClient = new speech.SpeechClient(options);
+  speechClient = new speech.SpeechClient(googleAuthOptions());
   return speechClient;
+}
+
+function getStorageClient() {
+  if (storageClient) return storageClient;
+  storageClient = new Storage(googleAuthOptions());
+  return storageClient;
 }
 
 /**
@@ -66,7 +78,7 @@ export async function processTranscribe(job) {
     }
 
     // 3. Google Speech-to-Text (long-running, word-level timestamps)
-    const audioBytes = await fs.readFile(localAudio);
+    const audioBuffer = await fs.readFile(localAudio);
     const config = {
       encoding: "LINEAR16",
       sampleRateHertz: 16000,
@@ -76,12 +88,47 @@ export async function processTranscribe(job) {
       model: "latest_long",
     };
 
-    const [operation] = await getSpeechClient().longRunningRecognize({
-      audio: { content: audioBytes.toString("base64") },
-      config,
-    });
+    // The STT request payload (base64 = 4/3 of raw size) is hard-capped at
+    // 10 MiB by Google — past ~5 minutes of WAV the audio must go via GCS.
+    let audio;
+    let gcsObjectPath = null;
+    const payloadBytes = Math.ceil((audioBuffer.length * 4) / 3);
+    if (payloadBytes > 9 * 1024 * 1024) {
+      if (!env.gcsBucket) {
+        throw new Error(
+          `Audio is ${Math.round(audioBuffer.length / 1024 / 1024)} MB — over Google STT's ` +
+            "10 MiB inline limit. Set GCS_BUCKET on the worker (a Cloud Storage bucket the " +
+            "service account can write) to transcribe longer videos."
+        );
+      }
+      gcsObjectPath = `stt/${projectId}/${Date.now()}.wav`;
+      job.log(
+        `Audio ${Math.round(audioBuffer.length / 1024 / 1024)} MB — uploading to ` +
+          `gs://${env.gcsBucket}/${gcsObjectPath} for transcription`
+      );
+      await getStorageClient()
+        .bucket(env.gcsBucket)
+        .upload(localAudio, {
+          destination: gcsObjectPath,
+          resumable: false,
+          contentType: "audio/wav",
+        });
+      audio = { uri: `gs://${env.gcsBucket}/${gcsObjectPath}` };
+    } else {
+      audio = { content: audioBuffer.toString("base64") };
+    }
+
+    const [operation] = await getSpeechClient().longRunningRecognize({ audio, config });
     job.log("STT operation started — waiting…");
     const [response] = await operation.promise();
+
+    if (gcsObjectPath) {
+      await getStorageClient()
+        .bucket(env.gcsBucket)
+        .file(gcsObjectPath)
+        .delete({ ignoreNotFound: true })
+        .catch(() => {});
+    }
 
     const words = [];
     const transcriptParts = [];
