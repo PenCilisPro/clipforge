@@ -11,9 +11,15 @@ export async function apiFetch<T = unknown>(
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
   const supabase = createClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  let session = (await supabase.auth.getSession()).data.session;
+
+  // Background tabs can miss supabase-js's scheduled token refresh, leaving a
+  // stale access token in the cookie — the backend then 401s with
+  // "Invalid or expired token". Refresh explicitly when expired or close to it.
+  if (session && session.expires_at && session.expires_at * 1000 < Date.now() + 30_000) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (!error && data.session) session = data.session;
+  }
 
   if (!session) throw new Error("Not signed in");
 
