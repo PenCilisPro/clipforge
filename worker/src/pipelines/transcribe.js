@@ -69,7 +69,9 @@ export async function processTranscribe(job) {
 
     const durationSeconds =
       project.duration_seconds ?? (await probeDurationSeconds(localVideo).catch(() => null));
-    if (durationSeconds) {
+    // Credits are per processed video, not per retry — only the first
+    // attempt pays, otherwise each failed retry burns more minutes.
+    if (durationSeconds && !job.attemptsMade) {
       await supabaseAdmin
         .from("projects")
         .update({ duration_seconds: durationSeconds })
