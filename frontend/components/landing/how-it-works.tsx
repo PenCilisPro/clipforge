@@ -18,7 +18,7 @@ const STEPS = [
     step: "02",
     title: "Our AI finds the best moments",
     description:
-      "Word-level transcription feeds a Kimi-powered analysis engine that scores every moment for hook strength, emotion and shareability.",
+      "Word-level transcription feeds a GLM-powered analysis engine (z.ai) that scores every moment for hook strength, emotion and shareability.",
   },
   {
     icon: Clapperboard,

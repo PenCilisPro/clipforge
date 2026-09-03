@@ -18,7 +18,7 @@ const FEATURES = [
     icon: Sparkles,
     title: "AI Viral Moment Detection",
     description:
-      "A Kimi-powered model reads your full transcript and surfaces the moments most likely to blow up, ranked by virality score.",
+      "A GLM-powered model (z.ai) reads your full transcript and surfaces the moments most likely to blow up, ranked by virality score.",
   },
   {
     icon: Captions,

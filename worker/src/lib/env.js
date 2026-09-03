@@ -18,9 +18,9 @@ export const env = {
   // (Google rejects request payloads over 10 MiB — anything past ~5 min).
   gcsBucket: process.env.GCS_BUCKET,
 
-  kimiApiKey: process.env.KIMI_API_KEY,
-  kimiBaseUrl: process.env.KIMI_API_BASE_URL ?? "https://api.moonshot.cn/v1",
-  kimiModel: process.env.KIMI_MODEL ?? "moonshot-v1-32k",
+  zaiApiKey: process.env.ZAI_API_KEY,
+  zaiBaseUrl: process.env.ZAI_API_BASE_URL ?? "https://api.z.ai/api/paas/v4",
+  zaiModel: process.env.ZAI_MODEL ?? "glm-4.5-flash",
 
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
@@ -51,7 +51,7 @@ export function warnMissing() {
       names: ["GCS_BUCKET"],
       consequence: "videos longer than ~5 minutes cannot be transcribed (Google STT 10 MiB inline limit)",
     },
-    { names: ["KIMI_API_KEY"], consequence: "AI analysis falls back to sample clips" },
+    { names: ["ZAI_API_KEY"], consequence: "AI analysis falls back to sample clips" },
     { names: ["SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
     {
       names: ["SHOTSTACK_WEBHOOK_URL"],

@@ -20,7 +20,7 @@ Turn long-form videos (podcasts, YouTube videos, webinars) into short, viral-rea
 │ Supabase (Postgres + Auth + Storage)               │   │ worker (BullMQ)      │
 │ profiles · projects · clips · jobs ·               │   │ FFmpeg trim/thumb    │
 │ scheduled_posts · social_connections               │   │ Google STT           │
-│ buckets: source-videos · clips · assets            │   │ Kimi analysis        │
+│ buckets: source-videos · clips · assets            │   │ z.ai GLM analysis    │
 └────────────────────────────────────────────────────┘   │ Shotstack render     │
                                                          │ scheduled publishing │
                                                          └──────────────────────┘
@@ -30,7 +30,7 @@ Turn long-form videos (podcasts, YouTube videos, webinars) into short, viral-rea
 
 1. **download** — RapidAPI downloader fetches the source URL → stored in the `source-videos` bucket (uploads skip this stage)
 2. **transcribe** — FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (`enableWordTimeOffsets`) → word-level transcript saved as JSONB + credits deducted
-3. **analyze** — Kimi (Moonshot AI) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` row per suggestion
+3. **analyze** — z.ai (Zhipu GLM, OpenAI-compatible API) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` row per suggestion
 4. **render** (per clip) — FFmpeg trims the segment + thumbnail → raw clip/SRT uploaded to Storage → Shotstack Edit JSON (1080×1920 `fit: crop`, caption track with `#FF5D1C` word highlight) → submitted with a webhook callback (`SHOTSTACK_WEBHOOK_URL` is required — the worker never polls)
 5. **finalize** — Shotstack calls the backend's secret-verified webhook → finished MP4 is re-uploaded from Shotstack's CDN into the `clips` bucket for permanent ownership → clip `status=ready`
 
@@ -44,7 +44,7 @@ Scheduling: "Schedule" creates a `scheduled_posts` row + a delayed BullMQ job; w
 |---|---|---|
 | `frontend/` | Next.js 14 (App Router) + Tailwind + shadcn/ui + Framer Motion | `npm run start` (after `npm run build`) |
 | `backend/` | Express API — job creation, Shotstack webhook, social OAuth | `npm run start` |
-| `worker/` | BullMQ consumer — FFmpeg, STT, Kimi, Shotstack, publishing | `npm run start` |
+| `worker/` | BullMQ consumer — FFmpeg, STT, z.ai GLM, Shotstack, publishing | `npm run start` |
 | `supabase/` | SQL migration + setup guide | run once in SQL Editor |
 
 ---
@@ -91,7 +91,7 @@ npm run start
 
 Requires a local **Redis** (`docker run -p 6379:6379 redis:7`) and **FFmpeg** (bundled automatically via `ffmpeg-static`).
 
-> The worker degrades gracefully: without `KIMI_API_KEY` it falls back to evenly spaced sample clips so the trim → render → storage path stays testable. Everything else fails loudly with the reason in the `jobs` table.
+> The worker degrades gracefully: without `ZAI_API_KEY` (or when the AI provider errors) it falls back to evenly spaced sample clips so the trim → render → storage path stays testable. Everything else fails loudly with the reason in the `jobs` table.
 
 ### 5. API keys (all optional per feature)
 
@@ -99,7 +99,7 @@ Requires a local **Redis** (`docker run -p 6379:6379 redis:7`) and **FFmpeg** (b
 |---|---|
 | URL download | RapidAPI key + downloader endpoint (`RAPIDAPI_KEY`, `RAPIDAPI_HOST`, `RAPIDAPI_DOWNLOADER_URL`) |
 | Transcription | Google Cloud service-account JSON (`GOOGLE_APPLICATION_CREDENTIALS` path or `GOOGLE_CREDENTIALS_JSON` inline) |
-| AI clip detection | Kimi / Moonshot (`KIMI_API_KEY`, optional `KIMI_API_BASE_URL`, `KIMI_MODEL`) |
+| AI clip detection | z.ai / Zhipu GLM (`ZAI_API_KEY`, optional `ZAI_API_BASE_URL`, `ZAI_MODEL`; default model `glm-4.5-flash` — free tier) |
 | Rendering | Shotstack (`SHOTSTACK_API_KEY`, `SHOTSTACK_ENV=stage\|v1`) |
 | Publishing | `YOUTUBE_CLIENT_ID/SECRET`, `META_APP_ID/SECRET` (IG + FB), `TIKTOK_CLIENT_KEY/SECRET` |
 

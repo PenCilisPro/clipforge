@@ -17,7 +17,7 @@ const FAQS = [
   },
   {
     q: "How does the AI decide which clips to create?",
-    a: "Your video is transcribed with word-level timestamps, then a Kimi-powered model reads the full transcript and scores every candidate moment for hook strength, emotion, self-containment and shareability. Each suggested clip gets a virality score so you can review the reasoning.",
+    a: "Your video is transcribed with word-level timestamps, then a GLM-powered model reads the full transcript and scores every candidate moment for hook strength, emotion, self-containment and shareability. Each suggested clip gets a virality score so you can review the reasoning.",
   },
   {
     q: "Can I customize the caption style and branding?",

@@ -13,12 +13,12 @@ STRICT RULES:
 7. Return at most the number of clips requested. If the transcript is too short or bland, return fewer clips.`;
 
 /**
- * Ask Kimi (Moonshot AI, OpenAI-compatible API) for clip suggestions.
+ * Ask z.ai (Zhipu GLM, OpenAI-compatible API) for clip suggestions.
  * Returns a validated array of clip segments.
  */
 export async function detectViralClips({ transcriptJson, durationSeconds, maxClips }) {
-  if (!env.kimiApiKey) {
-    throw new Error("KIMI_API_KEY is not configured");
+  if (!env.zaiApiKey) {
+    throw new Error("ZAI_API_KEY is not configured");
   }
 
   const words = transcriptJson?.words ?? [];
@@ -33,26 +33,26 @@ Find up to ${maxClips} clips.
 Transcript with word timestamps:
 ${transcriptText}`;
 
-  const res = await fetch(`${env.kimiBaseUrl}/chat/completions`, {
+  const res = await fetch(`${env.zaiBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${env.kimiApiKey}`,
+      Authorization: `Bearer ${env.zaiApiKey}`,
     },
-      body: JSON.stringify({
-        model: env.kimiModel,
-        temperature: 0.4,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-      // Bound the call — a stalled provider must not wedge the analyze stage.
-      signal: AbortSignal.timeout(120_000),
+    body: JSON.stringify({
+      model: env.zaiModel,
+      temperature: 0.4,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
+      ],
+    }),
+    // Bound the call — a stalled provider must not wedge the analyze stage.
+    signal: AbortSignal.timeout(120_000),
   });
 
   if (!res.ok) {
-    throw new Error(`Kimi API failed (${res.status}): ${(await res.text()).slice(0, 400)}`);
+    throw new Error(`z.ai API failed (${res.status}): ${(await res.text()).slice(0, 400)}`);
   }
 
   const data = await res.json();
@@ -66,14 +66,14 @@ function parseClipJson(content, durationSeconds, maxClips) {
   const start = cleaned.indexOf("[");
   const end = cleaned.lastIndexOf("]");
   if (start === -1 || end === -1) {
-    throw new Error("Kimi response did not contain a JSON array");
+    throw new Error("z.ai response did not contain a JSON array");
   }
 
   let parsed;
   try {
     parsed = JSON.parse(cleaned.slice(start, end + 1));
   } catch {
-    throw new Error("Kimi returned malformed JSON");
+    throw new Error("z.ai returned malformed JSON");
   }
 
   const clips = (Array.isArray(parsed) ? parsed : [])
@@ -97,7 +97,7 @@ function parseClipJson(content, durationSeconds, maxClips) {
     .slice(0, maxClips);
 
   if (clips.length === 0) {
-    throw new Error("Kimi returned no usable clips");
+    throw new Error("z.ai returned no usable clips");
   }
   return clips;
 }

@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus } from "../lib/jobs.js";
-import { detectViralClips } from "../lib/kimi.js";
+import { detectViralClips } from "../lib/zai.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { env } from "../lib/env.js";
 
@@ -16,12 +16,12 @@ async function insertJobRow(projectId, jobType, clipId) {
 
 /**
  * Stage 3 — analyze.
- * Sends the transcript to Kimi, persists one `clips` row per suggested
+ * Sends the transcript to z.ai (GLM), persists one `clips` row per suggested
  * segment, and enqueues a render job for each clip.
  *
- * Fallback: if KIMI_API_KEY is not configured, three evenly spaced sample
- * clips are created so the rest of the pipeline (trim → Shotstack → storage)
- * remains testable end-to-end.
+ * Fallback: if ZAI_API_KEY is not configured (or the provider errors), evenly
+ * spaced sample clips are created so the rest of the pipeline (trim →
+ * Shotstack → storage) remains testable end-to-end.
  */
 export async function processAnalyze(job) {
   const { projectId, jobRowId } = job.data;

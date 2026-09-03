@@ -44,7 +44,7 @@ export function Hero() {
         >
           <span className="inline-flex items-center gap-1.5 rounded-full border border-primary-200 bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-300">
             <Sparkles className="h-3.5 w-3.5" />
-            Kimi-powered viral moment detection
+            GLM-powered viral moment detection
           </span>
         </motion.div>
 
