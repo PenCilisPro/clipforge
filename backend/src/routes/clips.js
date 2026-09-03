@@ -27,7 +27,10 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
     if (clipError || !clip) {
       return res.status(404).json({ error: "Clip not found" });
     }
-    if (!clip.raw_clip_path && clip.status !== "ready") {
+    // Failed clips may lack a raw trim (e.g. the trim itself OOM-killed) —
+    // the render stage re-trims from the source, so they can retry safely.
+    const canRetry = Boolean(clip.raw_clip_path) || clip.status === "failed";
+    if (!canRetry) {
       return res
         .status(409)
         .json({ error: "Raw clip is not available yet — wait for the first render." });

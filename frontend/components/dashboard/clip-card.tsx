@@ -17,6 +17,7 @@ import { ScheduleModal } from "@/components/dashboard/schedule-modal";
 import { CaptionStyleDialog } from "@/components/dashboard/caption-style-dialog";
 import { StatusPill } from "@/components/dashboard/status-pill";
 import { createClient } from "@/lib/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
 import type { Clip } from "@/lib/types";
 
@@ -24,6 +25,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
   const supabase = useMemo(() => createClient(), []);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
+  const [retryLoading, setRetryLoading] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [captionOpen, setCaptionOpen] = useState(false);
 
@@ -65,6 +67,21 @@ export function ClipCard({ clip }: { clip: Clip }) {
     }
   }
 
+  async function handleRetry() {
+    setRetryLoading(true);
+    try {
+      await apiFetch(`/api/clips/${clip.id}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({ caption_style: clip.caption_style ?? "karaoke" }),
+      });
+      toast.success("Render requeued");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Retry failed");
+    } finally {
+      setRetryLoading(false);
+    }
+  }
+
   const thumbUrl = clip.thumbnail_path
     ? supabase.storage.from("assets").getPublicUrl(clip.thumbnail_path).data
         .publicUrl
@@ -92,6 +109,17 @@ export function ClipCard({ clip }: { clip: Clip }) {
                 <p className="px-4 text-xs text-destructive">
                   {clip.error_message ?? "Render failed"}
                 </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-1"
+                  onClick={handleRetry}
+                  disabled={retryLoading}
+                >
+                  {retryLoading && <Loader2 className="animate-spin" />}
+                  <RefreshCcw className="h-4 w-4" />
+                  Retry render
+                </Button>
               </>
             ) : (
               <>
