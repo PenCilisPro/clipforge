@@ -144,13 +144,19 @@ export function assertTrustedRenderUrl(rawUrl) {
 export async function submitRender(editJson, webhookUrl) {
   if (!env.shotstackApiKey) throw new Error("SHOTSTACK_API_KEY is not configured");
 
+  // The webhook rides inside `output` — the API rejects it at the payload
+  // root with "Unknown property \"webhook\"".
+  const output = webhookUrl
+    ? { ...editJson.output, webhook: { url: webhookUrl } }
+    : editJson.output;
+
   const res = await fetch(`${BASE_URL()}render`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Api-Key": env.shotstackApiKey,
     },
-    body: JSON.stringify({ ...editJson, webhook: webhookUrl ? { url: webhookUrl } : undefined }),
+    body: JSON.stringify({ ...editJson, output }),
   });
 
   if (!res.ok) {

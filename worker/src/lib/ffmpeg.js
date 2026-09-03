@@ -28,10 +28,13 @@ export function runFfmpeg(args) {
     const proc = spawn(FFMPEG_PATH, ["-hide_banner", "-loglevel", "error", "-y", ...args]);
     let stderr = "";
     proc.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    proc.on("close", (code) =>
+    proc.on("close", (code, signal) =>
       code === 0
         ? resolve()
-        : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`))
+        : code === null
+          ? // Null exit code = killed by a signal (OOM on small containers).
+            reject(new Error(`ffmpeg was killed by signal ${signal} (likely out of memory)`))
+          : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`))
     );
     proc.on("error", reject);
   });
@@ -60,12 +63,15 @@ export async function extractAudio(inputPath, outputPath) {
 /**
  * Trim an accurate segment. Re-encodes for frame-accurate cuts — stream copy
  * (-c copy) snaps to keyframes and desyncs captions on variable-keyframe files.
+ * Downscales anything above 1080p first: re-encoding 4K with libx264 blows
+ * past small containers' RAM (two concurrent trims get OOM-killed).
  */
 export async function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
   return runFfmpeg([
     "-ss", String(startSeconds),
     "-i", inputPath,
     "-t", String(durationSeconds),
+    "-vf", "scale='min(1920,iw)':-2",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
