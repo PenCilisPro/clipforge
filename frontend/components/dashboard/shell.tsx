@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Clapperboard,
   Link2,
+  MessageSquare,
   ShieldCheck,
   Sparkles,
   Zap,
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { label: "Projects", href: "/dashboard", icon: Clapperboard },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
   { label: "Connections", href: "/dashboard/connections", icon: Link2 },
+  { label: "Feedback", href: "/dashboard/feedback", icon: MessageSquare },
 ];
 
 const ADMIN_NAV_ITEM = { label: "Admin", href: "/admin", icon: ShieldCheck };

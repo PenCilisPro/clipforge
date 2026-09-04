@@ -15,6 +15,7 @@ import shotstackWebhook from "./routes/webhooks/shotstack.js";
 import socialRoutes from "./routes/social.js";
 import adminRoutes from "./routes/admin.js";
 import feedbackRoutes from "./routes/feedback.js";
+import pricingRoutes from "./routes/pricing.js";
 
 assertCriticalEnv();
 
@@ -49,6 +50,7 @@ app.use(scheduleRoutes);
 app.use(socialRoutes);
 app.use(adminRoutes);
 app.use(feedbackRoutes);
+app.use(pricingRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

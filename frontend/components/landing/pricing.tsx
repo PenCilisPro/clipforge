@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 
+import { API_URL } from "@/lib/api";
 import { FadeIn } from "@/components/landing/fade-in";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,12 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-const TIERS = [
+/**
+ * Built-in fallback — shown until (and if) the backend responds, so the
+ * landing page still renders if /api/pricing is unreachable. Admins edit the
+ * live values from the admin page; edits persist in the pricing_plans table.
+ */
+const DEFAULT_TIERS = [
   {
     name: "Free",
     monthly: 0,
@@ -70,8 +76,53 @@ const TIERS = [
   },
 ];
 
+type Tier = (typeof DEFAULT_TIERS)[number];
+
+interface PlanRow {
+  name: string;
+  tagline: string;
+  monthly_price: number | string;
+  annual_price: number | string;
+  credits_label: string;
+  features: string[] | null;
+  cta_label: string;
+  highlighted: boolean;
+}
+
+function toTier(plan: PlanRow): Tier {
+  return {
+    name: plan.name,
+    monthly: Number(plan.monthly_price),
+    annual: Number(plan.annual_price),
+    tagline: plan.tagline,
+    credits: plan.credits_label,
+    features: plan.features ?? [],
+    cta: plan.cta_label,
+    highlighted: plan.highlighted,
+  };
+}
+
 export function Pricing() {
   const [annual, setAnnual] = useState(true);
+  const [tiers, setTiers] = useState<Tier[]>(DEFAULT_TIERS);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/pricing`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const plans: PlanRow[] = data?.plans ?? [];
+        if (!cancelled && plans.length > 0) setTiers(plans.map(toTier));
+      } catch {
+        // keep the built-in defaults
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <section id="pricing" className="bg-muted/40 py-20 md:py-28">
@@ -108,7 +159,7 @@ export function Pricing() {
         </FadeIn>
 
         <div className="mt-12 grid gap-6 lg:grid-cols-3">
-          {TIERS.map((tier, i) => (
+          {tiers.map((tier, i) => (
             <FadeIn key={tier.name} delay={i * 0.08}>
               <Card
                 className={cn(
