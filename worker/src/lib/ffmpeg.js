@@ -96,3 +96,18 @@ export async function cleanup(...paths) {
     paths.filter(Boolean).map((p) => fs.rm(p, { force: true, recursive: true }).catch(() => {}))
   );
 }
+
+/**
+ * Stream a URL straight to disk. Buffering a whole source video in RAM
+ * (e.g. storage.download → Buffer) OOM-kills small containers before ffmpeg
+ * even starts; the bytes belong on disk, not in the heap.
+ */
+export async function downloadToFile(url, filePath) {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
+  const { Readable } = await import("node:stream");
+  const { pipeline } = await import("node:stream/promises");
+  const { createWriteStream } = await import("node:fs");
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(filePath));
+  return filePath;
+}

@@ -1,8 +1,15 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
-import { ensureTmpDir, tmpPath, cleanup, trimSegment, generateThumbnail } from "../lib/ffmpeg.js";
+import {
+  ensureTmpDir,
+  tmpPath,
+  cleanup,
+  trimSegment,
+  generateThumbnail,
+  downloadToFile,
+} from "../lib/ffmpeg.js";
 import { buildCaptionsForClip } from "../lib/srt.js";
-import { buildEditJson, submitRender, BRAND_HIGHLIGHT } from "../lib/shotstack.js";
+import { buildEditJson, submitRender } from "../lib/shotstack.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -20,10 +27,10 @@ async function signedSourceUrl(bucket, path) {
  * 1. Pull source video from storage, trim the segment with FFmpeg
  * 2. Generate a vertical thumbnail
  * 3. Upload raw clip / thumbnail / SRT captions
- * 4. Build the Shotstack Edit JSON (9:16 crop + caption track, brand-orange
- *    word highlight) and submit the render with a webhook callback
- * 5. The Shotstack webhook hits the backend, which enqueues the finalize
- *    stage to download and store the finished MP4 (webhook-only completion).
+ * 4. Build the Shotstack Edit JSON (9:16 crop + caption track) and submit the
+ *    render with a completion callback URL
+ * 5. The callback hits the backend, which enqueues the finalize stage to
+ *    download and store the finished MP4 (callback-only completion).
  */
 export async function processRender(job) {
   const { projectId, clipId, jobRowId } = job.data;
@@ -56,14 +63,14 @@ export async function processRender(job) {
       return { clipId, skipped: true };
     }
 
-    // 1. Source video → local
-    const { data: videoBlob, error: dlError } = await supabaseAdmin.storage
-      .from("source-videos")
-      .download(project.original_video_path);
-    if (dlError) throw dlError;
+    // 1. Source video → local. Streamed to disk — buffering the whole file in
+    // the Node heap OOM-kills small containers before ffmpeg even starts.
     const fs = await import("node:fs/promises");
     const localSource = tmpPath(`source-${projectId}.mp4`);
-    await fs.writeFile(localSource, Buffer.from(await videoBlob.arrayBuffer()));
+    await downloadToFile(
+      await signedSourceUrl("source-videos", project.original_video_path),
+      localSource
+    );
 
     const start = Number(clip.start_time);
     const duration = Math.max(3, Number(clip.end_time) - start);
@@ -114,7 +121,6 @@ export async function processRender(job) {
       rawClipUrl,
       srtUrl,
       durationSeconds: duration,
-      captionStyle: clip.caption_style,
       watermarkUrl,
     });
 
@@ -130,7 +136,7 @@ export async function processRender(job) {
     }`;
 
     const renderId = await submitRender(editJson, webhookUrl);
-    job.log(`Shotstack render ${renderId} submitted (highlight ${BRAND_HIGHLIGHT})`);
+    job.log(`Shotstack render ${renderId} submitted (callback ${webhookUrl.split("?")[0]})`);
 
     await supabaseAdmin
       .from("clips")

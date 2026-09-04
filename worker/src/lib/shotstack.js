@@ -5,49 +5,13 @@ const BASE_URL = () =>
     ? "https://api.shotstack.io/v1"
     : `https://api.shotstack.io/${env.shotstackEnv}/`;
 
-export const BRAND_HIGHLIGHT = "#FF5D1C";
-
 /**
- * Caption style presets. The word highlight defaults to brand orange
- * (#FF5D1C). Shotstack's caption asset consumes an SRT/VTT file via `src`
- * and renders it with the given style. Fields mirror Shotstack's
- * CaptionStyle — tune names to the API version pinned by your account.
+ * Caption style presets (classic / karaoke / bold-pop) exist in the app's
+ * data model, but the render API currently rejects a `style` property on the
+ * caption asset (unknown_property 400, verified against the stage API), so
+ * captions render with Shotstack's default look regardless of the chosen
+ * preset. Revisit if/when the pinned API version ships CaptionStyle.
  */
-const CAPTION_PRESETS = {
-  classic: {
-    style: "default",
-    size: 42,
-    colour: "#FFFFFF",
-    outlineColour: "#000000",
-    outline: 2,
-    background: null,
-    align: "center",
-    valign: "bottom",
-    wordHighlightColour: BRAND_HIGHLIGHT,
-  },
-  karaoke: {
-    style: "karaoke",
-    size: 48,
-    colour: "#FFFFFF",
-    outlineColour: "#000000",
-    outline: 2,
-    background: null,
-    align: "center",
-    valign: "bottom",
-    wordHighlightColour: BRAND_HIGHLIGHT,
-  },
-  "bold-pop": {
-    style: "boxed",
-    size: 54,
-    colour: "#FFFFFF",
-    outlineColour: null,
-    outline: 0,
-    background: "#111111",
-    align: "center",
-    valign: "center",
-    wordHighlightColour: BRAND_HIGHLIGHT,
-  },
-};
 
 /**
  * Build the Shotstack "Edit" JSON payload:
@@ -55,9 +19,7 @@ const CAPTION_PRESETS = {
  *  - caption track from the clip-local SRT
  *  - optional watermark/logo overlay
  */
-export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, captionStyle, watermarkUrl }) {
-  const preset = CAPTION_PRESETS[captionStyle] ?? CAPTION_PRESETS.karaoke;
-
+export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, watermarkUrl }) {
   const videoTrack = {
     clips: [
       {
@@ -69,7 +31,6 @@ export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, captionStyl
         start: 0,
         length: durationSeconds,
         fit: "crop",
-        scale: { x: 1, y: 1 },
         position: "center",
       },
     ],
@@ -99,7 +60,6 @@ export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, captionStyl
         asset: {
           type: "caption",
           src: srtUrl,
-          style: preset,
         },
         start: 0,
         length: durationSeconds,
@@ -141,14 +101,13 @@ export function assertTrustedRenderUrl(rawUrl) {
   return parsed.toString();
 }
 
-export async function submitRender(editJson, webhookUrl) {
+export async function submitRender(editJson, callbackUrl) {
   if (!env.shotstackApiKey) throw new Error("SHOTSTACK_API_KEY is not configured");
 
-  // The webhook rides inside `output` — the API rejects it at the payload
-  // root with "Unknown property \"webhook\"".
-  const output = webhookUrl
-    ? { ...editJson.output, webhook: { url: webhookUrl } }
-    : editJson.output;
+  // Completion callbacks ride at the payload root as a plain string URL.
+  // Both a root-level `webhook` object and `output.webhook` are rejected by
+  // the API (unknown_property 400) — `callback` is the only accepted form.
+  const body = callbackUrl ? { ...editJson, callback: callbackUrl } : editJson;
 
   const res = await fetch(`${BASE_URL()}render`, {
     method: "POST",
@@ -156,7 +115,7 @@ export async function submitRender(editJson, webhookUrl) {
       "Content-Type": "application/json",
       "X-Api-Key": env.shotstackApiKey,
     },
-    body: JSON.stringify({ ...editJson, output }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
