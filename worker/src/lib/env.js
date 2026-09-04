@@ -22,6 +22,10 @@ export const env = {
   zaiBaseUrl: process.env.ZAI_API_BASE_URL ?? "https://api.z.ai/api/paas/v4",
   zaiModel: process.env.ZAI_MODEL ?? "glm-4.5-flash",
 
+  // B-roll stock footage providers (either one works; Pexels preferred)
+  pexelsApiKey: process.env.PEXELS_API_KEY,
+  pixabayApiKey: process.env.PIXABAY_API_KEY,
+
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
   // Required: renders complete via the Shotstack webhook → backend
@@ -52,6 +56,10 @@ export function warnMissing() {
       consequence: "videos longer than ~5 minutes cannot be transcribed (Google STT 10 MiB inline limit)",
     },
     { names: ["ZAI_API_KEY"], consequence: "AI analysis falls back to sample clips" },
+    {
+      names: ["PEXELS_API_KEY", "PIXABAY_API_KEY"],
+      consequence: "AI B-roll insertion is disabled (clips render talking-head only)",
+    },
     { names: ["SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
     {
       names: ["SHOTSTACK_WEBHOOK_URL"],

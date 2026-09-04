@@ -6,18 +6,41 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
+const CLIP_LENGTH_PREFS = ["10-14", "15-30", "31-45", "60+", "ai_optimized"];
+const MUSIC_MOODS = [
+  "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
+];
+
 const createSchema = z
   .object({
     source_type: z.enum(["url", "upload"]),
     source_url: z.string().url().optional(),
     storage_path: z.string().min(1).optional(),
     title: z.string().max(200).nullish(),
+    clip_length_pref: z.enum(CLIP_LENGTH_PREFS).default("ai_optimized"),
+    music_url: z
+      .string()
+      .url()
+      .refine((u) => {
+        try {
+          return new URL(u).hostname.endsWith("jamendo.com");
+        } catch {
+          return false;
+        }
+      })
+      .optional(),
+    music_title: z.string().trim().max(200).optional(),
+    music_artist: z.string().trim().max(200).optional(),
+    music_mood: z.enum(MUSIC_MOODS).optional(),
   })
   .refine((data) => data.source_type === "upload" || !!data.source_url, {
     message: "source_url is required for url projects",
   })
   .refine((data) => data.source_type === "url" || !!data.storage_path, {
     message: "storage_path is required for upload projects",
+  })
+  .refine((data) => !data.music_url || (!!data.music_title && !!data.music_mood), {
+    message: "music_title and music_mood are required with music_url",
   });
 
 async function insertJobRow(projectId, jobType, clipId = null) {
@@ -55,6 +78,11 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         source_type: body.source_type,
         original_video_path: body.storage_path ?? null,
         status: "pending",
+        clip_length_pref: body.clip_length_pref,
+        music_url: body.music_url ?? null,
+        music_title: body.music_title ?? null,
+        music_artist: body.music_artist ?? null,
+        music_mood: body.music_mood ?? null,
       })
       .select("*")
       .single();

@@ -16,6 +16,8 @@ import socialRoutes from "./routes/social.js";
 import adminRoutes from "./routes/admin.js";
 import feedbackRoutes from "./routes/feedback.js";
 import pricingRoutes from "./routes/pricing.js";
+import musicRoutes from "./routes/music.js";
+import brandingRoutes from "./routes/branding.js";
 
 assertCriticalEnv();
 
@@ -51,6 +53,8 @@ app.use(socialRoutes);
 app.use(adminRoutes);
 app.use(feedbackRoutes);
 app.use(pricingRoutes);
+app.use(musicRoutes);
+app.use(brandingRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

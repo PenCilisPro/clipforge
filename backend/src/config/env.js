@@ -35,6 +35,9 @@ export const env = {
   youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET,
   tiktokClientKey: process.env.TIKTOK_CLIENT_KEY,
   tiktokClientSecret: process.env.TIKTOK_CLIENT_SECRET,
+
+  // Jamendo music catalog (background music picker)
+  jamendoClientId: process.env.JAMENDO_CLIENT_ID,
 };
 
 export function assertCriticalEnv() {

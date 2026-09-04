@@ -21,13 +21,14 @@ export async function processAnalyze(job) {
 
     const { data: project, error } = await supabaseAdmin
       .from("projects")
-      .select("id, transcript_json, duration_seconds")
+      .select("id, transcript_json, duration_seconds, clip_length_pref")
       .eq("id", projectId)
       .single();
     if (error || !project) throw new Error(`Project ${projectId} not found`);
     if (!project.transcript_json) throw new Error("No transcript — transcribe must run first");
 
     const durationSeconds = Number(project.duration_seconds ?? 0);
+    const clipLengthPref = project.clip_length_pref ?? "ai_optimized";
 
     let suggestions;
     try {
@@ -35,13 +36,14 @@ export async function processAnalyze(job) {
         transcriptJson: project.transcript_json,
         durationSeconds,
         maxClips: env.maxClips,
+        clipLengthPref,
       });
     } catch (err) {
       // AI selection is an enhancement, not a hard dependency — a missing,
       // unfunded, or erroring provider must not fail an otherwise complete
       // pipeline. Sample clips keep render/finalize productive.
       job.log(`AI viral selection unavailable (${err.message}) — falling back to sample clips`);
-      suggestions = buildSampleClips(durationSeconds);
+      suggestions = buildSampleClips(durationSeconds, clipLengthPref);
     }
 
     // Persist clip rows
@@ -92,12 +94,21 @@ async function getProjectUser(projectId) {
   return data?.user_id;
 }
 
-function buildSampleClips(durationSeconds) {
+const SAMPLE_CLIP_LENGTHS = {
+  "10-14": 12,
+  "15-30": 25,
+  "31-45": 40,
+  "60+": 70,
+  ai_optimized: 35,
+};
+
+function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized") {
   const total = durationSeconds > 0 ? durationSeconds : 600;
+  const len = SAMPLE_CLIP_LENGTHS[clipLengthPref] ?? 35;
   const windows = [
-    [Math.min(30, total * 0.1), Math.min(60, total * 0.1) + 30],
-    [total * 0.4, total * 0.4 + 35],
-    [total * 0.7, total * 0.7 + 40],
+    [Math.min(30, total * 0.1), Math.min(30, total * 0.1) + len],
+    [total * 0.4, total * 0.4 + len],
+    [total * 0.7, total * 0.7 + len],
   ];
   return windows
     .filter(([s, e]) => e <= total && e > s)

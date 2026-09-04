@@ -4,8 +4,11 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, Link2, Loader2, Upload } from "lucide-react";
+import { ArrowLeft, Link2, Loader2, Music, Upload } from "lucide-react";
 
+import { apiFetch } from "@/lib/api";
+import { cn, formatDuration } from "@/lib/utils";
+import { Reveal } from "@/components/dashboard/reveal";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,10 +19,44 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { cn } from "@/lib/utils";
+
+const CLIP_LENGTHS = [
+  { value: "10-14", label: "10–14 seconds" },
+  { value: "15-30", label: "15–30 seconds" },
+  { value: "31-45", label: "31–45 seconds" },
+  { value: "60+", label: "Above 1 minute" },
+  { value: "ai_optimized", label: "AI optimized" },
+];
+
+const MOODS = [
+  "upbeat",
+  "chill",
+  "dramatic",
+  "corporate",
+  "energetic",
+  "happy",
+  "epic",
+  "background",
+];
+
+interface MusicTrack {
+  id: string;
+  name: string;
+  artist: string;
+  duration: number;
+  audio: string;
+  image: string | null;
+}
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -31,6 +68,32 @@ export default function NewProjectPage() {
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
 
+  // Render preferences
+  const [clipLength, setClipLength] = useState("ai_optimized");
+  const [mood, setMood] = useState("upbeat");
+  const [tracks, setTracks] = useState<MusicTrack[] | null>(null);
+  const [tracksLoading, setTracksLoading] = useState(false);
+  const [selectedTrack, setSelectedTrack] = useState<MusicTrack | null>(null);
+
+  async function loadTracks(chosenMood: string) {
+    setTracksLoading(true);
+    setSelectedTrack(null);
+    try {
+      const data = await apiFetch<{ configured: boolean; tracks: MusicTrack[] }>(
+        `/api/music?mood=${encodeURIComponent(chosenMood)}`
+      );
+      setTracks(data.tracks);
+      if (!data.configured) {
+        toast.info("Music catalog isn't configured yet — create the project without music.");
+      }
+    } catch {
+      setTracks([]);
+      toast.error("Couldn't load music — you can still create the project.");
+    } finally {
+      setTracksLoading(false);
+    }
+  }
+
   async function getUserId(): Promise<string> {
     const supabase = createClient();
     const {
@@ -40,8 +103,22 @@ export default function NewProjectPage() {
     return session.user.id;
   }
 
+  function musicFields() {
+    return selectedTrack
+      ? {
+          music_url: selectedTrack.audio,
+          music_title: selectedTrack.name,
+          music_artist: selectedTrack.artist,
+          music_mood: mood,
+        }
+      : {};
+  }
+
   async function createProject(body: Record<string, unknown>) {
-    await apiFetch("/api/projects", { method: "POST", body });
+    await apiFetch("/api/projects", {
+      method: "POST",
+      body: { clip_length_pref: clipLength, ...musicFields(), ...body },
+    });
   }
 
   async function handleUrlSubmit(event: FormEvent) {
@@ -88,13 +165,10 @@ export default function NewProjectPage() {
       if (error) throw error;
       setUploadPct(100);
 
-      await apiFetch("/api/projects", {
-        method: "POST",
-        body: {
-          source_type: "upload",
-          storage_path: path,
-          title: title || file.name,
-        },
+      await createProject({
+        source_type: "upload",
+        storage_path: path,
+        title: title || file.name,
       });
 
       toast.success("Upload complete", {
@@ -110,7 +184,7 @@ export default function NewProjectPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl">
+    <Reveal className="mx-auto max-w-2xl">
       <Button variant="ghost" size="sm" asChild className="mb-4 -ml-2">
         <Link href="/dashboard">
           <ArrowLeft /> Back to projects
@@ -263,6 +337,138 @@ export default function NewProjectPage() {
           </Card>
         </TabsContent>
       </Tabs>
-    </div>
+
+      {/* Preferences — shared by both creation paths */}
+      <div className="mt-6 space-y-6">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Clip length</CardTitle>
+            <CardDescription>
+              How long should the generated clips be? "AI optimized" lets the AI
+              pick the most engaging length per moment.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Select value={clipLength} onValueChange={setClipLength}>
+              <SelectTrigger className="w-full sm:w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CLIP_LENGTHS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Music className="h-4 w-4 text-primary-500" /> Background music
+              (optional)
+            </CardTitle>
+            <CardDescription>
+              Pick a mood to browse the free-to-use Jamendo catalog. The track
+              plays quietly under the voiceover in every clip.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Select
+                value={mood}
+                onValueChange={(v) => {
+                  setMood(v);
+                  loadTracks(v);
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-56">
+                  <SelectValue placeholder="Choose a mood" />
+                </SelectTrigger>
+                <SelectContent>
+                  {MOODS.map((m) => (
+                    <SelectItem key={m} value={m} className="capitalize">
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedTrack && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelectedTrack(null)}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+
+            {tracksLoading && (
+              <div className="space-y-2">
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+              </div>
+            )}
+
+            {!tracksLoading && tracks != null && tracks.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No tracks found for this mood — try another one.
+              </p>
+            )}
+
+            {!tracksLoading &&
+              tracks?.map((track) => {
+                const selected = selectedTrack?.id === track.id;
+                return (
+                  <div
+                    key={track.id}
+                    className={cn(
+                      "space-y-2 rounded-lg border p-3 transition-colors",
+                      selected
+                        ? "border-primary-500 bg-primary-500/5"
+                        : "hover:border-primary-500/40"
+                    )}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{track.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {track.artist} · {formatDuration(track.duration)}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant={selected ? "default" : "outline"}
+                        onClick={() =>
+                          setSelectedTrack(selected ? null : track)
+                        }
+                      >
+                        {selected ? "Selected" : "Use track"}
+                      </Button>
+                    </div>
+                    {/* Jamendo preview player */}
+                    <audio
+                      controls
+                      preload="none"
+                      src={track.audio}
+                      className="h-8 w-full"
+                    />
+                  </div>
+                );
+              })}
+
+            {tracks != null && tracks.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Music by Jamendo artists (Creative Commons licenses).
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </Reveal>
   );
 }

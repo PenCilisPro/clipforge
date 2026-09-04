@@ -1,20 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ExternalLink,
+  ImageIcon,
+  Loader2,
   MessageSquare,
+  Palette,
   RefreshCw,
+  Reply,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { isAdminEmail } from "@/lib/admin";
 import { PLAN_ICON_KEYS, planIcon } from "@/lib/plan-icons";
-import { FEEDBACK_CATEGORIES, categoryLabel, type FeedbackCategory } from "@/lib/feedback";
+import { FEEDBACK_CATEGORIES, categoryLabel } from "@/lib/feedback";
 import { createClient } from "@/lib/supabase/client";
 import { formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +58,10 @@ interface AdminFeedback {
   message: string;
   category?: string | null;
   rating?: number | null;
+  contact_email?: string | null;
+  screenshot_path?: string | null;
+  admin_reply?: string | null;
+  admin_replied_at?: string | null;
   created_at: string;
   email: string | null;
   display_name: string | null;
@@ -107,14 +117,20 @@ export default function AdminPage() {
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
   const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
   const [feedbackFilter, setFeedbackFilter] = useState<string>("all");
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [replyingId, setReplyingId] = useState<string | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [brandingBusy, setBrandingBusy] = useState(false);
+  const brandingInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersData, feedbackData, pricingData] = await Promise.all([
+      const [usersData, feedbackData, pricingData, brandingData] = await Promise.all([
         apiFetch<{ users: AdminUser[] }>("/api/admin/users"),
         apiFetch<{ feedback: AdminFeedback[] }>("/api/admin/feedback"),
         apiFetch<{ plans: PlanRow[] }>("/api/pricing"),
+        apiFetch<{ logoUrl: string | null }>("/api/branding"),
       ]);
       setUsers(usersData.users);
       setFeedback(feedbackData.feedback);
@@ -127,6 +143,7 @@ export default function AdminPage() {
       setPlanDrafts(
         Object.fromEntries(pricingData.plans.map((p) => [p.plan_key, planToDraft(p)]))
       );
+      setLogoUrl(brandingData.logoUrl);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load admin data");
     } finally {
@@ -213,6 +230,71 @@ export default function AdminPage() {
     }
   }
 
+  async function sendReply(f: AdminFeedback) {
+    const reply = (replyDrafts[f.id] ?? "").trim();
+    if (!reply || replyingId) return;
+    setReplyingId(f.id);
+    try {
+      const { feedback: updated } = await apiFetch<{ feedback: AdminFeedback }>(
+        `/api/admin/feedback/${f.id}/reply`,
+        { method: "PATCH", body: { reply } }
+      );
+      setFeedback((prev) => prev.map((row) => (row.id === f.id ? { ...row, ...updated } : row)));
+      setReplyDrafts((d) => ({ ...d, [f.id]: "" }));
+      toast.success("Reply sent — visible on the user's feedback page");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to send reply");
+    } finally {
+      setReplyingId(null);
+    }
+  }
+
+  async function uploadBranding(file: File) {
+    const okType = /\.(ico|png|svg)$/i.test(file.name);
+    if (!okType) {
+      toast.error("Choose a .ico, .png or .svg file");
+      return;
+    }
+    if (file.size > 1_000_000) {
+      toast.error("Logo must be under 1 MB");
+      return;
+    }
+    setBrandingBusy(true);
+    try {
+      const data_base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(new Error("Could not read file"));
+        reader.readAsDataURL(file);
+      });
+      const { logoUrl: url } = await apiFetch<{ logoUrl: string }>("/api/admin/branding", {
+        method: "POST",
+        body: { filename: file.name, data_base64 },
+      });
+      setLogoUrl(url);
+      toast.success("Logo updated — applied across the app (favicon may need a refresh)");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to upload logo");
+    } finally {
+      setBrandingBusy(false);
+      if (brandingInputRef.current) brandingInputRef.current.value = "";
+    }
+  }
+
+  async function resetBranding() {
+    if (brandingBusy) return;
+    setBrandingBusy(true);
+    try {
+      await apiFetch("/api/admin/branding", { method: "DELETE" });
+      setLogoUrl(null);
+      toast.success("Reverted to the default ClipForge logo");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to reset logo");
+    } finally {
+      setBrandingBusy(false);
+    }
+  }
+
   if (authorized === false) {
     return (
       <Card className="mx-auto mt-16 max-w-md border-destructive/30">
@@ -229,12 +311,12 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-6 w-6 text-primary-500" />
           <h1 className="text-2xl font-bold">Admin</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button asChild variant="outline" size="sm">
             <Link href="/pricing">
               <ExternalLink className="h-4 w-4" />
@@ -260,6 +342,7 @@ export default function AdminPage() {
             )}
           </TabsTrigger>
           <TabsTrigger value="pricing">Pricing</TabsTrigger>
+          <TabsTrigger value="branding">Branding</TabsTrigger>
         </TabsList>
 
         <TabsContent value="users" className="mt-4">
@@ -385,33 +468,89 @@ export default function AdminPage() {
               ) : (
                 feedback
                   .filter((f) => feedbackFilter === "all" || f.category === feedbackFilter)
-                  .map((f) => (
-                    <Card key={f.id}>
-                      <CardContent className="p-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge
-                            variant={
-                              f.category === "bug_report"
-                                ? "destructive"
-                                : f.category === "billing"
-                                  ? "default"
-                                  : "secondary"
-                            }
-                          >
-                            {categoryLabel(f.category)}
-                          </Badge>
-                          {f.rating != null && <StarRating value={f.rating} size="sm" />}
-                          <span className="ml-auto text-xs text-muted-foreground">
-                            {formatDateTime(f.created_at)}
-                          </span>
-                        </div>
-                        <p className="mt-2 whitespace-pre-wrap text-sm">{f.message}</p>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          {f.display_name ?? "Unknown"} · {f.email ?? f.user_id}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  ))
+                  .map((f) => {
+                    const supabase = createClient();
+                    const screenshotUrl = f.screenshot_path
+                      ? supabase.storage.from("assets").getPublicUrl(f.screenshot_path).data.publicUrl
+                      : null;
+                    return (
+                      <Card key={f.id}>
+                        <CardContent className="p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={
+                                f.category === "bug_report"
+                                  ? "destructive"
+                                  : f.category === "billing"
+                                    ? "default"
+                                    : "secondary"
+                              }
+                            >
+                              {categoryLabel(f.category)}
+                            </Badge>
+                            {f.rating != null && <StarRating value={f.rating} size="sm" />}
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              {formatDateTime(f.created_at)}
+                            </span>
+                          </div>
+                          <p className="mt-2 whitespace-pre-wrap text-sm">{f.message}</p>
+                          {screenshotUrl && (
+                            <a href={screenshotUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={screenshotUrl}
+                                alt="User screenshot"
+                                className="max-h-36 rounded-lg border object-cover"
+                              />
+                            </a>
+                          )}
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {f.display_name ?? "Unknown"} · {f.email ?? f.user_id}
+                            {f.contact_email && f.contact_email !== f.email && (
+                              <span> · replied-to: {f.contact_email}</span>
+                            )}
+                          </p>
+
+                          {f.admin_reply ? (
+                            <div className="mt-3 rounded-lg border-l-2 border-primary-500 bg-primary-500/5 p-3">
+                              <p className="text-xs font-semibold text-primary-600 dark:text-primary-400">
+                                Your reply
+                                {f.admin_replied_at && (
+                                  <span className="font-normal text-muted-foreground">
+                                    {" "}· {formatDateTime(f.admin_replied_at)}
+                                  </span>
+                                )}
+                              </p>
+                              <p className="mt-1.5 whitespace-pre-wrap text-sm">{f.admin_reply}</p>
+                            </div>
+                          ) : (
+                            <div className="mt-3 flex items-end gap-2">
+                              <Textarea
+                                rows={2}
+                                placeholder="Reply to this user…"
+                                value={replyDrafts[f.id] ?? ""}
+                                onChange={(e) =>
+                                  setReplyDrafts((d) => ({ ...d, [f.id]: e.target.value }))
+                                }
+                              />
+                              <Button
+                                size="sm"
+                                disabled={replyingId === f.id || !(replyDrafts[f.id] ?? "").trim()}
+                                onClick={() => sendReply(f)}
+                              >
+                                {replyingId === f.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Reply className="h-4 w-4" />
+                                )}
+                                Reply
+                              </Button>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    );
+                  })
               )}
             </div>
           )}
@@ -610,6 +749,73 @@ export default function AdminPage() {
                 );
               })}
             </div>
+          )}
+        </TabsContent>
+        <TabsContent value="branding" className="mt-4">
+          {loading ? (
+            <Skeleton className="h-48 w-full" />
+          ) : (
+            <Card className="max-w-xl">
+              <CardContent className="space-y-4 p-4">
+                <div className="flex items-center gap-2">
+                  <Palette className="h-4 w-4 text-primary-500" />
+                  <p className="text-sm font-semibold">App logo & favicon</p>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Upload a .ico, .png or .svg (under 1 MB). It replaces the
+                  orange bolt across every page — sidebar, landing, auth — and
+                  becomes the browser tab icon.
+                </p>
+                <div className="flex items-center gap-4">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-xl border bg-muted/40">
+                    {logoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={logoUrl}
+                        alt="Current logo"
+                        className="h-12 w-12 rounded-lg object-contain"
+                      />
+                    ) : (
+                      <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      disabled={brandingBusy}
+                      onClick={() => brandingInputRef.current?.click()}
+                    >
+                      {brandingBusy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="h-4 w-4" />
+                      )}
+                      {logoUrl ? "Replace logo" : "Upload logo"}
+                    </Button>
+                    {logoUrl && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={brandingBusy}
+                        onClick={resetBranding}
+                      >
+                        <Trash2 /> Reset to default
+                      </Button>
+                    )}
+                  </div>
+                  <input
+                    ref={brandingInputRef}
+                    type="file"
+                    accept=".ico,.png,.svg,image/x-icon,image/png,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) uploadBranding(file);
+                    }}
+                  />
+                </div>
+              </CardContent>
+            </Card>
           )}
         </TabsContent>
       </Tabs>

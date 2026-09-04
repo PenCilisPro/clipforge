@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
   CalendarClock,
   Download,
   Loader2,
+  Pencil,
   RefreshCcw,
   XCircle,
 } from "lucide-react";
@@ -191,6 +193,17 @@ export function ClipCard({ clip }: { clip: Clip }) {
             disabled={clip.status === "queued"}
           >
             <RefreshCcw /> Regenerate captions
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="col-span-2"
+            asChild
+            disabled={clip.status === "queued"}
+          >
+            <Link href={`/dashboard/projects/${clip.project_id}/clips/${clip.id}`}>
+              <Pencil /> Edit clip (captions, style, trim)
+            </Link>
           </Button>
         </div>
       </CardContent>

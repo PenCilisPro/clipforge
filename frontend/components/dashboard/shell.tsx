@@ -9,6 +9,7 @@ import {
   MessageSquare,
   ShieldCheck,
   Sparkles,
+  Tag,
   Zap,
 } from "lucide-react";
 
@@ -16,6 +17,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { isAdminEmail } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
@@ -98,36 +100,57 @@ export function DashboardShell({
               {profile.plan} plan
             </Badge>
           </div>
+          <div className="mt-3 flex gap-3 px-1 text-[11px] text-muted-foreground">
+            <Link href="/privacy" className="hover:text-foreground">
+              Privacy
+            </Link>
+            <Link href="/terms" className="hover:text-foreground">
+              Terms
+            </Link>
+            <Link href="/pricing" className="hover:text-foreground">
+              Pricing
+            </Link>
+          </div>
         </div>
       </aside>
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b bg-background/80 px-4 backdrop-blur-lg md:px-6">
-          {/* Mobile nav */}
-          <nav className="flex items-center gap-1 md:hidden">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "rounded-md p-2",
-                  (item.href === "/dashboard"
-                    ? pathname === "/dashboard"
-                    : pathname.startsWith(item.href))
-                    ? "bg-primary-500/10 text-primary-600 dark:text-primary-400"
-                    : "text-muted-foreground"
-                )}
-              >
-                <item.icon className="h-5 w-5" />
-              </Link>
-            ))}
-          </nav>
+          <div className="flex items-center gap-2">
+            {/* Sidebar (and its logo) is hidden on mobile — keep the brand visible */}
+            <Logo href="/dashboard" className="md:hidden" />
+            {/* Mobile nav */}
+            <nav className="flex items-center gap-1 md:hidden">
+              {navItems.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "rounded-md p-2",
+                    (item.href === "/dashboard"
+                      ? pathname === "/dashboard"
+                      : pathname.startsWith(item.href))
+                      ? "bg-primary-500/10 text-primary-600 dark:text-primary-400"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  <item.icon className="h-5 w-5" />
+                </Link>
+              ))}
+            </nav>
+          </div>
           <div className="hidden items-center gap-2 text-sm text-muted-foreground md:flex">
             <Sparkles className="h-4 w-4 text-primary-500" />
             <span>Welcome back, {user.displayName.split(" ")[0]}</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button asChild variant="ghost" size="sm" className="px-2 sm:px-3">
+              <Link href="/pricing">
+                <Tag className="h-4 w-4" />
+                <span className="hidden sm:inline">Pricing</span>
+              </Link>
+            </Button>
             <ThemeToggle />
             <UserMenu user={user} />
           </div>

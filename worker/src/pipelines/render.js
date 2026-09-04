@@ -10,6 +10,7 @@ import {
 } from "../lib/ffmpeg.js";
 import { buildCaptionsForClip } from "../lib/srt.js";
 import { buildEditJson, submitRender } from "../lib/shotstack.js";
+import { planBroll, brollConfigured } from "../lib/broll.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -47,7 +48,7 @@ export async function processRender(job) {
 
     const { data: project, error: projectError } = await supabaseAdmin
       .from("projects")
-      .select("id, user_id, original_video_path, transcript_json")
+      .select("id, user_id, original_video_path, transcript_json, music_url")
       .eq("id", projectId)
       .single();
     if (projectError || !project) throw new Error(`Project ${projectId} not found`);
@@ -82,8 +83,23 @@ export async function processRender(job) {
     const localThumb = tmpPath(`thumb-${clipId}.jpg`);
     await generateThumbnail(localRawClip, localThumb, Math.min(1, duration / 2));
 
-    // 3. Build SRT from word-level timestamps, shifted to clip-local time
-    const { srt } = buildCaptionsForClip(project.transcript_json, start, start + duration);
+    // 3. Captions — manual edits from the clip editor win; otherwise
+    // regenerate from word-level timestamps, shifted to clip-local time
+    const srt =
+      clip.srt_override ??
+      buildCaptionsForClip(project.transcript_json, start, start + duration).srt;
+
+    // 3b. AI B-roll planning (best-effort — skips itself when unconfigured)
+    let brollClips = [];
+    if (brollConfigured()) {
+      brollClips = await planBroll({
+        transcriptJson: project.transcript_json,
+        clipStart: start,
+        clipEnd: start + duration,
+        durationSeconds: duration,
+        log: (msg) => job.log(msg),
+      });
+    }
 
     // 4. Uploads
     const rawPath = `${project.user_id}/raw/${clipId}.mp4`;
@@ -122,6 +138,8 @@ export async function processRender(job) {
       srtUrl,
       durationSeconds: duration,
       watermarkUrl,
+      brollClips,
+      musicTrack: project.music_url ? { url: project.music_url } : null,
     });
 
     // Webhook completion is mandatory: without it the render could never be

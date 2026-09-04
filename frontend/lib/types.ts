@@ -25,6 +25,11 @@ export interface Project {
   status: ProjectStatus;
   error_message: string | null;
   created_at: string;
+  clip_length_pref?: string;
+  music_url?: string | null;
+  music_title?: string | null;
+  music_artist?: string | null;
+  music_mood?: string | null;
   clips?: Clip[];
 }
 
@@ -42,6 +47,7 @@ export interface Clip {
   reason: string | null;
   hashtags: string[];
   caption_style: "classic" | "karaoke" | "bold-pop";
+  srt_override: string | null;
   raw_clip_path: string | null;
   srt_path: string | null;
   storage_path: string | null;

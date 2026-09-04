@@ -16,10 +16,22 @@ const BASE_URL = () =>
 /**
  * Build the Shotstack "Edit" JSON payload:
  *  - 1080×1920 (9:16) output, video track cropped to fill
+ *  - optional AI B-roll overlay track (muted, fade in/out) between cuts
+ *  - optional background music track at low volume
  *  - caption track from the clip-local SRT
  *  - optional watermark/logo overlay
+ *
+ * Track order matters: Shotstack layers later tracks on top, so the b-roll
+ * sits above the talking-head video but below the captions.
  */
-export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, watermarkUrl }) {
+export function buildEditJson({
+  rawClipUrl,
+  srtUrl,
+  durationSeconds,
+  watermarkUrl,
+  brollClips = [],
+  musicTrack = null,
+}) {
   const videoTrack = {
     clips: [
       {
@@ -38,6 +50,20 @@ export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, watermarkUr
 
   const tracks = [videoTrack];
 
+  if (brollClips.length > 0) {
+    tracks.push({
+      clips: brollClips.slice(0, 6).map((b) => ({
+        asset: { type: "video", src: b.src, volume: 0 },
+        start: Math.max(0, Number(b.start)),
+        // Trim the last b-roll so it can't overrun the clip.
+        length: Math.min(Number(b.end) - Number(b.start), durationSeconds - Number(b.start)),
+        fit: "crop",
+        position: "center",
+        transition: { in: "fade", out: "fade" },
+      })),
+    });
+  }
+
   if (watermarkUrl) {
     tracks.push({
       clips: [
@@ -49,6 +75,19 @@ export function buildEditJson({ rawClipUrl, srtUrl, durationSeconds, watermarkUr
           position: "topRight",
           offset: { x: -0.04, y: 0.04 },
           opacity: 0.9,
+        },
+      ],
+    });
+  }
+
+  // Background music at ~15% of voiceover level (schema probe-validated).
+  if (musicTrack?.url) {
+    tracks.push({
+      clips: [
+        {
+          asset: { type: "audio", src: musicTrack.url, volume: 0.15 },
+          start: 0,
+          length: durationSeconds,
         },
       ],
     });
