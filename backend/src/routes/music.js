@@ -18,8 +18,9 @@ const MOODS = [
 // Fully constant request — no request data ever reaches the outbound URL
 // (SSRF-safe by construction). One catalog fetch covers every mood; the
 // mood filter is applied locally against the tags Jamendo returns.
+// audioformat must be mp31 (Jamendo rejects "mp3").
 const JAMENDO_CATALOG_URL =
-  "https://api.jamendo.com/v3.0/tracks/?format=json&limit=60&audioformat=mp3&include=musicinfo";
+  "https://api.jamendo.com/v3.0/tracks/?format=json&limit=60&audioformat=mp31&include=musicinfo";
 
 // Catalog → { tracks, ts } cache (24h) to keep Jamendo API calls low.
 const cache = new Map();
