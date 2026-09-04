@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut, Settings, User } from "lucide-react";
+import { LogOut, MessageSquarePlus, Settings, User } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,11 +14,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FeedbackDialog } from "@/components/dashboard/feedback-dialog";
 import { createClient } from "@/lib/supabase/client";
 import type { ShellUser } from "@/components/dashboard/shell";
 
 export function UserMenu({ user }: { user: ShellUser }) {
   const router = useRouter();
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -66,11 +69,15 @@ export function UserMenu({ user }: { user: ShellUser }) {
         <DropdownMenuItem disabled>
           <Settings /> Billing
         </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setFeedbackOpen(true)}>
+          <MessageSquarePlus /> Send feedback
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={handleSignOut}>
           <LogOut /> Sign out
         </DropdownMenuItem>
       </DropdownMenuContent>
+      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
     </DropdownMenu>
   );
 }

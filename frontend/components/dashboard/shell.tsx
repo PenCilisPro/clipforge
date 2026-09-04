@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Clapperboard,
   Link2,
+  ShieldCheck,
   Sparkles,
   Zap,
 } from "lucide-react";
@@ -14,6 +15,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { Badge } from "@/components/ui/badge";
+import { isAdminEmail } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -21,6 +23,8 @@ const NAV_ITEMS = [
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
   { label: "Connections", href: "/dashboard/connections", icon: Link2 },
 ];
+
+const ADMIN_NAV_ITEM = { label: "Admin", href: "/admin", icon: ShieldCheck };
 
 export interface ShellUser {
   id: string;
@@ -44,6 +48,7 @@ export function DashboardShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const navItems = isAdminEmail(user.email) ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
 
   return (
     <div className="flex min-h-screen">
@@ -53,7 +58,7 @@ export function DashboardShell({
           <Logo href="/dashboard" />
         </div>
         <nav className="flex-1 space-y-1 p-3">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const active =
               item.href === "/dashboard"
                 ? pathname === "/dashboard"
@@ -99,7 +104,7 @@ export function DashboardShell({
         <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b bg-background/80 px-4 backdrop-blur-lg md:px-6">
           {/* Mobile nav */}
           <nav className="flex items-center gap-1 md:hidden">
-            {NAV_ITEMS.map((item) => (
+            {navItems.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}

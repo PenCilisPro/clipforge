@@ -23,6 +23,12 @@ export const env = {
   shotstackWebhookSecret: required("SHOTSTACK_WEBHOOK_SECRET", "dev-insecure-hook"),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
 
+  // Admin allowlist (comma-separated). These emails can access /api/admin/*.
+  adminEmails: (process.env.ADMIN_EMAILS ?? "pencilmacro@gmail.com,taratip.pae@gmail.com")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+
   metaAppId: process.env.META_APP_ID,
   metaAppSecret: process.env.META_APP_SECRET,
   youtubeClientId: process.env.YOUTUBE_CLIENT_ID,

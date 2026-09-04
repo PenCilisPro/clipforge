@@ -13,6 +13,8 @@ import clipRoutes from "./routes/clips.js";
 import scheduleRoutes from "./routes/schedule.js";
 import shotstackWebhook from "./routes/webhooks/shotstack.js";
 import socialRoutes from "./routes/social.js";
+import adminRoutes from "./routes/admin.js";
+import feedbackRoutes from "./routes/feedback.js";
 
 assertCriticalEnv();
 
@@ -45,6 +47,8 @@ app.use(projectRoutes);
 app.use(clipRoutes);
 app.use(scheduleRoutes);
 app.use(socialRoutes);
+app.use(adminRoutes);
+app.use(feedbackRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
