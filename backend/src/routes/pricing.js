@@ -32,6 +32,12 @@ const planUpdateSchema = z.object({
   features: z.array(z.string().trim().min(1).max(240)).max(24).default([]),
   cta_label: z.string().trim().min(1).max(60).default("Get started"),
   highlighted: z.coerce.boolean().default(false),
+  icon: z
+    .enum([
+      "sparkles", "zap", "rocket", "crown", "gem", "star",
+      "flame", "heart", "clapperboard", "video", "play", "layers",
+    ])
+    .default("sparkles"),
 });
 
 /** Admin: update a plan's display name, price, tagline, CTA and privileges. */

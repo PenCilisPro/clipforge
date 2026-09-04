@@ -13,6 +13,8 @@ import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { isAdminEmail } from "@/lib/admin";
+import { PLAN_ICON_KEYS, planIcon } from "@/lib/plan-icons";
+import { FEEDBACK_CATEGORIES, categoryLabel, type FeedbackCategory } from "@/lib/feedback";
 import { createClient } from "@/lib/supabase/client";
 import { formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -20,10 +22,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { StarRating } from "@/components/dashboard/star-rating";
 
 interface AdminUser {
   id: string;
@@ -40,6 +50,8 @@ interface AdminFeedback {
   id: string;
   user_id: string;
   message: string;
+  category?: string | null;
+  rating?: number | null;
   created_at: string;
   email: string | null;
   display_name: string | null;
@@ -55,6 +67,7 @@ interface PlanRow {
   features: string[] | null;
   cta_label: string;
   highlighted: boolean;
+  icon: string;
 }
 
 interface PlanDraft {
@@ -66,6 +79,7 @@ interface PlanDraft {
   featuresText: string;
   cta_label: string;
   highlighted: boolean;
+  icon: string;
 }
 
 function planToDraft(plan: PlanRow): PlanDraft {
@@ -78,6 +92,7 @@ function planToDraft(plan: PlanRow): PlanDraft {
     featuresText: (plan.features ?? []).join("\n"),
     cta_label: plan.cta_label,
     highlighted: plan.highlighted,
+    icon: plan.icon ?? "sparkles",
   };
 }
 
@@ -91,6 +106,7 @@ export default function AdminPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
   const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
+  const [feedbackFilter, setFeedbackFilter] = useState<string>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -178,6 +194,7 @@ export default function AdminPage() {
               .filter(Boolean),
             cta_label: draft.cta_label.trim() || "Get started",
             highlighted: draft.highlighted,
+            icon: draft.icon,
           },
         }
       );
@@ -328,29 +345,74 @@ export default function AdminPage() {
               <Skeleton className="h-20 w-full" />
               <Skeleton className="h-20 w-full" />
             </div>
-          ) : feedback.length === 0 ? (
-            <Card>
-              <CardContent className="flex flex-col items-center gap-2 p-10 text-center">
-                <MessageSquare className="h-8 w-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">
-                  No feedback yet — users can send it from the account menu or the
-                  Feedback page.
-                </p>
-              </CardContent>
-            </Card>
           ) : (
             <div className="space-y-3">
-              {feedback.map((f) => (
-                <Card key={f.id}>
-                  <CardContent className="p-4">
-                    <p className="whitespace-pre-wrap text-sm">{f.message}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {f.display_name ?? "Unknown"} · {f.email ?? f.user_id} ·{" "}
-                      {formatDateTime(f.created_at)}
+              <div className="flex items-center gap-2">
+                <Label className="text-xs text-muted-foreground">Filter</Label>
+                <Select value={feedbackFilter} onValueChange={setFeedbackFilter}>
+                  <SelectTrigger className="h-8 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All feedback</SelectItem>
+                    {FEEDBACK_CATEGORIES.map((c) => (
+                      <SelectItem key={c.value} value={c.value}>
+                        {c.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-xs text-muted-foreground">
+                  {
+                    feedback.filter(
+                      (f) => feedbackFilter === "all" || f.category === feedbackFilter
+                    ).length
+                  }{" "}
+                  shown
+                </span>
+              </div>
+              {feedback.filter(
+                (f) => feedbackFilter === "all" || f.category === feedbackFilter
+              ).length === 0 ? (
+                <Card>
+                  <CardContent className="flex flex-col items-center gap-2 p-10 text-center">
+                    <MessageSquare className="h-8 w-8 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">
+                      No feedback in this category yet.
                     </p>
                   </CardContent>
                 </Card>
-              ))}
+              ) : (
+                feedback
+                  .filter((f) => feedbackFilter === "all" || f.category === feedbackFilter)
+                  .map((f) => (
+                    <Card key={f.id}>
+                      <CardContent className="p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant={
+                              f.category === "bug_report"
+                                ? "destructive"
+                                : f.category === "billing"
+                                  ? "default"
+                                  : "secondary"
+                            }
+                          >
+                            {categoryLabel(f.category)}
+                          </Badge>
+                          {f.rating != null && <StarRating value={f.rating} size="sm" />}
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {formatDateTime(f.created_at)}
+                          </span>
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap text-sm">{f.message}</p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {f.display_name ?? "Unknown"} · {f.email ?? f.user_id}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ))
+              )}
             </div>
           )}
         </TabsContent>
@@ -391,6 +453,37 @@ export default function AdminPage() {
                               }))
                             }
                           />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs">Plan icon</Label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {PLAN_ICON_KEYS.map((key) => {
+                            const Icon = planIcon(key);
+                            const selected = draft.icon === key;
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                title={key}
+                                aria-label={`Icon: ${key}`}
+                                className={
+                                  selected
+                                    ? "flex h-9 w-9 items-center justify-center rounded-lg border border-primary-500 bg-primary-500/10 text-primary-600 dark:text-primary-400"
+                                    : "flex h-9 w-9 items-center justify-center rounded-lg border text-muted-foreground transition-colors hover:border-primary-500/50 hover:text-foreground"
+                                }
+                                onClick={() =>
+                                  setPlanDrafts((d) => ({
+                                    ...d,
+                                    [plan.plan_key]: { ...d[plan.plan_key], icon: key },
+                                  }))
+                                }
+                              >
+                                <Icon className="h-4 w-4" />
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
 

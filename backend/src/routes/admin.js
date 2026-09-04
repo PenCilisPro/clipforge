@@ -76,7 +76,7 @@ router.get("/api/admin/feedback", async (req, res, next) => {
   try {
     const { data: feedback, error } = await supabaseAdmin
       .from("feedback")
-      .select("id, user_id, message, created_at")
+      .select("id, user_id, message, category, rating, created_at")
       .order("created_at", { ascending: false })
       .limit(200);
     if (error) throw error;

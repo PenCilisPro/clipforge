@@ -63,10 +63,10 @@ export function UserMenu({ user }: { user: ShellUser }) {
           </p>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem onClick={() => router.push("/dashboard/settings")}>
           <User /> Account settings
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem onClick={() => router.push("/dashboard/billing")}>
           <Settings /> Billing
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setFeedbackOpen(true)}>

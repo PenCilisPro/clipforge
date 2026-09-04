@@ -7,6 +7,7 @@ import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProjectCard } from "@/components/dashboard/project-card";
+import { Reveal } from "@/components/dashboard/reveal";
 import { createClient } from "@/lib/supabase/client";
 import type { Project } from "@/lib/types";
 
@@ -41,7 +42,7 @@ export default function ProjectsPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <Reveal className="mx-auto max-w-5xl">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Projects</h1>
@@ -77,11 +78,20 @@ export default function ProjectsPage() {
         </div>
       ) : (
         <div className="mt-8 grid gap-4 sm:grid-cols-2">
-          {projects.map((project) => (
-            <ProjectCard key={project.id} project={project} />
+          {projects.map((project, i) => (
+            <Reveal key={project.id} delay={i * 0.06}>
+              <ProjectCard
+                project={project}
+                onDeleted={(id) =>
+                  setProjects((prev) =>
+                    prev ? prev.filter((p) => p.id !== id) : prev
+                  )
+                }
+              />
+            </Reveal>
           ))}
         </div>
       )}
-    </div>
+    </Reveal>
   );
 }

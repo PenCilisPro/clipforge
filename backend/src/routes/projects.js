@@ -105,10 +105,47 @@ router.get("/api/projects/:id", requireAuth, async (req, res, next) => {
 
 router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
   try {
+    const projectId = req.params.id;
+
+    // Grab every storage path the project owns before the row (and its
+    // cascaded clips) disappears, then best-effort remove the objects so the
+    // buckets don't accumulate orphans. Storage failures never block deletion.
+    const [{ data: project }, { data: clips }] = await Promise.all([
+      supabaseAdmin
+        .from("projects")
+        .select("original_video_path")
+        .eq("id", projectId)
+        .eq("user_id", req.user.id)
+        .single(),
+      supabaseAdmin
+        .from("clips")
+        .select("raw_clip_path, srt_path, storage_path, thumbnail_path")
+        .eq("project_id", projectId)
+        .eq("user_id", req.user.id),
+    ]);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const byBucket = {
+      "source-videos": [project.original_video_path],
+      clips: (clips ?? []).flatMap((c) => [c.raw_clip_path, c.srt_path, c.storage_path]),
+      assets: (clips ?? []).map((c) => c.thumbnail_path),
+    };
+    await Promise.all(
+      Object.entries(byBucket).map(([bucket, paths]) => {
+        const objects = paths.filter(Boolean);
+        if (objects.length === 0) return Promise.resolve();
+        return supabaseAdmin.storage
+          .from(bucket)
+          .remove(objects)
+          .catch(() => {});
+      })
+    );
+
+    // DB rows go by cascade: clips → jobs / scheduled_posts.
     const { error } = await supabaseAdmin
       .from("projects")
       .delete()
-      .eq("id", req.params.id)
+      .eq("id", projectId)
       .eq("user_id", req.user.id);
     if (error) throw error;
     res.json({ ok: true });

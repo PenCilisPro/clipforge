@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Check } from "lucide-react";
 
 import { API_URL } from "@/lib/api";
+import { planIcon } from "@/lib/plan-icons";
 import { FadeIn } from "@/components/landing/fade-in";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ const DEFAULT_TIERS = [
     ],
     cta: "Start Free",
     highlighted: false,
+    icon: "sparkles",
   },
   {
     name: "Pro",
@@ -56,6 +58,7 @@ const DEFAULT_TIERS = [
     ],
     cta: "Get Pro",
     highlighted: true,
+    icon: "zap",
   },
   {
     name: "Business",
@@ -73,6 +76,7 @@ const DEFAULT_TIERS = [
     ],
     cta: "Get Business",
     highlighted: false,
+    icon: "crown",
   },
 ];
 
@@ -87,6 +91,7 @@ interface PlanRow {
   features: string[] | null;
   cta_label: string;
   highlighted: boolean;
+  icon: string;
 }
 
 function toTier(plan: PlanRow): Tier {
@@ -99,6 +104,7 @@ function toTier(plan: PlanRow): Tier {
     features: plan.features ?? [],
     cta: plan.cta_label,
     highlighted: plan.highlighted,
+    icon: plan.icon ?? "sparkles",
   };
 }
 
@@ -163,7 +169,7 @@ export function Pricing() {
             <FadeIn key={tier.name} delay={i * 0.08}>
               <Card
                 className={cn(
-                  "relative flex h-full flex-col",
+                  "relative flex h-full flex-col transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-primary-500/10",
                   tier.highlighted &&
                     "border-primary-500 shadow-lg shadow-primary-500/10 lg:-my-3 lg:py-3"
                 )}
@@ -174,7 +180,13 @@ export function Pricing() {
                   </Badge>
                 )}
                 <CardHeader className="pb-2">
-                  <h3 className="text-lg font-semibold">{tier.name}</h3>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-500/10">
+                    {(() => {
+                      const Icon = planIcon(tier.icon);
+                      return <Icon className="h-5 w-5 text-primary-500" />;
+                    })()}
+                  </div>
+                  <h3 className="mt-3 text-lg font-semibold">{tier.name}</h3>
                   <p className="text-sm text-muted-foreground">{tier.tagline}</p>
                   <div className="mt-4 flex items-baseline gap-1">
                     <span className="text-4xl font-extrabold tracking-tight">
