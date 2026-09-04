@@ -8,7 +8,7 @@ import {
   generateThumbnail,
   downloadToFile,
 } from "../lib/ffmpeg.js";
-import { buildCaptionsForClip } from "../lib/srt.js";
+import { buildCaptionsForClip, cuesToSrt, parseSrt } from "../lib/srt.js";
 import { buildEditJson, submitRender } from "../lib/shotstack.js";
 import { planBroll, brollConfigured } from "../lib/broll.js";
 import { env } from "../lib/env.js";
@@ -84,10 +84,14 @@ export async function processRender(job) {
     await generateThumbnail(localRawClip, localThumb, Math.min(1, duration / 2));
 
     // 3. Captions — manual edits from the clip editor win; otherwise
-    // regenerate from word-level timestamps, shifted to clip-local time
-    const srt =
-      clip.srt_override ??
-      buildCaptionsForClip(project.transcript_json, start, start + duration).srt;
+    // regenerate from word-level timestamps, shifted to clip-local time.
+    // Rendered as HTML text clips (font + style aware), placed as the
+    // topmost track inside buildEditJson.
+    const captionCues = clip.srt_override
+      ? parseSrt(clip.srt_override)
+      : buildCaptionsForClip(project.transcript_json, start, start + duration).cues;
+    // Stored alongside the clip (clip editor reads it back).
+    const srtText = clip.srt_override ?? cuesToSrt(captionCues);
 
     // 3b. AI B-roll planning (best-effort — skips itself when unconfigured)
     let brollClips = [];
@@ -118,7 +122,7 @@ export async function processRender(job) {
 
     const { error: srtUploadError } = await supabaseAdmin.storage
       .from("clips")
-      .upload(srtPath, Buffer.from(srt, "utf8"), { contentType: "application/x-subrip", upsert: true });
+      .upload(srtPath, Buffer.from(srtText, "utf8"), { contentType: "application/x-subrip", upsert: true });
     if (srtUploadError) throw srtUploadError;
 
     await supabaseAdmin
@@ -127,19 +131,18 @@ export async function processRender(job) {
       .eq("id", clipId);
 
     // 5. Shotstack Edit JSON
-    const [rawClipUrl, srtUrl] = await Promise.all([
-      signedSourceUrl("clips", rawPath),
-      signedSourceUrl("clips", srtPath),
-    ]);
+    const rawClipUrl = await signedSourceUrl("clips", rawPath);
 
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;
     const editJson = buildEditJson({
       rawClipUrl,
-      srtUrl,
       durationSeconds: duration,
       watermarkUrl,
       brollClips,
       musicTrack: project.music_url ? { url: project.music_url } : null,
+      captionCues,
+      captionFontKey: clip.caption_font,
+      captionStyle: clip.caption_style,
     });
 
     // Webhook completion is mandatory: without it the render could never be

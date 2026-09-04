@@ -6,12 +6,16 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
+const CAPTION_FONTS = ["anton", "bebas-neue", "archivo-black", "poppins"];
+
 const regenerateSchema = z.object({
   caption_style: z.enum(["classic", "karaoke", "bold-pop"]),
+  caption_font: z.enum(CAPTION_FONTS).optional(),
 });
 
 const editSchema = z.object({
   caption_style: z.enum(["classic", "karaoke", "bold-pop"]).optional(),
+  caption_font: z.enum(CAPTION_FONTS).optional(),
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.
   srt_content: z.string().max(20_000).optional(),
@@ -86,6 +90,7 @@ router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
       shotstack_render_id: null,
     };
     if (body.caption_style) updates.caption_style = body.caption_style;
+    if (body.caption_font) updates.caption_font = body.caption_font;
     if (timingChanged) {
       updates.start_time = start;
       updates.end_time = end;
@@ -158,6 +163,7 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
       .from("clips")
       .update({
         caption_style: body.caption_style,
+        ...(body.caption_font ? { caption_font: body.caption_font } : {}),
         status: "queued",
         error_message: null,
         // Clear the previous render so the render stage re-processes the clip

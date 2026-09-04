@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { CAPTION_STYLES, type Clip } from "@/lib/types";
+import { CAPTION_FONTS, CAPTION_STYLES, type Clip } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { Reveal } from "@/components/dashboard/reveal";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,7 @@ export default function ClipEditPage() {
 
   const [cues, setCues] = useState<SrtCue[]>([]);
   const [captionStyle, setCaptionStyle] = useState<Clip["caption_style"]>("karaoke");
+  const [captionFont, setCaptionFont] = useState<NonNullable<Clip["caption_font"]>>("anton");
   const [resetSrt, setResetSrt] = useState(false);
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("0");
@@ -53,6 +54,7 @@ export default function ClipEditPage() {
         if (!found) throw new Error("Clip not found");
         setClip(found);
         setCaptionStyle(found.caption_style ?? "karaoke");
+        setCaptionFont(found.caption_font ?? "anton");
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));
 
@@ -119,6 +121,7 @@ export default function ClipEditPage() {
         method: "POST",
         body: {
           caption_style: captionStyle,
+          caption_font: captionFont,
           start_time: start,
           end_time: end,
           ...(resetSrt
@@ -255,6 +258,24 @@ export default function ClipEditPage() {
                 <p className="text-xs text-muted-foreground">
                   {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
                 </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Caption font</Label>
+                <Select
+                  value={captionFont}
+                  onValueChange={(v) => setCaptionFont(v as NonNullable<Clip["caption_font"]>)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CAPTION_FONTS.map((font) => (
+                      <SelectItem key={font.key} value={font.key}>
+                        <span style={{ fontFamily: font.cssVar }}>{font.label}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input

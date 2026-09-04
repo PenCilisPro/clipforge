@@ -47,6 +47,7 @@ export interface Clip {
   reason: string | null;
   hashtags: string[];
   caption_style: "classic" | "karaoke" | "bold-pop";
+  caption_font: "anton" | "bebas-neue" | "archivo-black" | "poppins";
   srt_override: string | null;
   raw_clip_path: string | null;
   srt_path: string | null;
@@ -120,6 +121,17 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
 
 export const CAPTION_STYLES: { key: Clip["caption_style"]; label: string; description: string }[] = [
   { key: "classic", label: "Classic", description: "Clean white captions with outline" },
-  { key: "karaoke", label: "Karaoke", description: "Word-by-word highlight in brand orange" },
+  { key: "karaoke", label: "Karaoke", description: "White captions on brand-orange box" },
   { key: "bold-pop", label: "Bold Pop", description: "Big uppercase captions on dark boxes" },
+];
+
+export const CAPTION_FONTS: {
+  key: NonNullable<Clip["caption_font"]>;
+  label: string;
+  cssVar: string;
+}[] = [
+  { key: "anton", label: "Anton", cssVar: "var(--font-caption-anton)" },
+  { key: "bebas-neue", label: "Bebas Neue", cssVar: "var(--font-caption-bebas)" },
+  { key: "archivo-black", label: "Archivo Black", cssVar: "var(--font-caption-archivo)" },
+  { key: "poppins", label: "Poppins Bold", cssVar: "var(--font-caption-poppins)" },
 ];

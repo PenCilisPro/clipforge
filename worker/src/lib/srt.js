@@ -79,3 +79,33 @@ export function buildCaptionsForClip(transcriptJson, clipStart, clipEnd) {
   const cues = groupWordsIntoCues(words, { startOffset: clipStart });
   return { cues, srt: cuesToSrt(cues) };
 }
+
+/**
+ * Parse SRT text back into cues [{start, end, text}] (clip-local seconds).
+ * Used for caption overrides saved from the clip editor.
+ */
+export function parseSrt(srt) {
+  const cues = [];
+  for (const block of String(srt ?? "").replace(/\r/g, "").split(/\n\s*\n/)) {
+    const lines = block.split("\n").filter((l) => l.trim() !== "");
+    const timeLine = lines.find((l) => l.includes("-->"));
+    if (!timeLine) continue;
+    const [rawStart, rawEnd] = timeLine.split("-->");
+    const start = parseSrtSeconds(rawStart);
+    const end = parseSrtSeconds(rawEnd);
+    if (start == null || end == null) continue;
+    const text = lines
+      .slice(lines.indexOf(timeLine) + 1)
+      .join(" ")
+      .trim();
+    if (!text) continue;
+    cues.push({ start, end, text });
+  }
+  return cues.sort((a, b) => a.start - b.start);
+}
+
+function parseSrtSeconds(raw) {
+  const m = String(raw ?? "").trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, "0")) / 1000;
+}

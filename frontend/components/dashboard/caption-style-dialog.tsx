@@ -14,16 +14,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/api";
-import { CAPTION_STYLES, type Clip, type Clip as ClipType } from "@/lib/types";
+import { CAPTION_FONTS, CAPTION_STYLES, type Clip, type Clip as ClipType } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Word-highlight caption previews — the highlighted word uses brand orange. */
 const PREVIEW_WORDS = ["THIS", "IS", "HOW", "IT", "WORKS"];
 
-function CaptionPreview({ style }: { style: ClipType["caption_style"] }) {
+function CaptionPreview({
+  style,
+  fontKey,
+}: {
+  style: ClipType["caption_style"];
+  fontKey: NonNullable<Clip["caption_font"]>;
+}) {
+  const cssVar = CAPTION_FONTS.find((f) => f.key === fontKey)?.cssVar ?? "";
   return (
     <div className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-zinc-900">
-      <div className="flex flex-wrap justify-center gap-0.5 px-2">
+      <div className="flex flex-wrap justify-center gap-0.5 px-2" style={{ fontFamily: cssVar }}>
         {PREVIEW_WORDS.map((word, i) => {
           const isHighlight = i === 2;
           if (style === "bold-pop") {
@@ -86,21 +93,27 @@ export function CaptionStyleDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const [selected, setSelected] = useState<Clip["caption_style"]>(clip.caption_style);
+  const [font, setFont] = useState<NonNullable<Clip["caption_font"]>>(
+    clip.caption_font ?? "anton"
+  );
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (open) setSelected(clip.caption_style);
-  }, [open, clip.caption_style]);
+    if (open) {
+      setSelected(clip.caption_style);
+      setFont(clip.caption_font ?? "anton");
+    }
+  }, [open, clip.caption_style, clip.caption_font]);
 
   async function handleRegenerate() {
     setLoading(true);
     try {
       await apiFetch(`/api/clips/${clip.id}/regenerate`, {
         method: "POST",
-        body: { caption_style: selected },
+        body: { caption_style: selected, caption_font: font },
       });
       toast.success("Re-render queued", {
-        description: "The clip will be regenerated with the new caption style.",
+        description: "The clip will be regenerated with the new caption look.",
       });
       onOpenChange(false);
     } catch (error) {
@@ -116,8 +129,8 @@ export function CaptionStyleDialog({
         <DialogHeader>
           <DialogTitle>Regenerate captions</DialogTitle>
           <DialogDescription>
-            Pick a caption style and ClipForge re-renders the clip in the
-            cloud.
+            Pick a caption style and font — ClipForge re-renders the clip in
+            the cloud.
           </DialogDescription>
         </DialogHeader>
 
@@ -133,13 +146,33 @@ export function CaptionStyleDialog({
                   "border-primary-500 ring-2 ring-primary-500/30"
               )}
             >
-              <CaptionPreview style={style.key} />
+              <CaptionPreview style={style.key} fontKey={font} />
               <p className="mt-2 text-xs font-semibold">{style.label}</p>
               <p className="text-[11px] leading-tight text-muted-foreground">
                 {style.description}
               </p>
             </button>
           ))}
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">Caption font</p>
+          <div className="grid grid-cols-4 gap-2">
+            {CAPTION_FONTS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setFont(option.key)}
+                style={{ fontFamily: option.cssVar }}
+                className={cn(
+                  "rounded-lg border px-2 py-2 text-sm transition-all hover:border-primary-500/60",
+                  font === option.key && "border-primary-500 ring-2 ring-primary-500/30"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <DialogFooter>
