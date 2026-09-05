@@ -3,6 +3,7 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
+import { ensureMonthlyCredits } from "../lib/credits.js";
 import {
   aiConfigured,
   brollConfigured,
@@ -272,6 +273,7 @@ async function loadClipWithProject(clipId, userId) {
 
 /** Gate + atomic spend. Returns the new balance or null when unaffordable. */
 async function spendCredits(userId, res) {
+  await ensureMonthlyCredits(userId);
   const { data: profile } = await supabaseAdmin
     .from("profiles")
     .select("credits_remaining")

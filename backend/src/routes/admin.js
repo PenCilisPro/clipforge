@@ -3,6 +3,7 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/admin.js";
+import { planCreditsPerMonth } from "../lib/credits.js";
 
 const router = Router();
 
@@ -197,9 +198,14 @@ router.patch("/api/admin/upgrade-requests/:id/review", async (req, res, next) =>
     if (error) throw error;
 
     if (action === "approve") {
+      const credits = await planCreditsPerMonth("pro");
       const { error: planError } = await supabaseAdmin
         .from("profiles")
-        .update({ plan: "pro" })
+        .update({
+          plan: "pro",
+          credits_remaining: credits,
+          credits_refreshed_at: new Date().toISOString(),
+        })
         .eq("id", request.user_id);
       if (planError) throw planError;
     }

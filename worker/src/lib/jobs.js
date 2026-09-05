@@ -64,8 +64,42 @@ export async function reconcileProjectDone(projectId) {
   }
 }
 
+const REFILL_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Top credits back up to the plan's monthly allotment once the 30-day window
+ * has elapsed (mirrors the backend helper — the worker spends credits too).
+ */
+async function ensureMonthlyCredits(userId) {
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select("plan, credits_refreshed_at")
+    .eq("id", userId)
+    .single();
+  if (!profile) return;
+  const refreshedAt = profile.credits_refreshed_at
+    ? new Date(profile.credits_refreshed_at).getTime()
+    : 0;
+  if (refreshedAt && Date.now() - refreshedAt < REFILL_INTERVAL_MS) return;
+
+  const { data: plan } = await supabaseAdmin
+    .from("pricing_plans")
+    .select("credits_per_month")
+    .eq("plan_key", profile.plan ?? "free")
+    .single();
+  await supabaseAdmin
+    .from("profiles")
+    .update({
+      credits_remaining: plan?.credits_per_month ?? 0,
+      credits_refreshed_at: new Date().toISOString(),
+    })
+    .eq("id", userId);
+  console.log(`[credits] user ${userId}: monthly refill → ${plan?.credits_per_month ?? 0}`);
+}
+
 /** Deduct credits (1 per started minute), clamped at zero. */
 export async function deductCredits(userId, seconds) {
+  await ensureMonthlyCredits(userId);
   const minutes = Math.max(1, Math.ceil(seconds / 60));
   const { data: profile } = await supabaseAdmin
     .from("profiles")

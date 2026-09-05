@@ -4,6 +4,7 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isProOrAdmin } from "../lib/tiers.js";
+import { ensureMonthlyCredits } from "../lib/credits.js";
 
 const router = Router();
 
@@ -72,6 +73,8 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
     }
 
     // Credit gate: block new work when the user is out of credits.
+    // (Monthly plan allotments are applied first when due.)
+    await ensureMonthlyCredits(req.user.id);
     const { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("credits_remaining")

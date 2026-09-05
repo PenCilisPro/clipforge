@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { ensureMonthlyCredits } from "../lib/credits.js";
 import { env } from "../config/env.js";
 
 const router = Router();
@@ -31,6 +32,8 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
     const { messages } = chatSchema.parse(req.body);
 
     // Each assistant reply costs 1 credit — block users who are out.
+    // (Monthly plan allotments are applied first when due.)
+    await ensureMonthlyCredits(req.user.id);
     const { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("credits_remaining")

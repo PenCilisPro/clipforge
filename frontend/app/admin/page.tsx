@@ -95,6 +95,7 @@ interface PlanRow {
   tagline: string;
   monthly_price: number | string;
   annual_price: number | string;
+  credits_per_month: number | string;
   credits_label: string;
   features: string[] | null;
   cta_label: string;
@@ -107,6 +108,7 @@ interface PlanDraft {
   tagline: string;
   monthly_price: string;
   annual_price: string;
+  credits_per_month: string;
   credits_label: string;
   featuresText: string;
   cta_label: string;
@@ -120,6 +122,7 @@ function planToDraft(plan: PlanRow): PlanDraft {
     tagline: plan.tagline,
     monthly_price: String(Number(plan.monthly_price)),
     annual_price: String(Number(plan.annual_price)),
+    credits_per_month: String(Number(plan.credits_per_month ?? 0)),
     credits_label: plan.credits_label,
     featuresText: (plan.features ?? []).join("\n"),
     cta_label: plan.cta_label,
@@ -236,6 +239,7 @@ export default function AdminPage() {
             tagline: draft.tagline.trim(),
             monthly_price: monthly,
             annual_price: annual,
+            credits_per_month: Number(draft.credits_per_month) || 0,
             credits_label: draft.credits_label.trim(),
             features: draft.featuresText
               .split("\n")
@@ -935,6 +939,27 @@ export default function AdminPage() {
                                 }))
                               }
                             />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Credits / month</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={draft.credits_per_month}
+                              onChange={(e) =>
+                                setPlanDrafts((d) => ({
+                                  ...d,
+                                  [plan.plan_key]: {
+                                    ...d[plan.plan_key],
+                                    credits_per_month: e.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                            <p className="text-[11px] text-muted-foreground">
+                              Applied automatically every 30 days (Free 360, Pro
+                              2000, Business 3000 by default).
+                            </p>
                           </div>
                         </div>
                         <div className="space-y-1.5">

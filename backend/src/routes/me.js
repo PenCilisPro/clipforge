@@ -1,12 +1,15 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { requireAuth } from "../middleware/auth.js";
+import { ensureMonthlyCredits } from "../lib/credits.js";
 import { env } from "../config/env.js";
 
 const router = Router();
 
 router.get("/api/me", requireAuth, async (req, res, next) => {
   try {
+    // Refill credits to the plan's monthly allotment when the window elapsed.
+    await ensureMonthlyCredits(req.user.id);
     const { data, error } = await supabaseAdmin
       .from("profiles")
       .select("id, email, display_name, avatar_url, plan, credits_remaining, created_at")

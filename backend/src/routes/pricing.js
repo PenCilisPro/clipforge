@@ -28,6 +28,7 @@ const planUpdateSchema = z.object({
   tagline: z.string().trim().max(160).default(""),
   monthly_price: z.coerce.number().finite().min(0).max(1_000_000),
   annual_price: z.coerce.number().finite().min(0).max(1_000_000),
+  credits_per_month: z.coerce.number().int().min(0).max(1_000_000).default(0),
   credits_label: z.string().trim().max(160).default(""),
   features: z.array(z.string().trim().min(1).max(240)).max(24).default([]),
   cta_label: z.string().trim().min(1).max(60).default("Get started"),
