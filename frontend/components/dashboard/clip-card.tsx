@@ -74,7 +74,9 @@ export function ClipCard({ clip }: { clip: Clip }) {
     try {
       await apiFetch(`/api/clips/${clip.id}/regenerate`, {
         method: "POST",
-        body: JSON.stringify({ caption_style: clip.caption_style ?? "karaoke" }),
+        // apiFetch stringifies the body itself — a pre-stringified value would go
+      // out double-encoded and the backend would reject it with a 400.
+      body: { caption_style: clip.caption_style ?? "karaoke" },
       });
       toast.success("Render requeued");
     } catch (error) {
