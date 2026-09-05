@@ -69,26 +69,39 @@ export async function extractAudio(inputPath, outputPath) {
   ]);
 }
 
+// Heavy re-encode trims are serialized: two concurrent 4K trims OOM small
+// containers (512MB on Railway's trial plan). Other stages stay concurrent.
+let trimChain = Promise.resolve();
+
 /**
  * Trim an accurate segment. Re-encodes for frame-accurate cuts — stream copy
  * (-c copy) snaps to keyframes and desyncs captions on variable-keyframe files.
  * Downscales anything above 1080p first: re-encoding 4K with libx264 blows
  * past small containers' RAM (two concurrent trims get OOM-killed).
  */
-export async function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
-  return runFfmpeg([
-    "-ss", String(startSeconds),
-    "-i", inputPath,
-    "-t", String(durationSeconds),
-    "-vf", "scale='min(1920,iw)':-2",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-    // Cap encoder threads — x264 sizes its thread pool from detected cores,
-    // which balloons RSS on big hosts and OOMs small containers.
-    "-threads", "2",
-    "-c:a", "aac", "-b:a", "128k",
-    "-movflags", "+faststart",
-    outputPath,
-  ]);
+export function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
+  const run = () =>
+    runFfmpeg([
+      "-ss", String(startSeconds),
+      "-i", inputPath,
+      "-t", String(durationSeconds),
+      "-vf", "scale='min(1920,iw)':-2",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      // Cap encoder threads — x264 sizes its thread pool from detected cores,
+      // which balloons RSS on big hosts and OOMs small containers.
+      "-threads", "2",
+      "-c:a", "aac", "-b:a", "128k",
+      "-movflags", "+faststart",
+      outputPath,
+    ]);
+  const result = trimChain.then(run);
+  // Keep the chain alive regardless of failures, and drop settled results so
+  // a long session doesn't hold references.
+  trimChain = result.then(
+    () => {},
+    () => {}
+  );
+  return result;
 }
 
 /** Grab a vertical thumbnail from a clip. */

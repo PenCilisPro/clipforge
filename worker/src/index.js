@@ -25,18 +25,10 @@ const STAGES = {
   finalize: processFinalize,
 };
 
-// Renders are the only stage that decodes + re-encodes video; two concurrent
-// 4K trims OOM small containers (512MB on Railway's trial plan). Run them on
-// a dedicated single-slot worker, everything else keeps env.concurrency.
-const renderConcurrency = Number(process.env.RENDER_CONCURRENCY ?? 1);
-const pipelineStages = Object.fromEntries(
-  Object.entries(STAGES).filter(([name]) => name !== "render")
-);
-
 const pipelineWorker = new Worker(
   "clipforge-pipeline",
   async (job) => {
-    const stage = pipelineStages[job.name];
+    const stage = STAGES[job.name];
     if (!stage) throw new Error(`Unknown pipeline stage: ${job.name}`);
     console.log(`[worker] ▶ ${job.name} (${job.id})`);
     const result = await stage(job);
@@ -47,24 +39,6 @@ const pipelineWorker = new Worker(
     connection,
     concurrency: env.concurrency,
     lockDuration: 10 * 60 * 1000, // renders are slow; hold the lock generously
-    stalledInterval: 60 * 1000,
-    maxStalledCount: 2,
-  }
-);
-
-const renderWorker = new Worker(
-  "clipforge-pipeline",
-  async (job) => {
-    if (job.name !== "render") throw new Error(`Render worker got stage: ${job.name}`);
-    console.log(`[worker] ▶ ${job.name} (${job.id})`);
-    const result = await processRender(job);
-    console.log(`[worker] ✓ ${job.name} (${job.id})`);
-    return result;
-  },
-  {
-    connection,
-    concurrency: renderConcurrency,
-    lockDuration: 30 * 60 * 1000,
     stalledInterval: 60 * 1000,
     maxStalledCount: 2,
   }
@@ -92,7 +66,7 @@ console.log(
 
 async function shutdown(signal) {
   console.log(`[worker] ${signal} received — closing workers…`);
-  await Promise.allSettled([pipelineWorker.close(), renderWorker.close(), publishingWorker.close()]);
+  await Promise.allSettled([pipelineWorker.close(), publishingWorker.close()]);
   process.exit(0);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
