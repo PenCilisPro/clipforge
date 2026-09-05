@@ -49,6 +49,15 @@ export function probeDurationSeconds(filePath) {
   });
 }
 
+export function probeStreams(filePath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, data) => {
+      if (err) return reject(err);
+      resolve(data?.streams ?? []);
+    });
+  });
+}
+
 /** Extract mono 16 kHz WAV for Speech-to-Text:
  *   ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 audio.wav
  */

@@ -4,7 +4,7 @@ import { Storage } from "@google-cloud/storage";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
-import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds } from "../lib/ffmpeg.js";
+import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, probeStreams } from "../lib/ffmpeg.js";
 import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
@@ -60,6 +60,20 @@ export async function processTranscribe(job) {
     // 1. Pull source video out of storage (reassembles split uploads)
     const localVideo = tmpPath(`source-${projectId}.mp4`);
     await fetchSourceVideo(project, localVideo);
+
+    // Fail early with a readable message when the upload has no audio track
+    // (yt-dlp video-only downloads keep a ".fNNN" format suffix in the name).
+    const hasAudio = (await probeStreams(localVideo).catch(() => [])).some(
+      (s) => s.codec_type === "audio"
+    );
+    if (!hasAudio) {
+      await cleanup(localVideo);
+      throw new Error(
+        "This video has no audio track — it looks like a video-only download " +
+          "(filenames ending in .fNNN, e.g. .f401). Re-download with audio merged " +
+          "(yt-dlp's default format selection does this) and re-upload."
+      );
+    }
 
     // 2. FFmpeg → mono 16 kHz WAV
     const localAudio = tmpPath(`audio-${projectId}.wav`);
