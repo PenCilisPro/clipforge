@@ -96,6 +96,10 @@ export default function ClipEditPage() {
   const [captionFont, setCaptionFont] = useState<NonNullable<Clip["caption_font"]>>("anton");
   const [captionStroke, setCaptionStroke] = useState(false);
   const [captionShadow, setCaptionShadow] = useState(false);
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [strokeSize, setStrokeSize] = useState(4);
+  const [shadowColor, setShadowColor] = useState("#000000");
+  const [shadowSize, setShadowSize] = useState(6);
   const [resetSrt, setResetSrt] = useState(false);
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("0");
@@ -124,6 +128,10 @@ export default function ClipEditPage() {
         setCaptionFont(found.caption_font ?? "anton");
         setCaptionStroke(found.caption_stroke ?? false);
         setCaptionShadow(found.caption_shadow ?? false);
+        setStrokeColor(found.caption_stroke_color ?? "#000000");
+        setStrokeSize(found.caption_stroke_size ?? 4);
+        setShadowColor(found.caption_shadow_color ?? "#000000");
+        setShadowSize(found.caption_shadow_size ?? 6);
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));
 
@@ -378,6 +386,10 @@ export default function ClipEditPage() {
           caption_font: captionFont,
           caption_stroke: captionStroke,
           caption_shadow: captionShadow,
+          caption_stroke_color: strokeColor,
+          caption_stroke_size: strokeSize,
+          caption_shadow_color: shadowColor,
+          caption_shadow_size: shadowSize,
           start_time: start,
           end_time: end,
           ...(resetSrt
@@ -506,6 +518,10 @@ export default function ClipEditPage() {
                   fontKey={captionFont}
                   stroke={captionStroke}
                   shadow={captionShadow}
+                  strokeColor={strokeColor}
+                  strokeSize={strokeSize}
+                  shadowColor={shadowColor}
+                  shadowSize={shadowSize}
                 />
                 <p className="text-xs text-muted-foreground">
                   The accented word follows the voice — exactly what the render
@@ -531,6 +547,10 @@ export default function ClipEditPage() {
                         fontKey={captionFont}
                         stroke={captionStroke}
                         shadow={captionShadow}
+                        strokeColor={strokeColor}
+                        strokeSize={strokeSize}
+                        shadowColor={shadowColor}
+                        shadowSize={shadowSize}
                       />
                       <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
                     </button>
@@ -540,25 +560,63 @@ export default function ClipEditPage() {
                   {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
                 </p>
               </div>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={captionStroke}
                     onChange={(e) => setCaptionStroke(e.target.checked)}
                     className="h-3.5 w-3.5 accent-[var(--primary)]"
                   />
-                  Stroke
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="font-medium">Stroke</span>
+                  <input
+                    type="color"
+                    value={strokeColor}
+                    onChange={(e) => setStrokeColor(e.target.value)}
+                    disabled={!captionStroke}
+                    aria-label="Stroke color"
+                    className="h-6 w-8 cursor-pointer rounded border bg-transparent p-0.5 disabled:opacity-40"
+                  />
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={strokeSize}
+                    onChange={(e) => setStrokeSize(Number(e.target.value))}
+                    disabled={!captionStroke}
+                    aria-label="Stroke size"
+                    className="h-1 flex-1 accent-[var(--primary)] disabled:opacity-40"
+                  />
+                  <span className="w-4 text-right tabular-nums">{strokeSize}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={captionShadow}
                     onChange={(e) => setCaptionShadow(e.target.checked)}
                     className="h-3.5 w-3.5 accent-[var(--primary)]"
                   />
-                  Shadow
-                </label>
+                  <span className="font-medium">Shadow</span>
+                  <input
+                    type="color"
+                    value={shadowColor}
+                    onChange={(e) => setShadowColor(e.target.value)}
+                    disabled={!captionShadow}
+                    aria-label="Shadow color"
+                    className="h-6 w-8 cursor-pointer rounded border bg-transparent p-0.5 disabled:opacity-40"
+                  />
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={shadowSize}
+                    onChange={(e) => setShadowSize(Number(e.target.value))}
+                    disabled={!captionShadow}
+                    aria-label="Shadow size"
+                    className="h-1 flex-1 accent-[var(--primary)] disabled:opacity-40"
+                  />
+                  <span className="w-4 text-right tabular-nums">{shadowSize}</span>
+                </div>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Caption font</Label>

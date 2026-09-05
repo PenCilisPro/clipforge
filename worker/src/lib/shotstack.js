@@ -34,6 +34,10 @@ export function buildEditJson({
   captionStyle = "classic",
   captionStroke = false,
   captionShadow = false,
+  captionStrokeColor = "#000000",
+  captionStrokeSize = 4,
+  captionShadowColor = "#000000",
+  captionShadowSize = 6,
 }) {
   const videoTrack = {
     clips: [
@@ -65,13 +69,15 @@ export function buildEditJson({
   // Stroke/shadow = underlay tracks beneath the captions (the renderer
   // ignores text-shadow/-webkit-text-stroke, so the effects are identical
   // text copies offset per clip). 4 directional copies form the outline,
-  // one translucent shifted copy forms the shadow.
+  // one translucent shifted copy forms the shadow. Offsets scale with the
+  // user-chosen size (1-10); size 4 ≈ the original fixed 0.0045 outline.
   if (captionClips.length > 0 && captionStroke) {
+    const offset = 0.0011 * captionStrokeSize;
     const dirs = [
-      [0.0045, 0],
-      [-0.0045, 0],
-      [0, 0.0045],
-      [0, -0.0045],
+      [offset, 0],
+      [-offset, 0],
+      [0, offset],
+      [0, -offset],
     ];
     for (const [dx, dy] of dirs) {
       const clips = captionUnderlayClips(captionCues, {
@@ -79,18 +85,19 @@ export function buildEditJson({
         style: captionStyle,
         dx,
         dy,
-        color: "#000000",
+        color: captionStrokeColor,
       });
       if (clips.length > 0) tracks.push({ clips });
     }
   }
   if (captionClips.length > 0 && captionShadow) {
+    const offset = 0.001 * captionShadowSize;
     const clips = captionUnderlayClips(captionCues, {
       fontKey: captionFontKey,
       style: captionStyle,
-      dx: 0.006,
-      dy: 0.006,
-      color: "#000000",
+      dx: offset,
+      dy: offset,
+      color: captionShadowColor,
       opacity: 0.55,
     });
     if (clips.length > 0) tracks.push({ clips });

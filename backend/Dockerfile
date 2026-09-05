@@ -7,7 +7,5 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY src ./src
-COPY start.sh ./start.sh
-RUN chmod +x ./start.sh
 EXPOSE 4000 6379
-CMD ["./start.sh"]
+CMD ["sh", "-c", "redis-server --port 6379 --save '' --appendonly no --daemonize yes && exec node src/server.js"]

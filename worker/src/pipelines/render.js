@@ -160,6 +160,10 @@ export async function processRender(job) {
       captionStyle: clip.caption_style,
       captionStroke: clip.caption_stroke === true,
       captionShadow: clip.caption_shadow === true,
+      captionStrokeColor: clip.caption_stroke_color ?? "#000000",
+      captionStrokeSize: Number(clip.caption_stroke_size) || 4,
+      captionShadowColor: clip.caption_shadow_color ?? "#000000",
+      captionShadowSize: Number(clip.caption_shadow_size) || 6,
     });
 
     // Webhook completion is mandatory: without it the render could never be

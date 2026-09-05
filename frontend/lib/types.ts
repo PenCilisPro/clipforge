@@ -49,6 +49,10 @@ export interface Clip {
   caption_style: "classic" | "karaoke" | "bold-pop" | "neon" | "meme";
   caption_stroke: boolean;
   caption_shadow: boolean;
+  caption_stroke_color: string;
+  caption_stroke_size: number;
+  caption_shadow_color: string;
+  caption_shadow_size: number;
   caption_font:
     | "anton"
     | "bebas-neue"

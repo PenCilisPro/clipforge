@@ -28,18 +28,26 @@ const CAPTION_FONTS = [
   "permanent-marker",
 ];
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const effectShape = {
+  caption_stroke: z.boolean().optional(),
+  caption_shadow: z.boolean().optional(),
+  caption_stroke_color: z.string().regex(HEX_COLOR).optional(),
+  caption_stroke_size: z.coerce.number().int().min(1).max(10).optional(),
+  caption_shadow_color: z.string().regex(HEX_COLOR).optional(),
+  caption_shadow_size: z.coerce.number().int().min(1).max(10).optional(),
+};
+
 const regenerateSchema = z.object({
   caption_style: z.enum(CAPTION_STYLES),
   caption_font: z.enum(CAPTION_FONTS).optional(),
-  caption_stroke: z.boolean().optional(),
-  caption_shadow: z.boolean().optional(),
+  ...effectShape,
 });
 
 const editSchema = z.object({
   caption_style: z.enum(CAPTION_STYLES).optional(),
   caption_font: z.enum(CAPTION_FONTS).optional(),
-  caption_stroke: z.boolean().optional(),
-  caption_shadow: z.boolean().optional(),
+  ...effectShape,
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.
   srt_content: z.string().max(20_000).optional(),
@@ -117,6 +125,14 @@ router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
     if (body.caption_font) updates.caption_font = body.caption_font;
     if (body.caption_stroke !== undefined) updates.caption_stroke = body.caption_stroke;
     if (body.caption_shadow !== undefined) updates.caption_shadow = body.caption_shadow;
+    for (const key of [
+      "caption_stroke_color",
+      "caption_stroke_size",
+      "caption_shadow_color",
+      "caption_shadow_size",
+    ]) {
+      if (body[key] !== undefined) updates[key] = body[key];
+    }
     if (timingChanged) {
       updates.start_time = start;
       updates.end_time = end;
@@ -192,6 +208,10 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
         ...(body.caption_font ? { caption_font: body.caption_font } : {}),
         ...(body.caption_stroke !== undefined ? { caption_stroke: body.caption_stroke } : {}),
         ...(body.caption_shadow !== undefined ? { caption_shadow: body.caption_shadow } : {}),
+        ...(body.caption_stroke_color ? { caption_stroke_color: body.caption_stroke_color } : {}),
+        ...(body.caption_stroke_size ? { caption_stroke_size: body.caption_stroke_size } : {}),
+        ...(body.caption_shadow_color ? { caption_shadow_color: body.caption_shadow_color } : {}),
+        ...(body.caption_shadow_size ? { caption_shadow_size: body.caption_shadow_size } : {}),
         status: "queued",
         error_message: null,
         // Clear the previous render so the render stage re-processes the clip
@@ -370,8 +390,22 @@ router.post("/api/clips/:id/music/ai", requireAuth, async (req, res, next) => {
       return res.status(409).json({ error: "No transcript available for this clip yet." });
     }
 
-    const mood = await pickMusicMood({ transcriptText, moods: MUSIC_MOODS });
-    const catalog = await fetchCatalog();
+    // AI mood picking is best-effort: fall back to a random mood instead of
+    // failing the whole request when the model errors or returns junk.
+    let mood;
+    try {
+      mood = await pickMusicMood({ transcriptText, moods: MUSIC_MOODS });
+    } catch (err) {
+      console.warn("AI mood pick failed, using fallback:", err?.message ?? err);
+      mood = MUSIC_MOODS[Math.floor(Math.random() * MUSIC_MOODS.length)];
+    }
+    let catalog;
+    try {
+      catalog = await fetchCatalog();
+    } catch (err) {
+      console.error("Music catalog fetch failed:", err?.message ?? err);
+      return res.status(502).json({ error: "The music catalog is unavailable right now." });
+    }
     const matching = catalog.filter((t) => t.tags.includes(mood));
     const pool = matching.length > 0 ? matching : catalog;
     const track = pool.find((t) => t.duration >= end - start) ?? pool[0];

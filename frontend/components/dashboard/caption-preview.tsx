@@ -22,23 +22,33 @@ function WordSpan({
   accent,
   stroke,
   shadow,
+  strokeColor = "#000000",
+  strokeSize = 4,
+  shadowColor = "#000000",
+  shadowSize = 6,
 }: {
   word: string;
   active: boolean;
   accent: string;
   stroke?: boolean;
   shadow?: boolean;
+  strokeColor?: string;
+  strokeSize?: number;
+  shadowColor?: string;
+  shadowSize?: number;
 }) {
   // The real render fakes stroke/shadow with offset text copies in underlay
   // tracks; the browser preview approximates them with native CSS.
   const effectStyle: React.CSSProperties = {};
   if (stroke) {
-    effectStyle.WebkitTextStrokeWidth = "2px";
-    effectStyle.WebkitTextStrokeColor = "#000";
+    // Preview text is ~11px, so the 1-10 size maps to a sub-pixel-to-2px width.
+    effectStyle.WebkitTextStrokeWidth = `${Math.min(2, strokeSize * 0.4)}px`;
+    effectStyle.WebkitTextStrokeColor = strokeColor;
     effectStyle.paintOrder = "stroke fill";
   }
   if (shadow) {
-    effectStyle.textShadow = "3px 3px 0 rgba(0,0,0,0.55)";
+    const px = Math.max(1, Math.round(shadowSize * 0.5));
+    effectStyle.textShadow = `${px}px ${px}px 0 ${shadowColor}8c`;
   }
   return (
     <span
@@ -56,12 +66,20 @@ function CaptionBody({
   activeIndex,
   stroke,
   shadow,
+  strokeColor,
+  strokeSize,
+  shadowColor,
+  shadowSize,
 }: {
   style: ClipType["caption_style"];
   fontKey: NonNullable<Clip["caption_font"]>;
   activeIndex: number;
   stroke?: boolean;
   shadow?: boolean;
+  strokeColor?: string;
+  strokeSize?: number;
+  shadowColor?: string;
+  shadowSize?: number;
 }) {
   const cssVar = CAPTION_FONTS.find((f) => f.key === fontKey)?.cssVar ?? "";
   const accent = ACCENTS[style] ?? ACCENTS.classic;
@@ -74,6 +92,10 @@ function CaptionBody({
         accent={accent}
         stroke={stroke}
         shadow={shadow}
+        strokeColor={strokeColor}
+        strokeSize={strokeSize}
+        shadowColor={shadowColor}
+        shadowSize={shadowSize}
       />
     ));
 
@@ -133,15 +155,33 @@ export function CaptionPreview({
   fontKey,
   stroke,
   shadow,
+  strokeColor,
+  strokeSize,
+  shadowColor,
+  shadowSize,
 }: {
   style: ClipType["caption_style"];
   fontKey: NonNullable<Clip["caption_font"]>;
   stroke?: boolean;
   shadow?: boolean;
+  strokeColor?: string;
+  strokeSize?: number;
+  shadowColor?: string;
+  shadowSize?: number;
 }) {
   return (
     <div className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-zinc-900 text-center">
-      <CaptionBody style={style} fontKey={fontKey} activeIndex={2} stroke={stroke} shadow={shadow} />
+      <CaptionBody
+        style={style}
+        fontKey={fontKey}
+        activeIndex={2}
+        stroke={stroke}
+        shadow={shadow}
+        strokeColor={strokeColor}
+        strokeSize={strokeSize}
+        shadowColor={shadowColor}
+        shadowSize={shadowSize}
+      />
     </div>
   );
 }
@@ -155,11 +195,19 @@ export function AnimatedCaptionPreview({
   fontKey,
   stroke,
   shadow,
+  strokeColor,
+  strokeSize,
+  shadowColor,
+  shadowSize,
 }: {
   style: ClipType["caption_style"];
   fontKey: NonNullable<Clip["caption_font"]>;
   stroke?: boolean;
   shadow?: boolean;
+  strokeColor?: string;
+  strokeSize?: number;
+  shadowColor?: string;
+  shadowSize?: number;
 }) {
   const [active, setActive] = useState(0);
 
@@ -178,6 +226,10 @@ export function AnimatedCaptionPreview({
         activeIndex={active}
         stroke={stroke}
         shadow={shadow}
+        strokeColor={strokeColor}
+        strokeSize={strokeSize}
+        shadowColor={shadowColor}
+        shadowSize={shadowSize}
       />
     </div>
   );
