@@ -149,11 +149,13 @@ router.get("/api/projects/:id", requireAuth, async (req, res, next) => {
   }
 });
 
-/** Manually set the project's background music (free — no AI, no credits). */
+/** Manually set the project's background music (free — no AI, no credits).
+ *  Two sources: a Jamendo search result (music_url) or the user's own MP3
+ *  already uploaded to the user-uploads bucket (music_storage_path). */
 router.post("/api/projects/:id/music", requireAuth, async (req, res, next) => {
   try {
-    const body = z
-      .object({
+    const trackSchema = z.union([
+      z.object({
         music_url: z
           .string()
           .url()
@@ -167,8 +169,33 @@ router.post("/api/projects/:id/music", requireAuth, async (req, res, next) => {
         music_title: z.string().trim().min(1).max(200),
         music_artist: z.string().trim().max(200).optional(),
         music_mood: z.enum(MUSIC_MOODS),
-      })
-      .parse(req.body);
+      }),
+      z.object({
+        music_storage_path: z
+          .string()
+          .min(1)
+          .refine((p) => p.startsWith(`${req.user.id}/music/`), {
+            message: "Invalid music file",
+          }),
+        music_title: z.string().trim().min(1).max(200),
+        music_artist: z.string().trim().max(200).optional(),
+        music_mood: z.enum(MUSIC_MOODS),
+      }),
+    ]);
+    const body = trackSchema.parse(req.body);
+
+    // Uploaded tracks must actually exist and belong to the caller.
+    if ("music_storage_path" in body) {
+      const { data: obj, error: objError } = await supabaseAdmin.storage
+        .from("user-uploads")
+        .list(body.music_storage_path.split("/").slice(0, -1).join("/"), {
+          search: body.music_storage_path.split("/").pop(),
+          limit: 1,
+        });
+      if (objError || !obj || obj.length === 0) {
+        return res.status(400).json({ error: "Uploaded music file not found" });
+      }
+    }
 
     const { data: project, error: projectError } = await supabaseAdmin
       .from("projects")
@@ -181,13 +208,14 @@ router.post("/api/projects/:id/music", requireAuth, async (req, res, next) => {
     const { data: updated, error } = await supabaseAdmin
       .from("projects")
       .update({
-        music_url: body.music_url,
+        music_url: body.music_url ?? null,
+        music_storage_path: body.music_storage_path ?? null,
         music_title: body.music_title,
         music_artist: body.music_artist ?? null,
         music_mood: body.music_mood,
       })
       .eq("id", project.id)
-      .select("id, music_url, music_title, music_artist, music_mood")
+      .select("id, music_url, music_storage_path, music_title, music_artist, music_mood")
       .single();
     if (error) throw error;
     res.json({ music: updated });

@@ -422,6 +422,7 @@ router.post("/api/clips/:id/music/ai", requireAuth, async (req, res, next) => {
       .from("projects")
       .update({
         music_url: track.audio,
+        music_storage_path: null,
         music_title: track.name,
         music_artist: track.artist,
         music_mood: mood,
@@ -455,6 +456,13 @@ router.get("/api/clips/:id/broll/search", requireAuth, async (req, res, next) =>
   }
 });
 
+const STORAGE_SRC_RE = /^storage:user-uploads\/(.+)$/;
+
+/** Uploaded MP4 src "storage:user-uploads/<uid>/broll/<file>" → its path. */
+function parseStorageSrc(src) {
+  return String(src).match(STORAGE_SRC_RE)?.[1] ?? null;
+}
+
 const brollSegmentSchema = z.object({
   segments: z
     .array(
@@ -463,8 +471,11 @@ const brollSegmentSchema = z.object({
         end: z.coerce.number().finite().min(0).max(43_200),
         src: z
           .string()
-          .url()
+          .min(1)
           .refine((u) => {
+            // A stock-provider URL or the user's own uploaded MP4, referenced
+            // as storage:user-uploads/<uid>/broll/<file>.
+            if (u.startsWith("storage:")) return STORAGE_SRC_RE.test(u);
             try {
               const host = new URL(u).hostname;
               return (
@@ -475,7 +486,7 @@ const brollSegmentSchema = z.object({
             } catch {
               return false;
             }
-          }, { message: "B-roll URLs must come from the stock providers" }),
+          }, { message: "B-roll must come from the stock providers or your own uploads" }),
       })
       .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
       .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
@@ -487,6 +498,24 @@ const brollSegmentSchema = z.object({
 router.post("/api/clips/:id/broll/segments", requireAuth, async (req, res, next) => {
   try {
     const body = brollSegmentSchema.parse(req.body);
+
+    // Uploaded MP4 segments must live under the caller's own folder and exist.
+    for (const seg of body.segments) {
+      const path = parseStorageSrc(seg.src);
+      if (!path) continue;
+      if (!path.startsWith(`${req.user.id}/broll/`)) {
+        return res.status(400).json({ error: "Invalid uploaded B-roll file" });
+      }
+      const folder = path.split("/").slice(0, -1).join("/");
+      const fileName = path.split("/").pop();
+      const { data: obj, error: objError } = await supabaseAdmin.storage
+        .from("user-uploads")
+        .list(folder, { search: fileName, limit: 1 });
+      if (objError || !obj || obj.length === 0) {
+        return res.status(400).json({ error: "Uploaded B-roll file not found" });
+      }
+    }
+
     const { data: clip, error: clipError } = await supabaseAdmin
       .from("clips")
       .select("id")

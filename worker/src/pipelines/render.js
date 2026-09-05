@@ -48,7 +48,7 @@ export async function processRender(job) {
 
     const { data: project, error: projectError } = await supabaseAdmin
       .from("projects")
-      .select("id, user_id, original_video_path, transcript_json, music_url")
+      .select("id, user_id, original_video_path, transcript_json, music_url, music_storage_path")
       .eq("id", projectId)
       .single();
     if (projectError || !project) throw new Error(`Project ${projectId} not found`);
@@ -96,7 +96,12 @@ export async function processRender(job) {
 
     // 3b. B-roll — an editor plan (clips.broll_json) wins:
     //   null = plan fresh with AI at render time, [] = explicitly none.
-    //   Editor plans may hold up to 8 manually-picked segments.
+    //   Editor plans may hold up to 8 manually-picked segments: stock URLs
+    //   (pexels/pixabay) or the user's own MP4 uploads ("storage:..." refs).
+    const resolveBrollSrc = async (src) => {
+      const match = String(src).match(/^storage:user-uploads\/(.+)$/);
+      return match ? await signedSourceUrl("user-uploads", match[1]) : String(src);
+    };
     let brollClips = [];
     if (Array.isArray(clip.broll_json)) {
       brollClips = clip.broll_json
@@ -105,10 +110,16 @@ export async function processRender(job) {
             b &&
             Number.isFinite(Number(b.start)) &&
             Number(b.end) > Number(b.start) &&
-            isTrustedStockUrl(b.src)
+            (isTrustedStockUrl(b.src) || /^storage:user-uploads\//.test(String(b.src)))
         )
-        .slice(0, 8)
-        .map((b) => ({ start: Number(b.start), end: Number(b.end), src: String(b.src) }));
+        .slice(0, 8);
+      brollClips = await Promise.all(
+        brollClips.map(async (b) => ({
+          start: Number(b.start),
+          end: Number(b.end),
+          src: await resolveBrollSrc(b.src),
+        }))
+      );
       job.log(`B-roll: using ${brollClips.length} editor-planned segment(s)`);
     } else if (brollConfigured()) {
       brollClips = await planBroll({
@@ -148,13 +159,19 @@ export async function processRender(job) {
     // 5. Shotstack Edit JSON
     const rawClipUrl = await signedSourceUrl("clips", rawPath);
 
+    // Music: a Jamendo URL is fetched directly; an uploaded MP3 is signed.
+    let musicUrl = project.music_url;
+    if (!musicUrl && project.music_storage_path) {
+      musicUrl = await signedSourceUrl("user-uploads", project.music_storage_path);
+    }
+
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;
     const editJson = buildEditJson({
       rawClipUrl,
       durationSeconds: duration,
       watermarkUrl,
       brollClips,
-      musicTrack: project.music_url ? { url: project.music_url } : null,
+      musicTrack: musicUrl ? { url: musicUrl } : null,
       captionCues,
       captionFontKey: clip.caption_font,
       captionStyle: clip.caption_style,

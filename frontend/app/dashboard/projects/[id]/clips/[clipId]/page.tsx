@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -8,12 +8,15 @@ import {
   Film,
   Loader2,
   Music2,
+  Pause,
+  Play,
   Plus,
   RotateCcw,
   Save,
   Search,
   Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,6 +36,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 const AI_CREDIT_COST = 10;
+
+/** Music (MP3) and B-roll (MP4) uploads may not exceed this size. */
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const BROLL_CATEGORIES: { label: string; q: string }[] = [
   { label: "Nature", q: "nature landscape" },
@@ -113,6 +119,12 @@ export default function ClipEditPage() {
   const [musicQuery, setMusicQuery] = useState("");
   const [musicTracks, setMusicTracks] = useState<MusicTrack[] | null>(null);
   const [musicLoading, setMusicLoading] = useState(false);
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+  const [musicUploading, setMusicUploading] = useState(false);
+  const [brollUploading, setBrollUploading] = useState(false);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const musicFileRef = useRef<HTMLInputElement | null>(null);
+  const brollFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -248,6 +260,36 @@ export default function ClipEditPage() {
     toast.success("B-roll scene added — adjust its timing below");
   }
 
+  async function useUploadedBroll(file: File) {
+    if (!clip || !validateUpload(file, "video")) return;
+    const segments = Array.isArray(clip.broll_json) ? clip.broll_json : [];
+    if (segments.length >= 8) {
+      toast.error("A clip can hold at most 8 B-roll scenes — remove one first");
+      return;
+    }
+    setBrollUploading(true);
+    try {
+      const userId = await getUserId();
+      const path = `${userId}/broll/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+      const { error } = await supabase()
+        .storage.from("user-uploads")
+        .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "video/mp4" });
+      if (error) throw error;
+
+      const duration = Math.max(3, Number(endTime) - Number(startTime));
+      const lastEnd = segments.length > 0 ? segments[segments.length - 1].end : 0;
+      const start = Math.min(Math.max(lastEnd + 1, 0), Math.max(0, duration - 3));
+      const end = Math.min(start + 3, duration);
+      await saveBrollSegments([...segments, { start, end, src: `storage:user-uploads/${path}` }]);
+      toast.success("Uploaded B-roll added — adjust its timing below");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "B-roll upload failed");
+    } finally {
+      setBrollUploading(false);
+      if (brollFileRef.current) brollFileRef.current.value = "";
+    }
+  }
+
   async function removeBrollSegment(index: number) {
     if (!clip || !Array.isArray(clip.broll_json)) return;
     await saveBrollSegments(clip.broll_json.filter((_, i) => i !== index));
@@ -301,8 +343,91 @@ export default function ClipEditPage() {
 
   // ---------- Music ----------
 
+  function stopPreview() {
+    previewAudioRef.current?.pause();
+    setPreviewingId(null);
+  }
+
+  function togglePreview(track: MusicTrack) {
+    if (previewingId === track.id) {
+      stopPreview();
+      return;
+    }
+    let audio = previewAudioRef.current;
+    if (!audio) {
+      audio = new Audio();
+      previewAudioRef.current = audio;
+      audio.addEventListener("ended", () => setPreviewingId(null));
+    }
+    audio.src = track.audio;
+    audio.play().catch(() => toast.error("Couldn't play the preview"));
+    setPreviewingId(track.id);
+  }
+
+  async function getUserId(): Promise<string> {
+    const { data } = await supabase().auth.getSession();
+    if (!data.session) throw new Error("Not signed in");
+    return data.session.user.id;
+  }
+
+  function validateUpload(file: File, kind: "audio" | "video") {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast.error("File is too large — uploads can't exceed 20 MB");
+      return false;
+    }
+    const ok =
+      kind === "audio"
+        ? file.type === "audio/mpeg" || /\.mp3$/i.test(file.name)
+        : file.type === "video/mp4" || /\.mp4$/i.test(file.name);
+    if (!ok) {
+      toast.error(kind === "audio" ? "Only MP3 files are supported" : "Only MP4 files are supported");
+      return false;
+    }
+    return true;
+  }
+
+  async function useUploadedMusic(file: File) {
+    if (!project || !validateUpload(file, "audio")) return;
+    setMusicUploading(true);
+    try {
+      const userId = await getUserId();
+      const path = `${userId}/music/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+      const { error } = await supabase()
+        .storage.from("user-uploads")
+        .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "audio/mpeg" });
+      if (error) throw error;
+
+      const title = file.name.replace(/\.[^.]+$/, "").slice(0, 200);
+      await apiFetch(`/api/projects/${project.id}/music`, {
+        method: "POST",
+        body: {
+          music_storage_path: path,
+          music_title: title,
+          music_mood: musicMood,
+        },
+      });
+      setProject({
+        ...project,
+        music_url: null,
+        music_storage_path: path,
+        music_title: title,
+        music_artist: "Your upload",
+        music_mood: musicMood,
+      });
+      toast.success(`Music: ${title}`, {
+        description: "Your uploaded track applies on the next re-render",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Music upload failed");
+    } finally {
+      setMusicUploading(false);
+      if (musicFileRef.current) musicFileRef.current.value = "";
+    }
+  }
+
   async function useTrack(track: MusicTrack, mood: string) {
     if (!project) return;
+    stopPreview();
     try {
       await apiFetch(`/api/projects/${project.id}/music`, {
         method: "POST",
@@ -316,6 +441,7 @@ export default function ClipEditPage() {
       setProject({
         ...project,
         music_url: track.audio,
+        music_storage_path: null,
         music_title: track.name,
         music_artist: track.artist,
         music_mood: mood,
@@ -817,13 +943,39 @@ export default function ClipEditPage() {
                     placeholder="Search stock footage…"
                     className="h-8 text-xs"
                   />
-                  <Button type="submit" size="icon" variant="outline" className="h-8 w-8 shrink-0" disabled={brollSearching}>
-                    {brollSearching ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Search className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
+                <Button type="submit" size="icon" variant="outline" className="h-8 w-8 shrink-0" disabled={brollSearching}>
+                  {brollSearching ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Search className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-8 w-8 shrink-0"
+                  title="Upload your own MP4 (max 20 MB)"
+                  aria-label="Upload MP4 B-roll"
+                  onClick={() => brollFileRef.current?.click()}
+                  disabled={brollUploading}
+                >
+                  {brollUploading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+                <input
+                  ref={brollFileRef}
+                  type="file"
+                  accept="video/mp4,.mp4"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) useUploadedBroll(file);
+                  }}
+                />
                 </form>
                 <div className="flex flex-wrap gap-1">
                   {BROLL_CATEGORIES.map((cat) => (
@@ -978,6 +1130,21 @@ export default function ClipEditPage() {
                       key={track.id}
                       className="flex items-center gap-2 rounded-md border px-2 py-1.5"
                     >
+                      <button
+                        type="button"
+                        className={cn(
+                          "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors hover:border-primary-500/60 hover:text-primary-500",
+                          previewingId === track.id && "border-primary-500 text-primary-500"
+                        )}
+                        aria-label={previewingId === track.id ? "Pause preview" : "Play preview"}
+                        onClick={() => togglePreview(track)}
+                      >
+                        {previewingId === track.id ? (
+                          <Pause className="h-3 w-3" />
+                        ) : (
+                          <Play className="h-3 w-3" />
+                        )}
+                      </button>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-xs font-medium">{track.name}</p>
                         <p className="truncate text-[10px] text-muted-foreground">
@@ -997,22 +1164,49 @@ export default function ClipEditPage() {
                 </div>
               )}
 
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={generateMusic}
-                disabled={musicBusy}
-              >
-                {musicBusy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5" />
-                )}
-                AI pick · {AI_CREDIT_COST} credits
-              </Button>
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={generateMusic}
+                  disabled={musicBusy}
+                >
+                  {musicBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  AI pick · {AI_CREDIT_COST} credits
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => musicFileRef.current?.click()}
+                  disabled={musicUploading}
+                >
+                  {musicUploading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5" />
+                  )}
+                  Upload MP3
+                </Button>
+                <input
+                  ref={musicFileRef}
+                  type="file"
+                  accept="audio/mpeg,.mp3"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) useUploadedMusic(file);
+                  }}
+                />
+              </div>
               <p className="text-[11px] text-muted-foreground">
-                Music applies to the whole project on the next re-render.
+                Music applies to the whole project on the next re-render. Uploads:
+                MP3 only, max 20 MB.
               </p>
             </CardContent>
           </Card>

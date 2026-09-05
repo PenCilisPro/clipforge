@@ -31,3 +31,6 @@ temp/
 
 # Mimosa scanner local state
 .mimosa/
+
+.vercel
+.env*

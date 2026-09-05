@@ -27,6 +27,7 @@ export interface Project {
   created_at: string;
   clip_length_pref?: string;
   music_url?: string | null;
+  music_storage_path?: string | null;
   music_title?: string | null;
   music_artist?: string | null;
   music_mood?: string | null;
