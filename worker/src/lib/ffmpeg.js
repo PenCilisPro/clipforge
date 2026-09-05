@@ -82,6 +82,9 @@ export async function trimSegment(inputPath, outputPath, startSeconds, durationS
     "-t", String(durationSeconds),
     "-vf", "scale='min(1920,iw)':-2",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    // Cap encoder threads — x264 sizes its thread pool from detected cores,
+    // which balloons RSS on big hosts and OOMs small containers.
+    "-threads", "2",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
     outputPath,
