@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight, Loader2, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, PlusCircle, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScheduleModal } from "@/components/dashboard/schedule-modal";
 import { StatusPill } from "@/components/dashboard/status-pill";
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
@@ -62,6 +63,7 @@ export default function CalendarPage() {
   });
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [rescheduleFor, setRescheduleFor] = useState<ScheduledPost | null>(null);
+  const [quickScheduleDay, setQuickScheduleDay] = useState<Date | null>(null);
   const [newTime, setNewTime] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -269,6 +271,27 @@ export default function CalendarPage() {
                       +{dayPosts.length - 3} more
                     </span>
                   )}
+                  {inMonth && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Schedule a post on ${day.toLocaleDateString()}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setQuickScheduleDay(day);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setQuickScheduleDay(day);
+                        }
+                      }}
+                      className="mt-auto flex w-full items-center justify-center rounded-md border border-dashed py-0.5 text-muted-foreground transition-colors hover:border-primary-500/60 hover:text-primary-500"
+                    >
+                      <PlusCircle className="h-3.5 w-3.5" />
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -370,6 +393,13 @@ export default function CalendarPage() {
           </CardContent>
         </Card>
       )}
+
+      <ScheduleModal
+        clip={null}
+        presetDate={quickScheduleDay}
+        open={quickScheduleDay !== null}
+        onOpenChange={(open) => !open && setQuickScheduleDay(null)}
+      />
 
       <Dialog
         open={rescheduleFor !== null}

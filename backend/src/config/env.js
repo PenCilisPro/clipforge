@@ -38,6 +38,14 @@ export const env = {
 
   // Jamendo music catalog (background music picker)
   jamendoClientId: process.env.JAMENDO_CLIENT_ID,
+
+  // AI enhancements from the clip editor (b-roll + music picking), mirroring
+  // the worker's integrations.
+  zaiApiKey: process.env.ZAI_API_KEY,
+  zaiBaseUrl: process.env.ZAI_API_BASE_URL ?? "https://api.z.ai/api/paas/v4",
+  zaiModel: process.env.ZAI_MODEL ?? "glm-4.5-flash",
+  pexelsApiKey: process.env.PEXELS_API_KEY,
+  pixabayApiKey: process.env.PIXABAY_API_KEY,
 };
 
 export function assertCriticalEnv() {

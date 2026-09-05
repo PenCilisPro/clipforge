@@ -3,6 +3,8 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
+import { aiConfigured, brollConfigured, planBrollSegments, pickMusicMood } from "../lib/aiEnhance.js";
+import { fetchCatalog } from "./music.js";
 
 const router = Router();
 
@@ -212,6 +214,176 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "Invalid caption_style" });
     }
+    next(err);
+  }
+});
+
+const MUSIC_MOODS = [
+  "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
+];
+
+/** Every AI generation from the clip editor costs this many credits. */
+const AI_CREDIT_COST = 10;
+
+/** Load a user-owned clip together with its project transcript. */
+async function loadClipWithProject(clipId, userId) {
+  const { data: clip, error } = await supabaseAdmin
+    .from("clips")
+    .select("id, project_id, start_time, end_time, projects(id, transcript_json)")
+    .eq("id", clipId)
+    .eq("user_id", userId)
+    .single();
+  return { clip, error };
+}
+
+/** Gate + atomic spend. Returns the new balance or null when unaffordable. */
+async function spendCredits(userId, res) {
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select("credits_remaining")
+    .eq("id", userId)
+    .single();
+  if (!profile || Number(profile.credits_remaining) < AI_CREDIT_COST) {
+    res.status(402).json({
+      error: `Not enough credits — an AI generation costs ${AI_CREDIT_COST} credits.`,
+    });
+    return null;
+  }
+  const { data: left, error } = await supabaseAdmin.rpc("deduct_credits", {
+    p_user_id: userId,
+    p_amount: AI_CREDIT_COST,
+  });
+  if (error) throw error;
+  if (left == null) {
+    res.status(402).json({
+      error: `Not enough credits — an AI generation costs ${AI_CREDIT_COST} credits.`,
+    });
+    return null;
+  }
+  return left;
+}
+
+/**
+ * Generate B-roll for a clip with AI (LLM plans the segments, Pexels/Pixabay
+ * resolve them to stock clips). The plan is stored on the clip and used
+ * verbatim at render time. Costs AI_CREDIT_COST credits on success.
+ */
+router.post("/api/clips/:id/broll/ai", requireAuth, async (req, res, next) => {
+  try {
+    if (!aiConfigured() || !brollConfigured()) {
+      return res.status(501).json({ error: "AI b-roll is not configured yet." });
+    }
+    const { clip, error: clipError } = await loadClipWithProject(req.params.id, req.user.id);
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const start = Number(clip.start_time);
+    const end = Number(clip.end_time);
+    const segments = await planBrollSegments({
+      transcriptJson: clip.projects?.transcript_json,
+      clipStart: start,
+      clipEnd: end,
+      durationSeconds: end - start,
+    });
+
+    const left = await spendCredits(req.user.id, res);
+    if (left == null) return;
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("clips")
+      .update({ broll_json: segments })
+      .eq("id", clip.id)
+      .select("id, broll_json")
+      .single();
+    if (updateError) throw updateError;
+
+    res.json({ broll: segments, credits_remaining: left });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Set the clip's B-roll mode without spending credits: "auto" (plan fresh
+ * with AI at render time) or "none" (explicitly no B-roll).
+ */
+router.post("/api/clips/:id/broll", requireAuth, async (req, res, next) => {
+  try {
+    const body = z.object({ mode: z.enum(["auto", "none"]) }).parse(req.body);
+    const { data: clip, error: clipError } = await supabaseAdmin
+      .from("clips")
+      .select("id")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("clips")
+      .update({ broll_json: body.mode === "auto" ? null : [] })
+      .eq("id", clip.id)
+      .select("id, broll_json")
+      .single();
+    if (updateError) throw updateError;
+    res.json({ broll_json: updated.broll_json });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid b-roll mode" });
+    }
+    next(err);
+  }
+});
+
+/**
+ * Pick background music for the clip's project with AI (LLM chooses the
+ * mood from the transcript, Jamendo supplies the catalog). Updates the
+ * project's music — applies on the next re-render. Costs credits.
+ */
+router.post("/api/clips/:id/music/ai", requireAuth, async (req, res, next) => {
+  try {
+    if (!aiConfigured()) {
+      return res.status(501).json({ error: "AI music picking is not configured yet." });
+    }
+    const { clip, error: clipError } = await loadClipWithProject(req.params.id, req.user.id);
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const start = Number(clip.start_time);
+    const end = Number(clip.end_time);
+    const words = (clip.projects?.transcript_json?.words ?? []).filter(
+      (w) => Number(w.end) > start && Number(w.start) < end
+    );
+    const transcriptText = words.map((w) => w.word).join(" ");
+    if (!transcriptText.trim()) {
+      return res.status(409).json({ error: "No transcript available for this clip yet." });
+    }
+
+    const mood = await pickMusicMood({ transcriptText, moods: MUSIC_MOODS });
+    const catalog = await fetchCatalog();
+    const matching = catalog.filter((t) => t.tags.includes(mood));
+    const pool = matching.length > 0 ? matching : catalog;
+    const track = pool.find((t) => t.duration >= end - start) ?? pool[0];
+    if (!track) {
+      return res.status(502).json({ error: "The music catalog is unavailable right now." });
+    }
+
+    const left = await spendCredits(req.user.id, res);
+    if (left == null) return;
+
+    const { error: updateError } = await supabaseAdmin
+      .from("projects")
+      .update({
+        music_url: track.audio,
+        music_title: track.name,
+        music_artist: track.artist,
+        music_mood: mood,
+      })
+      .eq("id", clip.project_id);
+    if (updateError) throw updateError;
+
+    res.json({
+      track: { name: track.name, artist: track.artist, audio: track.audio, mood },
+      credits_remaining: left,
+    });
+  } catch (err) {
     next(err);
   }
 });

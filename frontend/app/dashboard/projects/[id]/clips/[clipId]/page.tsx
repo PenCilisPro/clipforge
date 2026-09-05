@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, Film, Loader2, Music2, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { CAPTION_FONTS, CAPTION_STYLES, type Clip } from "@/lib/types";
+import { CAPTION_FONTS, CAPTION_STYLES, type Clip, type Project } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
-import { CaptionPreview } from "@/components/dashboard/caption-preview";
+import { AnimatedCaptionPreview, CaptionPreview } from "@/components/dashboard/caption-preview";
 import { Reveal } from "@/components/dashboard/reveal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+const AI_CREDIT_COST = 10;
+
+function formatTime(seconds: number) {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
+
 export default function ClipEditPage() {
   const router = useRouter();
   const params = useParams<{ id: string; clipId: string }>();
@@ -28,8 +35,12 @@ export default function ClipEditPage() {
 
   const [loading, setLoading] = useState(true);
   const [clip, setClip] = useState<Clip | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isFinalRender, setIsFinalRender] = useState(true);
+  const [credits, setCredits] = useState<number | null>(null);
+  const [brollBusy, setBrollBusy] = useState(false);
+  const [musicBusy, setMusicBusy] = useState(false);
 
   const [cues, setCues] = useState<SrtCue[]>([]);
   const [captionStyle, setCaptionStyle] = useState<Clip["caption_style"]>("karaoke");
@@ -42,12 +53,13 @@ export default function ClipEditPage() {
   useEffect(() => {
     (async () => {
       try {
-        const { project } = await apiFetch<{
-          project: { clips: Clip[] };
+        const { project: loaded, } = await apiFetch<{
+          project: { clips: Clip[] } & Project;
         }>(`/api/projects/${params.id}`);
-        const found = (project.clips as Clip[]).find((c) => c.id === params.clipId);
+        const found = (loaded.clips as Clip[]).find((c) => c.id === params.clipId);
         if (!found) throw new Error("Clip not found");
         setClip(found);
+        setProject(loaded);
         setCaptionStyle(found.caption_style ?? "karaoke");
         setCaptionFont(found.caption_font ?? "anton");
         setStartTime(String(Number(found.start_time)));
@@ -91,6 +103,88 @@ export default function ClipEditPage() {
       { id: crypto.randomUUID(), start, end: start + 1.5, text: "New caption" },
     ]);
     setResetSrt(false);
+  }
+
+  async function loadCredits() {
+    try {
+      const me = await apiFetch<{ profile: { credits_remaining: number } }>("/api/me");
+      setCredits(me.profile.credits_remaining);
+    } catch {
+      // non-critical — the endpoints re-check server-side
+    }
+  }
+
+  useEffect(() => {
+    loadCredits();
+  }, []);
+
+  async function generateBroll() {
+    if (!clip || brollBusy) return;
+    setBrollBusy(true);
+    try {
+      const res = await apiFetch<{ broll: Clip["broll_json"]; credits_remaining: number }>(
+        `/api/clips/${clip.id}/broll/ai`,
+        { method: "POST" }
+      );
+      setClip({ ...clip, broll_json: res.broll });
+      setCredits(res.credits_remaining);
+      const count = res.broll?.length ?? 0;
+      toast.success(
+        count > 0 ? `B-roll ready — ${count} scene${count === 1 ? "" : "s"} added` : "No B-roll moments found for this clip",
+        { description: `10 credits used · applies when you re-render · ${res.credits_remaining} left` }
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "B-roll generation failed");
+    } finally {
+      setBrollBusy(false);
+    }
+  }
+
+  async function setBrollMode(mode: "auto" | "none") {
+    if (!clip || brollBusy) return;
+    setBrollBusy(true);
+    try {
+      const res = await apiFetch<{ broll_json: Clip["broll_json"] }>(`/api/clips/${clip.id}/broll`, {
+        method: "POST",
+        body: { mode },
+      });
+      setClip({ ...clip, broll_json: res.broll_json });
+      toast.success(mode === "auto" ? "B-roll set to automatic" : "B-roll turned off for this clip");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update B-roll");
+    } finally {
+      setBrollBusy(false);
+    }
+  }
+
+  async function generateMusic() {
+    if (!clip || musicBusy) return;
+    setMusicBusy(true);
+    try {
+      const res = await apiFetch<{
+        track: { name: string; artist: string; mood: string };
+        credits_remaining: number;
+      }>(`/api/clips/${clip.id}/music/ai`, { method: "POST" });
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              music_url: null,
+              music_title: res.track.name,
+              music_artist: res.track.artist,
+              music_mood: res.track.mood,
+            }
+          : prev
+      );
+      setCredits(res.credits_remaining);
+      toast.success(`Music: ${res.track.name}`, {
+        description: `${res.track.artist} · ${res.track.mood} · 10 credits used · applies on re-render`,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Music generation failed");
+    } finally {
+      setMusicBusy(false);
+    }
   }
 
   async function save() {
@@ -234,6 +328,14 @@ export default function ClipEditPage() {
                 </div>
               </div>
               <div className="space-y-1.5">
+                <Label className="text-xs">Live caption preview</Label>
+                <AnimatedCaptionPreview style={captionStyle} fontKey={captionFont} />
+                <p className="text-xs text-muted-foreground">
+                  The accented word follows the voice — exactly what the render
+                  produces.
+                </p>
+              </div>
+              <div className="space-y-1.5">
                 <Label className="text-xs">Caption template</Label>
                 <div className="grid grid-cols-2 gap-2">
                   {CAPTION_STYLES.map((style) => (
@@ -285,6 +387,104 @@ export default function ClipEditPage() {
                 />
                 Reset captions to AI-generated (discards edits below)
               </label>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="space-y-4 p-4">
+              <div className="flex items-center justify-between">
+                <p className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Sparkles className="h-4 w-4 text-primary-500" /> AI enhancements
+                </p>
+                {credits != null && (
+                  <span className="text-xs text-muted-foreground">
+                    {credits} credits left
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="flex items-center gap-1.5 text-xs font-medium">
+                  <Film className="h-3.5 w-3.5 text-muted-foreground" /> B-roll
+                </p>
+                {clip.broll_json == null ? (
+                  <p className="text-xs text-muted-foreground">
+                    B-roll cutaways are planned automatically during each render.
+                  </p>
+                ) : clip.broll_json.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    B-roll is off for this clip.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {clip.broll_json.map((seg, i) => (
+                      <Badge key={i} variant="secondary" className="text-[10px]">
+                        {formatTime(seg.start)}–{formatTime(seg.end)}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={generateBroll}
+                    disabled={brollBusy}
+                  >
+                    {brollBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    {clip.broll_json == null || clip.broll_json.length === 0 ? "Generate" : "Regenerate"} · {AI_CREDIT_COST} credits
+                  </Button>
+                  {clip.broll_json != null && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-muted-foreground"
+                      onClick={() => setBrollMode("auto")}
+                      disabled={brollBusy}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" /> Auto
+                    </Button>
+                  )}
+                  {clip.broll_json != null && clip.broll_json.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-muted-foreground"
+                      onClick={() => setBrollMode("none")}
+                      disabled={brollBusy}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Off
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t pt-3">
+                <p className="flex items-center gap-1.5 text-xs font-medium">
+                  <Music2 className="h-3.5 w-3.5 text-muted-foreground" /> Background music
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {project?.music_title
+                    ? `${project.music_title} · ${project.music_artist ?? ""}${
+                        project.music_mood ? ` (${project.music_mood})` : ""
+                      }`
+                    : "No background music yet."}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={generateMusic}
+                  disabled={musicBusy}
+                >
+                  {musicBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {project?.music_title ? "Pick another" : "Pick with AI"} · {AI_CREDIT_COST} credits
+                </Button>
+                <p className="text-[11px] text-muted-foreground">
+                  Music applies to the whole project on the next re-render.
+                </p>
+              </div>
             </CardContent>
           </Card>
         </div>

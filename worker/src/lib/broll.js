@@ -28,6 +28,18 @@ export function brollConfigured() {
   return Boolean(env.pexelsApiKey || env.pixabayApiKey);
 }
 
+const STOCK_HOST_RE = /(^|\.)(pexels\.com|pixabay\.com)$/i;
+
+/** B-roll URLs may only come from the stock providers we searched. */
+export function isTrustedStockUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl));
+    return parsed.protocol === "https:" && STOCK_HOST_RE.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Plan B-roll segments for a clip window and resolve each to a stock video URL.
  * Returns clip-local [{ start, end, src }] — never throws (B-roll is an

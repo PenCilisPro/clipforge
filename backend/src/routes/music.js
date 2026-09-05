@@ -29,6 +29,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 async function fetchCatalog() {
   const cached = cache.get("catalog");
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.tracks;
+  if (!env.jamendoClientId) throw new Error("Jamendo client id is not configured");
 
   const upstream = await fetch(
     `${JAMENDO_CATALOG_URL}&client_id=${encodeURIComponent(env.jamendoClientId)}`,
@@ -57,6 +58,8 @@ async function fetchCatalog() {
   cache.set("catalog", { tracks, ts: Date.now() });
   return tracks;
 }
+
+export { fetchCatalog };
 
 /**
  * Curated background-music search (Jamendo). Auth-gated so the client id

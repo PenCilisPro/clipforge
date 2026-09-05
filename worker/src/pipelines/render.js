@@ -8,9 +8,9 @@ import {
   generateThumbnail,
   downloadToFile,
 } from "../lib/ffmpeg.js";
-import { buildCaptionsForClip, cuesToSrt, parseSrt } from "../lib/srt.js";
+import { buildCaptionsForClip, cuesToSrt, parseSrt, attachWordTimings } from "../lib/srt.js";
 import { buildEditJson, submitRender } from "../lib/shotstack.js";
-import { planBroll, brollConfigured } from "../lib/broll.js";
+import { planBroll, brollConfigured, isTrustedStockUrl } from "../lib/broll.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -86,16 +86,30 @@ export async function processRender(job) {
     // 3. Captions — manual edits from the clip editor win; otherwise
     // regenerate from word-level timestamps, shifted to clip-local time.
     // Rendered as HTML text clips (font + style aware), placed as the
-    // topmost track inside buildEditJson.
+    // topmost track inside buildEditJson. Word timings ride along so the
+    // currently-spoken word can be accented (word-sync highlight).
     const captionCues = clip.srt_override
-      ? parseSrt(clip.srt_override)
+      ? attachWordTimings(parseSrt(clip.srt_override), project.transcript_json, start, start + duration)
       : buildCaptionsForClip(project.transcript_json, start, start + duration).cues;
     // Stored alongside the clip (clip editor reads it back).
     const srtText = clip.srt_override ?? cuesToSrt(captionCues);
 
-    // 3b. AI B-roll planning (best-effort — skips itself when unconfigured)
+    // 3b. B-roll — an editor-generated plan (clips.broll_json) wins:
+    //   null = plan fresh with AI at render time, [] = explicitly none.
     let brollClips = [];
-    if (brollConfigured()) {
+    if (Array.isArray(clip.broll_json)) {
+      brollClips = clip.broll_json
+        .filter(
+          (b) =>
+            b &&
+            Number.isFinite(Number(b.start)) &&
+            Number(b.end) > Number(b.start) &&
+            isTrustedStockUrl(b.src)
+        )
+        .slice(0, 6)
+        .map((b) => ({ start: Number(b.start), end: Number(b.end), src: String(b.src) }));
+      job.log(`B-roll: using ${brollClips.length} editor-planned segment(s)`);
+    } else if (brollConfigured()) {
       brollClips = await planBroll({
         transcriptJson: project.transcript_json,
         clipStart: start,

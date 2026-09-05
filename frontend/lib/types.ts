@@ -59,6 +59,8 @@ export interface Clip {
     | "righteous"
     | "permanent-marker";
   srt_override: string | null;
+  /** null = AI-planned at render, [] = explicitly off, otherwise [{start,end,src}] */
+  broll_json: { start: number; end: number; src: string }[] | null;
   raw_clip_path: string | null;
   srt_path: string | null;
   storage_path: string | null;

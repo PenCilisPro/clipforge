@@ -14,8 +14,13 @@
  * SUPPORTED — font-family/size/weight, color, solid + rgba backgrounds,
  * padding, border-radius, display:inline-block, text-align, text-transform,
  * letter-spacing. IGNORED — text-shadow, -webkit-text-stroke, border,
- * filter/drop-shadow. Template styles therefore use colored text + rounded
- * boxes only; shadows/strokes in the existing styles are inert leftovers.
+ * filter/drop-shadow, <style> blocks / keyframe animations. Template styles
+ * therefore use colored text + rounded boxes only.
+ *
+ * Word-sync highlighting: cues that carry word timings ({words:[{text,start,
+ * end}]}) render as one clip per word (≤ MAX_WORD_CLIPS per video — 250+
+ * clips validated on stage), swapping which word wears the accent color.
+ * Cues without timings fall back to one static clip per cue.
  */
 
 // All URLs verified reachable; families match the fonts' internal name tables.
@@ -84,42 +89,93 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+// Each template = container markup + the accent applied to the currently-
+// spoken word. `render(family, inner)` keeps the static (no-accent) output
+// byte-identical to the original templates.
 const STYLES = {
-  classic: (text, family) =>
-    `<div style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:700;color:#ffffff;text-align:center;text-shadow:0 3px 10px rgba(0,0,0,.9),0 0 4px rgba(0,0,0,.8);padding:0 12px;">${text}</div>`,
-  karaoke: (text, family) =>
-    `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#ffffff;background:rgba(255,93,28,.92);padding:14px 30px;border-radius:16px;text-align:center;">${text}</div>`,
-  "bold-pop": (text, family) =>
-    `<div style="font-family:'${family}';font-size:68px;line-height:1.1;font-weight:900;color:#ffffff;background:rgba(0,0,0,.78);padding:16px 30px;border-radius:14px;text-transform:uppercase;letter-spacing:1px;text-align:center;">${text}</div>`,
+  classic: {
+    accent: "color:#ff5d1c",
+    render: (family, inner) =>
+      `<div style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:700;color:#ffffff;text-align:center;text-shadow:0 3px 10px rgba(0,0,0,.9),0 0 4px rgba(0,0,0,.8);padding:0 12px;">${inner}</div>`,
+  },
+  karaoke: {
+    accent: "background:#ffffff;color:#ff5d1c;padding:0 8px;border-radius:8px;",
+    render: (family, inner) =>
+      `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#ffffff;background:rgba(255,93,28,.92);padding:14px 30px;border-radius:16px;text-align:center;">${inner}</div>`,
+  },
+  "bold-pop": {
+    accent: "color:#ff5d1c",
+    render: (family, inner) =>
+      `<div style="font-family:'${family}';font-size:68px;line-height:1.1;font-weight:900;color:#ffffff;background:rgba(0,0,0,.78);padding:16px 30px;border-radius:14px;text-transform:uppercase;letter-spacing:1px;text-align:center;">${inner}</div>`,
+  },
   // Neon sign: light-cyan text on a dark translucent slab (glow effects are
   // ignored by the stage renderer — see capability notes above).
-  neon: (text, family) =>
-    `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#67e8f9;background:rgba(3,28,41,.85);padding:14px 30px;border-radius:16px;letter-spacing:2px;text-align:center;">${text}</div>`,
+  neon: {
+    accent: "color:#ffffff",
+    render: (family, inner) =>
+      `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#67e8f9;background:rgba(3,28,41,.85);padding:14px 30px;border-radius:16px;letter-spacing:2px;text-align:center;">${inner}</div>`,
+  },
   // Meme look without text-stroke (unsupported): heavy uppercase white on a
   // solid black chip that hugs the text.
-  meme: (text, family) =>
-    `<div style="text-align:center;"><span style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:900;color:#ffffff;background:#000000;padding:12px 28px;border-radius:10px;display:inline-block;text-transform:uppercase;">${text}</span></div>`,
+  meme: {
+    accent: "color:#ff5d1c",
+    render: (family, inner) =>
+      `<div style="text-align:center;"><span style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:900;color:#ffffff;background:#000000;padding:12px 28px;border-radius:10px;display:inline-block;text-transform:uppercase;">${inner}</span></div>`,
+  },
 };
 
+const MAX_WORD_CLIPS = 400;
+
 /**
- * Build the caption track clips (HTML text per cue, clip-local times).
- * Returns an empty array when there are no cues — no captions, no track.
+ * Build the caption track clips. Cues with word timings render as one clip
+ * per word with the spoken word accented (word-sync highlight); cues without
+ * timings render as one static clip each. Returns [] when there are no cues.
  */
 export function captionTrackClips(cues, { fontKey, style }) {
   if (!Array.isArray(cues) || cues.length === 0) return [];
   const family = captionFont(fontKey).family;
-  const render = STYLES[style] ?? STYLES.classic;
+  const def = STYLES[style] ?? STYLES.classic;
 
-  return cues.slice(0, 400).map((cue) => ({
-    asset: {
-      type: "html",
-      html: render(escapeHtml(cue.text), family),
-      width: 980,
-      height: 260,
-    },
-    start: Math.max(0, Number(cue.start) || 0),
-    length: Math.max(0.3, Number(cue.end) - Number(cue.start)),
+  const cueHtml = (cue, activeIndex) => {
+    const words =
+      Array.isArray(cue.words) && cue.words.length > 0
+        ? cue.words.map((w) => escapeHtml(w.text))
+        : escapeHtml(cue.text).split(/\s+/);
+    return def.render(
+      family,
+      words
+        .map((word, i) => (i === activeIndex ? `<span style="${def.accent}">${word}</span>` : word))
+        .join(" ")
+    );
+  };
+
+  const clip = (html, start, length) => ({
+    asset: { type: "html", html, width: 980, height: 260 },
+    start: Math.max(0, start),
+    length: Math.max(0.08, length),
     position: "bottom",
     offset: { y: 0.08 },
-  }));
+  });
+
+  const usableCues = cues.slice(0, 400);
+  const wordClipTotal = usableCues.reduce(
+    (sum, cue) => sum + (Array.isArray(cue.words) ? cue.words.length : 0),
+    0
+  );
+  const wordSync = wordClipTotal > 0 && wordClipTotal <= MAX_WORD_CLIPS;
+
+  const clips = [];
+  for (const cue of usableCues) {
+    if (!wordSync || !Array.isArray(cue.words) || cue.words.length === 0) {
+      clips.push(clip(cueHtml(cue, -1), Number(cue.start) || 0, Number(cue.end) - Number(cue.start)));
+      continue;
+    }
+    for (let i = 0; i < cue.words.length; i++) {
+      const w = cue.words[i];
+      const start = Math.max(0, Number(w.start) || 0);
+      const end = Math.max(start + 0.08, Math.min(Number(w.end) || start + 0.2, Number(cue.end)));
+      clips.push(clip(cueHtml(cue, i), start, end - start));
+    }
+  }
+  return clips;
 }

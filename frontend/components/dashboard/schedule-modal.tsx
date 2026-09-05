@@ -24,11 +24,15 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/api";
+import { createClient } from "@/lib/supabase/client";
 import { PLATFORM_LABELS, type Clip, type Platform } from "@/lib/types";
 
-function defaultLocalTime(): string {
-  const target = new Date(Date.now() + 60 * 60 * 1000);
-  target.setMinutes(0, 0, 0);
+/** Default to the preset day (calendar "+") or the next full hour. */
+function defaultLocalTime(presetDate?: Date | null): string {
+  const target = presetDate
+    ? new Date(presetDate.getFullYear(), presetDate.getMonth(), presetDate.getDate(), 12, 0, 0, 0)
+    : new Date(Date.now() + 60 * 60 * 1000);
+  if (!presetDate) target.setMinutes(0, 0, 0);
   const pad = (n: number) => n.toString().padStart(2, "0");
   return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(
     target.getDate()
@@ -37,32 +41,58 @@ function defaultLocalTime(): string {
 
 export function ScheduleModal({
   clip,
+  presetDate,
   open,
   onOpenChange,
 }: {
-  clip: Clip;
+  /** Omit when opened without a specific clip — a picker is shown instead. */
+  clip?: Clip | null;
+  /** Pre-fills the date (calendar quick-schedule). */
+  presetDate?: Date | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const [clipOptions, setClipOptions] = useState<Clip[] | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string>("");
   const [platform, setPlatform] = useState<Platform>("youtube");
-  const [scheduledAt, setScheduledAt] = useState(defaultLocalTime);
+  const [scheduledAt, setScheduledAt] = useState(defaultLocalTime(presetDate));
   const [caption, setCaption] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const activeClip = clip ?? clipOptions?.find((c) => c.id === selectedClipId) ?? null;
+
   useEffect(() => {
-    if (open) {
-      const hashtags = clip.hashtags.map((t) => (t.startsWith("#") ? t : `#${t}`));
-      setCaption(
-        [clip.hook_text ?? clip.title ?? "", hashtags.join(" ")]
-          .filter(Boolean)
-          .join("\n\n")
-      );
-      setScheduledAt(defaultLocalTime());
+    if (!open) return;
+    setScheduledAt(defaultLocalTime(presetDate));
+    setSelectedClipId("");
+    if (!clip) {
+      // Calendar flow — offer every ready clip of the user.
+      const supabase = createClient();
+      supabase
+        .from("clips")
+        .select("id, title, hook_text, hashtags, status, project_id, caption_style, caption_font")
+        .eq("status", "ready")
+        .order("created_at", { ascending: false })
+        .limit(50)
+        .then(({ data }) => setClipOptions((data as Clip[]) ?? []));
     }
-  }, [open, clip]);
+  }, [open, clip, presetDate]);
+
+  // Prefill the caption whenever the active clip changes.
+  useEffect(() => {
+    if (!open || !activeClip) return;
+    const hashtags = activeClip.hashtags.map((t) => (t.startsWith("#") ? t : `#${t}`));
+    setCaption(
+      [activeClip.hook_text ?? activeClip.title ?? "", hashtags.join(" ")]
+        .filter(Boolean)
+        .join("\n\n")
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, activeClip?.id]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (!activeClip) return;
     setLoading(true);
     try {
       // Interpret the datetime-local value in the user's local timezone,
@@ -71,7 +101,7 @@ export function ScheduleModal({
       await apiFetch("/api/schedule", {
         method: "POST",
         body: {
-          clip_id: clip.id,
+          clip_id: activeClip.id,
           platform,
           caption_text: caption,
           scheduled_time_utc: utcIso,
@@ -96,12 +126,41 @@ export function ScheduleModal({
         <DialogHeader>
           <DialogTitle>Schedule post</DialogTitle>
           <DialogDescription>
-            “{clip.title ?? "Clip"}” will be published automatically at the
-            time you pick.
+            {activeClip
+              ? `“${activeClip.title ?? "Clip"}” will be published automatically at the time you pick.`
+              : "Choose a finished clip and when it should go out."}
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {!clip && (
+            <div className="space-y-1.5">
+              <Label>Video clip</Label>
+              {clipOptions == null ? (
+                <div className="flex h-9 items-center justify-center rounded-md border text-xs text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading clips…
+                </div>
+              ) : clipOptions.length === 0 ? (
+                <div className="flex h-9 items-center justify-center rounded-md border text-xs text-muted-foreground">
+                  No finished clips yet — render one first
+                </div>
+              ) : (
+                <Select value={selectedClipId} onValueChange={setSelectedClipId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Pick a clip" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clipOptions.map((option) => (
+                      <SelectItem key={option.id} value={option.id}>
+                        {option.title ?? "Untitled clip"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <Label>Platform</Label>
@@ -149,7 +208,7 @@ export function ScheduleModal({
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || !activeClip}>
               {loading && <Loader2 className="animate-spin" />}
               Schedule
             </Button>

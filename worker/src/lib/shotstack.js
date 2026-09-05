@@ -19,6 +19,9 @@ const BASE_URL = () =>
  * Each fonts[] entry must be exactly { src } — family/size/etc. are rejected
  * as unknown_property (stage API, probe-verified); the family name in the
  * caption HTML resolves via the .ttf's internal name.
+ *
+ * Cues carrying word timings render one clip per spoken word with the active
+ * word accented (word-sync highlight); 250+ clips validated on stage.
  */
 export function buildEditJson({
   rawClipUrl,
