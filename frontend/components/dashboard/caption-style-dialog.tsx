@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
+import { CaptionPreview } from "@/components/dashboard/caption-preview";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,74 +15,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/api";
-import { CAPTION_FONTS, CAPTION_STYLES, type Clip, type Clip as ClipType } from "@/lib/types";
+import { CAPTION_FONTS, CAPTION_STYLES, type Clip } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-/** Word-highlight caption previews — the highlighted word uses brand orange. */
-const PREVIEW_WORDS = ["THIS", "IS", "HOW", "IT", "WORKS"];
-
-function CaptionPreview({
-  style,
-  fontKey,
-}: {
-  style: ClipType["caption_style"];
-  fontKey: NonNullable<Clip["caption_font"]>;
-}) {
-  const cssVar = CAPTION_FONTS.find((f) => f.key === fontKey)?.cssVar ?? "";
-  return (
-    <div className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-zinc-900">
-      <div className="flex flex-wrap justify-center gap-0.5 px-2" style={{ fontFamily: cssVar }}>
-        {PREVIEW_WORDS.map((word, i) => {
-          const isHighlight = i === 2;
-          if (style === "bold-pop") {
-            return (
-              <span
-                key={word}
-                className={cn(
-                  "rounded-sm px-1 py-0.5 text-[10px] font-extrabold uppercase",
-                  isHighlight
-                    ? "bg-primary-500 text-white"
-                    : "bg-white text-zinc-900"
-                )}
-              >
-                {word}
-              </span>
-            );
-          }
-          if (style === "classic") {
-            return (
-              <span
-                key={word}
-                className={cn(
-                  "text-[10px] font-extrabold",
-                  isHighlight ? "text-primary-400" : "text-white"
-                )}
-                style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}
-              >
-                {word}
-              </span>
-            );
-          }
-          // karaoke
-          return (
-            <span
-              key={word}
-              className={cn(
-                "rounded px-1 py-0.5 text-[10px] font-extrabold",
-                isHighlight
-                  ? "bg-primary-500 text-white"
-                  : "text-white"
-              )}
-              style={!isHighlight ? { textShadow: "0 1px 2px rgba(0,0,0,0.8)" } : undefined}
-            >
-              {word}
-            </span>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export function CaptionStyleDialog({
   clip,
@@ -129,12 +64,12 @@ export function CaptionStyleDialog({
         <DialogHeader>
           <DialogTitle>Regenerate captions</DialogTitle>
           <DialogDescription>
-            Pick a caption style and font — ClipForge re-renders the clip in
+            Pick a caption template and font — ClipForge re-renders the clip in
             the cloud.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {CAPTION_STYLES.map((style) => (
             <button
               key={style.key}
@@ -157,7 +92,7 @@ export function CaptionStyleDialog({
 
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">Caption font</p>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {CAPTION_FONTS.map((option) => (
               <button
                 key={option.key}

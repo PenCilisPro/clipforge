@@ -6,15 +6,27 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-const CAPTION_FONTS = ["anton", "bebas-neue", "archivo-black", "poppins"];
+const CAPTION_STYLES = ["classic", "karaoke", "bold-pop", "neon", "meme"];
+const CAPTION_FONTS = [
+  "anton",
+  "bebas-neue",
+  "archivo-black",
+  "poppins",
+  "bangers",
+  "luckiest-guy",
+  "titan-one",
+  "russo-one",
+  "righteous",
+  "permanent-marker",
+];
 
 const regenerateSchema = z.object({
-  caption_style: z.enum(["classic", "karaoke", "bold-pop"]),
+  caption_style: z.enum(CAPTION_STYLES),
   caption_font: z.enum(CAPTION_FONTS).optional(),
 });
 
 const editSchema = z.object({
-  caption_style: z.enum(["classic", "karaoke", "bold-pop"]).optional(),
+  caption_style: z.enum(CAPTION_STYLES).optional(),
   caption_font: z.enum(CAPTION_FONTS).optional(),
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.

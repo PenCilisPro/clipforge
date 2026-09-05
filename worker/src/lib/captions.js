@@ -7,11 +7,18 @@
  * video track or a full-screen clip covers them.
  *
  * We therefore render each caption cue as an HTML text clip with a real font
- * file (timeline.fonts expects .ttf/.otf URLs — CSS like fonts.cdnfonts.com
- * is ignored and falls back to a generic sans).
+ * file (timeline.fonts expects { src: <ttf url> } entries — CSS like
+ * fonts.cdnfonts.com is ignored and falls back to a generic sans).
+ *
+ * Stage renderer CSS subset (probe-verified by inspecting rendered frames):
+ * SUPPORTED — font-family/size/weight, color, solid + rgba backgrounds,
+ * padding, border-radius, display:inline-block, text-align, text-transform,
+ * letter-spacing. IGNORED — text-shadow, -webkit-text-stroke, border,
+ * filter/drop-shadow. Template styles therefore use colored text + rounded
+ * boxes only; shadows/strokes in the existing styles are inert leftovers.
  */
 
-// All URLs verified reachable; families match the font metadata.
+// All URLs verified reachable; families match the fonts' internal name tables.
 export const CAPTION_FONTS = {
   anton: {
     family: "Anton",
@@ -32,6 +39,36 @@ export const CAPTION_FONTS = {
     family: "Poppins",
     src: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/poppins/Poppins-Bold.ttf",
     label: "Poppins Bold",
+  },
+  bangers: {
+    family: "Bangers",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/bangers/Bangers-Regular.ttf",
+    label: "Bangers",
+  },
+  "luckiest-guy": {
+    family: "Luckiest Guy",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/luckiestguy/LuckiestGuy-Regular.ttf",
+    label: "Luckiest Guy",
+  },
+  "titan-one": {
+    family: "Titan One",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/titanone/TitanOne-Regular.ttf",
+    label: "Titan One",
+  },
+  "russo-one": {
+    family: "Russo One",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/russoone/RussoOne-Regular.ttf",
+    label: "Russo One",
+  },
+  righteous: {
+    family: "Righteous",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/righteous/Righteous-Regular.ttf",
+    label: "Righteous",
+  },
+  "permanent-marker": {
+    family: "Permanent Marker",
+    src: "https://cdn.jsdelivr.net/gh/google/fonts@main/apache/permanentmarker/PermanentMarker-Regular.ttf",
+    label: "Permanent Marker",
   },
 };
 
@@ -54,6 +91,14 @@ const STYLES = {
     `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#ffffff;background:rgba(255,93,28,.92);padding:14px 30px;border-radius:16px;text-align:center;">${text}</div>`,
   "bold-pop": (text, family) =>
     `<div style="font-family:'${family}';font-size:68px;line-height:1.1;font-weight:900;color:#ffffff;background:rgba(0,0,0,.78);padding:16px 30px;border-radius:14px;text-transform:uppercase;letter-spacing:1px;text-align:center;">${text}</div>`,
+  // Neon sign: light-cyan text on a dark translucent slab (glow effects are
+  // ignored by the stage renderer — see capability notes above).
+  neon: (text, family) =>
+    `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#67e8f9;background:rgba(3,28,41,.85);padding:14px 30px;border-radius:16px;letter-spacing:2px;text-align:center;">${text}</div>`,
+  // Meme look without text-stroke (unsupported): heavy uppercase white on a
+  // solid black chip that hugs the text.
+  meme: (text, family) =>
+    `<div style="text-align:center;"><span style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:900;color:#ffffff;background:#000000;padding:12px 28px;border-radius:10px;display:inline-block;text-transform:uppercase;">${text}</span></div>`,
 };
 
 /**

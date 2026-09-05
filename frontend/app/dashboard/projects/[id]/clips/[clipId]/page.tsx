@@ -10,21 +10,16 @@ import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import { CAPTION_FONTS, CAPTION_STYLES, type Clip } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
+import { CaptionPreview } from "@/components/dashboard/caption-preview";
 import { Reveal } from "@/components/dashboard/reveal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
 export default function ClipEditPage() {
   const router = useRouter();
@@ -239,43 +234,47 @@ export default function ClipEditPage() {
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Caption style</Label>
-                <Select
-                  value={captionStyle}
-                  onValueChange={(v) => setCaptionStyle(v as Clip["caption_style"])}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CAPTION_STYLES.map((style) => (
-                      <SelectItem key={style.key} value={style.key}>
-                        {style.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label className="text-xs">Caption template</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {CAPTION_STYLES.map((style) => (
+                    <button
+                      key={style.key}
+                      type="button"
+                      onClick={() => setCaptionStyle(style.key)}
+                      className={cn(
+                        "rounded-lg border p-1.5 text-left transition-all hover:border-primary-500/60",
+                        captionStyle === style.key &&
+                          "border-primary-500 ring-2 ring-primary-500/30"
+                      )}
+                    >
+                      <CaptionPreview style={style.key} fontKey={captionFont} />
+                      <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
+                    </button>
+                  ))}
+                </div>
                 <p className="text-xs text-muted-foreground">
                   {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
                 </p>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Caption font</Label>
-                <Select
-                  value={captionFont}
-                  onValueChange={(v) => setCaptionFont(v as NonNullable<Clip["caption_font"]>)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CAPTION_FONTS.map((font) => (
-                      <SelectItem key={font.key} value={font.key}>
-                        <span style={{ fontFamily: font.cssVar }}>{font.label}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="grid grid-cols-2 gap-2">
+                  {CAPTION_FONTS.map((font) => (
+                    <button
+                      key={font.key}
+                      type="button"
+                      onClick={() => setCaptionFont(font.key)}
+                      style={{ fontFamily: font.cssVar }}
+                      className={cn(
+                        "truncate rounded-lg border px-2 py-2 text-sm transition-all hover:border-primary-500/60",
+                        captionFont === font.key &&
+                          "border-primary-500 ring-2 ring-primary-500/30"
+                      )}
+                    >
+                      {font.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input

@@ -46,8 +46,18 @@ export interface Clip {
   virality_score: number | null;
   reason: string | null;
   hashtags: string[];
-  caption_style: "classic" | "karaoke" | "bold-pop";
-  caption_font: "anton" | "bebas-neue" | "archivo-black" | "poppins";
+  caption_style: "classic" | "karaoke" | "bold-pop" | "neon" | "meme";
+  caption_font:
+    | "anton"
+    | "bebas-neue"
+    | "archivo-black"
+    | "poppins"
+    | "bangers"
+    | "luckiest-guy"
+    | "titan-one"
+    | "russo-one"
+    | "righteous"
+    | "permanent-marker";
   srt_override: string | null;
   raw_clip_path: string | null;
   srt_path: string | null;
@@ -120,9 +130,11 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
 };
 
 export const CAPTION_STYLES: { key: Clip["caption_style"]; label: string; description: string }[] = [
-  { key: "classic", label: "Classic", description: "Clean white captions with outline" },
+  { key: "classic", label: "Classic", description: "Clean white captions" },
   { key: "karaoke", label: "Karaoke", description: "White captions on brand-orange box" },
   { key: "bold-pop", label: "Bold Pop", description: "Big uppercase captions on dark boxes" },
+  { key: "neon", label: "Neon", description: "Glowing cyan captions on dark slabs" },
+  { key: "meme", label: "Meme", description: "Heavy uppercase captions on black chips" },
 ];
 
 export const CAPTION_FONTS: {
@@ -134,4 +146,10 @@ export const CAPTION_FONTS: {
   { key: "bebas-neue", label: "Bebas Neue", cssVar: "var(--font-caption-bebas)" },
   { key: "archivo-black", label: "Archivo Black", cssVar: "var(--font-caption-archivo)" },
   { key: "poppins", label: "Poppins Bold", cssVar: "var(--font-caption-poppins)" },
+  { key: "bangers", label: "Bangers", cssVar: "var(--font-caption-bangers)" },
+  { key: "luckiest-guy", label: "Luckiest Guy", cssVar: "var(--font-caption-luckiest)" },
+  { key: "titan-one", label: "Titan One", cssVar: "var(--font-caption-titan)" },
+  { key: "russo-one", label: "Russo One", cssVar: "var(--font-caption-russo)" },
+  { key: "righteous", label: "Righteous", cssVar: "var(--font-caption-righteous)" },
+  { key: "permanent-marker", label: "Permanent Marker", cssVar: "var(--font-caption-marker)" },
 ];

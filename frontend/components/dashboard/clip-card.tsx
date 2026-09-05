@@ -21,7 +21,7 @@ import { StatusPill } from "@/components/dashboard/status-pill";
 import { createClient } from "@/lib/supabase/client";
 import { apiFetch } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
-import type { Clip } from "@/lib/types";
+import { CAPTION_STYLES, type Clip } from "@/lib/types";
 
 export function ClipCard({ clip }: { clip: Clip }) {
   const supabase = useMemo(() => createClient(), []);
@@ -156,7 +156,10 @@ export function ClipCard({ clip }: { clip: Clip }) {
 
         <div className="flex flex-wrap gap-1.5">
           <Badge variant="secondary">{formatDuration(duration)}</Badge>
-          <Badge variant="secondary">{clip.caption_style}</Badge>
+          <Badge variant="secondary">
+            {CAPTION_STYLES.find((s) => s.key === clip.caption_style)?.label ??
+              clip.caption_style}
+          </Badge>
           {clip.hashtags.slice(0, 2).map((tag) => (
             <Badge key={tag} variant="outline" className="text-primary-600 dark:text-primary-400">
               {tag}
