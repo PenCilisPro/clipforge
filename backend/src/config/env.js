@@ -44,6 +44,15 @@ export const env = {
   zaiApiKey: process.env.ZAI_API_KEY,
   zaiBaseUrl: process.env.ZAI_API_BASE_URL ?? "https://api.z.ai/api/paas/v4",
   zaiModel: process.env.ZAI_MODEL ?? "glm-4.5-flash",
+
+  // Chat assistant — separate credentials/model so the chat bot can run on
+  // its own GLM key without touching the pipeline AI (falls back to ZAI_*).
+  chatApiKey: process.env.CHAT_API_KEY ?? process.env.ZAI_API_KEY,
+  chatBaseUrl:
+    process.env.CHAT_API_BASE_URL ??
+    process.env.ZAI_API_BASE_URL ??
+    "https://api.z.ai/api/paas/v4",
+  chatModel: process.env.CHAT_MODEL ?? "glm-4.5-flash",
   pexelsApiKey: process.env.PEXELS_API_KEY,
   pixabayApiKey: process.env.PIXABAY_API_KEY,
 };

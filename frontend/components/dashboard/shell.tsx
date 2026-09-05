@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
+  Bot,
   CalendarClock,
   Clapperboard,
   Link2,
@@ -23,9 +25,10 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { label: "Projects", href: "/dashboard", icon: Clapperboard },
+  { label: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
+  { label: "AI Assistant", href: "/dashboard/assistant", icon: Bot },
   { label: "Connections", href: "/dashboard/connections", icon: Link2 },
-  { label: "Free upgrade", href: "/dashboard/upgrade", icon: Sparkles },
   { label: "Feedback", href: "/dashboard/feedback", icon: MessageSquare },
 ];
 
