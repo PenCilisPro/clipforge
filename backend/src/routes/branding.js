@@ -11,9 +11,19 @@ const router = Router();
 router.get("/api/branding", async (req, res) => {
   const { data } = await supabaseAdmin.from("app_branding").select("key, value");
   const map = new Map((data ?? []).map((row) => [row.key, row.value]));
+
+  let faq = null;
+  try {
+    const parsed = JSON.parse(map.get("faq_items") ?? "null");
+    if (Array.isArray(parsed)) faq = parsed;
+  } catch {
+    // Fall back to the built-in defaults on the landing page.
+  }
+
   res.json({
     logoUrl: map.get("logo_url") ?? null,
     faviconUrl: map.get("favicon_url") ?? null,
+    faq,
   });
 });
 

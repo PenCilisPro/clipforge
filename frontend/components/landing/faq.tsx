@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { FadeIn } from "@/components/landing/fade-in";
+import { API_URL } from "@/lib/api";
 import {
   Accordion,
   AccordionContent,
@@ -10,7 +12,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 
-const FAQS = [
+const DEFAULT_FAQS = [
   {
     q: "What video formats and sources can I upload?",
     a: "Paste a YouTube link (or most social/webinar links) and ClipForge fetches the video for you, or upload files directly — MP4, MOV, WEBM and MKV up to 4K are supported on every plan.",
@@ -45,7 +47,21 @@ const FAQS = [
   },
 ];
 
+const BRANDING_FAQ_URL = API_URL + "/api/branding";
+
 export function Faq() {
+  const [faqs, setFaqs] = useState(DEFAULT_FAQS);
+
+  // Admin-managed FAQs (edited on the admin page) override the defaults.
+  useEffect(() => {
+    fetch(BRANDING_FAQ_URL)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.faq) && data.faq.length > 0) setFaqs(data.faq);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <section id="faq" className="bg-muted/40 py-20 md:py-28">
       <div className="container max-w-3xl">
@@ -60,7 +76,7 @@ export function Faq() {
 
         <FadeIn delay={0.1} className="mt-10">
           <Accordion type="single" collapsible className="rounded-xl border bg-card px-6">
-            {FAQS.map((faq, i) => (
+            {faqs.map((faq, i) => (
               <AccordionItem key={i} value={`item-${i}`}>
                 <AccordionTrigger className="text-left text-[15px] font-medium">
                   {faq.q}

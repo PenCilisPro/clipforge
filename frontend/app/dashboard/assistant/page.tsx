@@ -191,7 +191,7 @@ export default function AssistantPage() {
                     send(input);
                   }
                 }}
-                placeholder="Ask the assistant…"
+                placeholder="Ask the assistant… (1 credit per message)"
                 className="max-h-32 min-h-9 flex-1 resize-none"
                 disabled={sending}
               />
@@ -199,6 +199,9 @@ export default function AssistantPage() {
                 <Send />
               </Button>
             </div>
+            <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+              Each message uses 1 credit. Failed sends are not charged.
+            </p>
           </form>
         </CardContent>
       </Card>

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
+import { supabaseAdmin } from "../lib/supabase.js";
 import { env } from "../config/env.js";
 
 const router = Router();
@@ -28,6 +29,19 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
     }
 
     const { messages } = chatSchema.parse(req.body);
+
+    // Each assistant reply costs 1 credit — block users who are out.
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("credits_remaining")
+      .eq("id", req.user.id)
+      .single();
+    if (!profile || Number(profile.credits_remaining) <= 0) {
+      return res.status(402).json({
+        error:
+          "Out of credits — each AI chat message costs 1 credit. Upgrade your plan to keep chatting.",
+      });
+    }
 
     const aiRes = await fetch(`${env.chatBaseUrl}/chat/completions`, {
       method: "POST",
@@ -59,7 +73,14 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
       return res.status(502).json({ error: "The assistant returned an empty reply." });
     }
 
-    res.json({ reply });
+    // Charge only on a successful reply — failed calls are free.
+    const { error: chargeError } = await supabaseAdmin
+      .from("profiles")
+      .update({ credits_remaining: Number(profile.credits_remaining) - 1 })
+      .eq("id", req.user.id);
+    if (chargeError) console.error("[chat] credit charge failed:", chargeError.message);
+
+    res.json({ reply, credits_remaining: Number(profile.credits_remaining) - 1 });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid chat body" });

@@ -147,6 +147,8 @@ export default function AdminPage() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [brandingBusy, setBrandingBusy] = useState(false);
   const brandingInputRef = useRef<HTMLInputElement>(null);
+  const [faqDrafts, setFaqDrafts] = useState<{ q: string; a: string }[]>([]);
+  const [savingFaq, setSavingFaq] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,11 +158,14 @@ export default function AdminPage() {
         apiFetch<{ feedback: AdminFeedback[] }>("/api/admin/feedback"),
         apiFetch<{ requests: UpgradeRequest[] }>("/api/admin/upgrade-requests"),
         apiFetch<{ plans: PlanRow[] }>("/api/pricing"),
-        apiFetch<{ logoUrl: string | null }>("/api/branding"),
+        apiFetch<{ logoUrl: string | null; faq: { q: string; a: string }[] | null }>(
+          "/api/branding"
+        ),
       ]);
       setUsers(usersData.users);
       setFeedback(feedbackData.feedback);
       setUpgradeRequests(upgradeData.requests);
+      setFaqDrafts(brandingData.faq ?? []);
       setCreditDrafts(
         Object.fromEntries(
           usersData.users.map((u) => [u.id, String(Number(u.credits_remaining))])
@@ -310,6 +315,27 @@ export default function AdminPage() {
     }
   }
 
+  async function saveFaq() {
+    if (savingFaq) return;
+    const cleaned = faqDrafts
+      .map((item) => ({ q: item.q.trim(), a: item.a.trim() }))
+      .filter((item) => item.q && item.a);
+    if (cleaned.length === 0) {
+      toast.error("Add at least one complete question and answer");
+      return;
+    }
+    setSavingFaq(true);
+    try {
+      await apiFetch("/api/admin/faq", { method: "PUT", body: { faqs: cleaned } });
+      setFaqDrafts(cleaned);
+      toast.success("FAQ saved — live on the landing page");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save FAQ");
+    } finally {
+      setSavingFaq(false);
+    }
+  }
+
   async function uploadBranding(file: File) {
     const okType = /\.(ico|png|svg)$/i.test(file.name);
     if (!okType) {
@@ -411,6 +437,7 @@ export default function AdminPage() {
             )}
           </TabsTrigger>
           <TabsTrigger value="pricing">Pricing</TabsTrigger>
+          <TabsTrigger value="faq">FAQ</TabsTrigger>
           <TabsTrigger value="branding">Branding</TabsTrigger>
         </TabsList>
 
@@ -971,6 +998,77 @@ export default function AdminPage() {
                   </Card>
                 );
               })}
+            </div>
+          )}
+        </TabsContent>
+        <TabsContent value="faq" className="mt-4">
+          {loading ? (
+            <Skeleton className="h-48 w-full" />
+          ) : (
+            <div className="max-w-3xl space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Questions and answers shown in the landing page FAQ section.
+                Saving replaces the whole list.
+              </p>
+              {faqDrafts.map((item, i) => (
+                <Card key={i}>
+                  <CardContent className="space-y-2 p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">#{i + 1}</span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="ml-auto h-7 w-7 text-destructive"
+                        aria-label="Remove question"
+                        onClick={() =>
+                          setFaqDrafts((d) => d.filter((_, index) => index !== i))
+                        }
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Input
+                      placeholder="Question"
+                      value={item.q}
+                      onChange={(e) =>
+                        setFaqDrafts((d) =>
+                          d.map((row, index) =>
+                            index === i ? { ...row, q: e.target.value } : row
+                          )
+                        )
+                      }
+                    />
+                    <Textarea
+                      rows={3}
+                      placeholder="Answer"
+                      value={item.a}
+                      onChange={(e) =>
+                        setFaqDrafts((d) =>
+                          d.map((row, index) =>
+                            index === i ? { ...row, a: e.target.value } : row
+                          )
+                        )
+                      }
+                    />
+                  </CardContent>
+                </Card>
+              ))}
+              <div className="flex items-center justify-between">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFaqDrafts((d) => [...d, { q: "", a: "" }])}
+                >
+                  + Add question
+                </Button>
+                <Button size="sm" disabled={savingFaq} onClick={saveFaq}>
+                  {savingFaq ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    "Save FAQ"
+                  )}
+                </Button>
+              </div>
             </div>
           )}
         </TabsContent>

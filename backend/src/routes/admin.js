@@ -213,6 +213,39 @@ router.patch("/api/admin/upgrade-requests/:id/review", async (req, res, next) =>
   }
 });
 
+const faqItemSchema = z.object({
+  q: z.string().trim().min(1, "Question cannot be empty").max(300),
+  a: z.string().trim().min(1, "Answer cannot be empty").max(3000),
+});
+
+const faqSchema = z.object({
+  faqs: z.array(faqItemSchema).min(1, "Add at least one question").max(30),
+});
+
+/**
+ * Admin: replace the landing-page FAQ. Stored as JSON in app_branding
+ * (key "faq_items") and served publicly via GET /api/branding.
+ */
+router.put("/api/admin/faq", async (req, res, next) => {
+  try {
+    const { faqs } = faqSchema.parse(req.body);
+
+    const { error } = await supabaseAdmin.from("app_branding").upsert({
+      key: "faq_items",
+      value: JSON.stringify(faqs),
+      updated_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid FAQ" });
+    }
+    next(err);
+  }
+});
+
 const BRANDING_EXTENSIONS = {
   ico: "image/x-icon",
   png: "image/png",
