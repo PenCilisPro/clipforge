@@ -82,6 +82,12 @@ let trimChain = Promise.resolve();
 export function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
   const run = () =>
     runFfmpeg([
+      // Input-side thread cap limits the AV1/H264 decoder's per-thread frame
+      // buffers — dav1d defaults to one thread per core at 4K and each holds
+      // big reference frames. Measured on a 4K AV1 source: threads=2 → 890MB,
+      // threads=1 → 410MB, so single-threaded decode is the big lever.
+      "-threads", "1",
+      "-filter_threads", "1",
       "-ss", String(startSeconds),
       "-i", inputPath,
       "-t", String(durationSeconds),
