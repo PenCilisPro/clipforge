@@ -1,16 +1,17 @@
 import { createWriteStream } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { env } from "./env.js";
+import { runFfmpeg } from "./ffmpeg.js";
 
 /**
- * RapidAPI video downloader.
+ * RapidAPI video downloader (yt-api.p.rapidapi.com).
  *
- * RapidAPI hosts many "YouTube/social downloader" APIs with different shapes.
- * This client calls the configured endpoint (RAPIDAPI_DOWNLOADER_URL) with the
- * source URL and tries common response shapes to locate a direct MP4 link:
- *   { link } | { url } | { videoUrl } | { formats: [...] } | { data: { ... } }
+ * The old `updated_metadata` endpoint was removed by the provider, so the
+ * client now uses `GET /dl?id=<videoId>`, which returns the raw player
+ * formats. Progressive (video+audio) mp4s are usually capped at 360p, so the
+ * best video-only mp4 + best m4a audio track are downloaded separately and
+ * muxed with ffmpeg stream copy.
  */
 export async function fetchDirectVideoUrl(sourceUrl) {
   if (!env.rapidapiKey || !env.rapidapiDownloaderUrl) {
@@ -19,61 +20,159 @@ export async function fetchDirectVideoUrl(sourceUrl) {
     );
   }
 
-  const headers = {
-    "X-RapidAPI-Key": env.rapidapiKey,
-    "Content-Type": "application/json",
-  };
-  if (env.rapidapiHost) headers["X-RapidAPI-Host"] = env.rapidapiHost;
+  const videoId = extractYouTubeId(sourceUrl);
+  if (!videoId) {
+    throw new Error(
+      `Unsupported source URL — only YouTube links are supported: ${sourceUrl}`
+    );
+  }
 
-  const res = await fetch(env.rapidapiDownloaderUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ url: sourceUrl }),
+  const dlUrl = new URL(env.rapidapiDownloaderUrl);
+  dlUrl.searchParams.set("id", videoId);
+  const res = await fetch(dlUrl, {
+    headers: {
+      "X-RapidAPI-Key": env.rapidapiKey,
+      "X-RapidAPI-Host": env.rapidapiHost ?? dlUrl.hostname,
+    },
   });
   if (!res.ok) {
     throw new Error(`RapidAPI downloader failed (${res.status}): ${await res.text()}`);
   }
   const data = await res.json();
-
-  const directUrl = findVideoUrl(data) ?? findVideoUrl({ nested: data });
-  if (!directUrl) {
-    throw new Error("RapidAPI response did not contain a downloadable video URL");
+  if (data?.status === "fail") {
+    throw new Error(`RapidAPI downloader failed: ${data.error ?? "unknown error"}`);
   }
-  return directUrl;
+
+  const progressive = pickBestProgressive(data?.formats);
+  if (progressive) return progressive.url;
+
+  const best = pickBestVideoAudio(data?.adaptiveFormats);
+  if (best?.videoUrl) return best.videoUrl;
+
+  throw new Error("RapidAPI response did not contain a downloadable video URL");
 }
 
-function findVideoUrl(node, depth = 0) {
-  if (depth > 4 || node == null) return null;
+/**
+ * Download the source video to filePath. Prefers video+audio muxing for
+ * quality (1080p), falls back to a progressive file when the API only
+ * exposes one stream.
+ */
+export async function downloadSourceVideo(sourceUrl, filePath) {
+  if (!env.rapidapiKey || !env.rapidapiDownloaderUrl) {
+    throw new Error(
+      "RAPIDAPI_KEY / RAPIDAPI_DOWNLOADER_URL are not configured — cannot download from URL"
+    );
+  }
 
-  if (typeof node === "string") {
-    return /^https?:\/\/.+\.(mp4|mov|webm)(\?.*)?$/i.test(node) ? node : null;
+  const videoId = extractYouTubeId(sourceUrl);
+  if (!videoId) {
+    throw new Error(
+      `Unsupported source URL — only YouTube links are supported: ${sourceUrl}`
+    );
   }
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      const found = findVideoUrl(item, depth + 1);
-      if (found) return found;
-    }
-    return null;
+
+  const dlUrl = new URL(env.rapidapiDownloaderUrl);
+  dlUrl.searchParams.set("id", videoId);
+  const res = await fetch(dlUrl, {
+    headers: {
+      "X-RapidAPI-Key": env.rapidapiKey,
+      "X-RapidAPI-Host": env.rapidapiHost ?? dlUrl.hostname,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`RapidAPI downloader failed (${res.status}): ${await res.text()}`);
   }
-  if (typeof node === "object") {
-    // Prefer the highest-quality mp4 in `formats` arrays when present.
-    if (Array.isArray(node.formats)) {
-      const candidates = node.formats
-        .filter((f) => typeof f?.url === "string" && /\.mp4|video\/mp4/.test(`${f.url} ${f.mimeType ?? ""}`))
-        .sort((a, b) => (Number(b.height ?? 0) || 0) - (Number(a.height ?? 0) || 0));
-      if (candidates[0]?.url) return candidates[0].url;
-    }
-    for (const key of ["link", "url", "videoUrl", "video_url", "download_url", "file"]) {
-      if (typeof node[key] === "string" && node[key].startsWith("http")) {
-        return node[key];
-      }
-    }
-    for (const value of Object.values(node)) {
-      const found = findVideoUrl(value, depth + 1);
-      if (found) return found;
-    }
+  const data = await res.json();
+  if (data?.status === "fail") {
+    throw new Error(`RapidAPI downloader failed: ${data.error ?? "unknown error"}`);
   }
+
+  const progressive = pickBestProgressive(data?.formats);
+  if (progressive) {
+    await downloadToFile(progressive.url, filePath);
+    return filePath;
+  }
+
+  const best = pickBestVideoAudio(data?.adaptiveFormats);
+  if (!best?.videoUrl) {
+    throw new Error("RapidAPI response did not contain a downloadable video URL");
+  }
+
+  if (!best.audioUrl) {
+    await downloadToFile(best.videoUrl, filePath);
+    return filePath;
+  }
+
+  const { tmpPath, cleanup } = await import("./ffmpeg.js");
+  const videoPart = tmpPath(`source-${videoId}-video.m4s`);
+  const audioPart = tmpPath(`source-${videoId}-audio.m4a`);
+  try {
+    await downloadToFile(best.videoUrl, videoPart);
+    await downloadToFile(best.audioUrl, audioPart);
+    await runFfmpeg([
+      "-i", videoPart,
+      "-i", audioPart,
+      "-c", "copy",
+      "-movflags", "+faststart",
+      filePath,
+    ]);
+  } finally {
+    await cleanup(videoPart, audioPart);
+  }
+  return filePath;
+}
+
+function extractYouTubeId(sourceUrl) {
+  const patterns = [
+    /[?&]v=([\w-]{11})/,
+    /youtu\.be\/([\w-]{11})/,
+    /youtube\.com\/(?:shorts|live|embed|v)\/([\w-]{11})/,
+  ];
+  for (const pattern of patterns) {
+    const match = String(sourceUrl).match(pattern);
+    if (match) return match[1];
+  }
+  if (/^[\w-]{11}$/.test(String(sourceUrl))) return sourceUrl;
   return null;
+}
+
+/** Highest-bitrate progressive mp4 (video + audio in one file). */
+function pickBestProgressive(formats) {
+  const candidates = (formats ?? []).filter(
+    (f) => typeof f?.url === "string" && /^video\/mp4/.test(f?.mimeType ?? "")
+  );
+  candidates.sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0));
+  return candidates[0] ?? null;
+}
+
+/** Best video-only mp4 + best m4a audio out of the adaptive formats. */
+function pickBestVideoAudio(adaptiveFormats) {
+  const streams = adaptiveFormats ?? [];
+  const videos = streams.filter(
+    (f) =>
+      typeof f?.url === "string" &&
+      /^video\/mp4/.test(f?.mimeType ?? "") &&
+      // Prefer H.264 — safest for ffmpeg stream copy into an mp4 container.
+      /avc1/.test(f?.mimeType ?? "")
+  );
+  if (videos.length === 0) {
+    // Accept any codec rather than failing outright.
+    videos.push(
+      ...streams.filter(
+        (f) => typeof f?.url === "string" && /^video\/mp4/.test(f?.mimeType ?? "")
+      )
+    );
+  }
+  videos.sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0));
+
+  const audios = streams
+    .filter(
+      (f) => typeof f?.url === "string" && /^audio\/mp4/.test(f?.mimeType ?? "")
+    )
+    .sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0));
+
+  if (videos.length === 0) return null;
+  return { videoUrl: videos[0].url, audioUrl: audios[0]?.url ?? null };
 }
 
 /** Stream a direct URL to a local file. */

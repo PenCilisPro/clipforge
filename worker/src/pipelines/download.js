@@ -2,7 +2,7 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, probeDurationSeconds } from "../lib/ffmpeg.js";
-import { fetchDirectVideoUrl, downloadToFile } from "../lib/rapidapi.js";
+import { downloadSourceVideo } from "../lib/rapidapi.js";
 
 /**
  * Stage 1 — download (URL projects).
@@ -28,8 +28,7 @@ export async function processDownload(job) {
 
     await ensureTmpDir();
     const localFile = tmpPath(`source-${projectId}.mp4`);
-    const directUrl = await fetchDirectVideoUrl(project.source_url);
-    await downloadToFile(directUrl, localFile);
+    await downloadSourceVideo(project.source_url, localFile);
 
     const durationSeconds = await probeDurationSeconds(localFile).catch(() => null);
 
