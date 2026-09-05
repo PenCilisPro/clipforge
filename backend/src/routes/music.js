@@ -33,7 +33,10 @@ async function fetchCatalog() {
 
   const upstream = await fetch(
     `${JAMENDO_CATALOG_URL}&client_id=${encodeURIComponent(env.jamendoClientId)}`,
-    { signal: AbortSignal.timeout(10_000) }
+    // Jamendo is routinely slow (20s+ observed for the full catalog with
+    // musicinfo), so this needs a generous timeout — the 24h cache keeps the
+    // cost to one slow request per instance per day.
+    { signal: AbortSignal.timeout(45_000) }
   );
   if (!upstream.ok) {
     throw new Error(`Jamendo request failed (${upstream.status})`);
