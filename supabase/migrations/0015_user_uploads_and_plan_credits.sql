@@ -24,6 +24,23 @@ insert into storage.buckets (id, name, public)
 values ('user-uploads', 'user-uploads', false)
 on conflict (id) do nothing;
 
+-- Enforce the 20 MB music/b-roll upload cap at the storage layer too.
+update storage.buckets
+set file_size_limit = 20971520
+where id = 'user-uploads';
+
+-- Source videos can be 1 GB+ — lift the default 50 MB per-file limit.
+-- (5 GB cap; the project-wide quota still applies on top of this.)
+update storage.buckets
+set file_size_limit = 5368709120
+where id = 'source-videos';
+
+-- Source videos can be 1 GB+ — lift the default 50 MB per-file limit.
+-- (5 GB cap; the project-wide quota still applies on top of this.)
+update storage.buckets
+set file_size_limit = 5368709120
+where id = 'source-videos';
+
 drop policy if exists "user_uploads_user_insert" on storage.objects;
 create policy "user_uploads_user_insert" on storage.objects
   for insert to authenticated
