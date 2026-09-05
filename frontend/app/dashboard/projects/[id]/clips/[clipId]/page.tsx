@@ -448,7 +448,7 @@ export default function ClipEditPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        {/* Preview + B-roll + Music + captions/timing */}
+        {/* Preview + captions/timing | captions editor + B-roll + Music */}
         <div className="space-y-4">
           <Card className="overflow-hidden">
             <div className="aspect-[9/16] max-h-96 w-full bg-zinc-900">
@@ -473,6 +473,196 @@ export default function ClipEditPage() {
               </Badge>
             </CardContent>
           </Card>
+
+          {/* Timing + captions */}
+          <Card>
+            <CardContent className="space-y-4 p-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Start (seconds)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">End (seconds)</Label>
+                  <Input
+                    type="number"
+                    min={3}
+                    step={0.1}
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Live caption preview</Label>
+                <AnimatedCaptionPreview
+                  style={captionStyle}
+                  fontKey={captionFont}
+                  stroke={captionStroke}
+                  shadow={captionShadow}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The accented word follows the voice — exactly what the render
+                  produces.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Caption template</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {CAPTION_STYLES.map((style) => (
+                    <button
+                      key={style.key}
+                      type="button"
+                      onClick={() => setCaptionStyle(style.key)}
+                      className={cn(
+                        "rounded-lg border p-1.5 text-left transition-all hover:border-primary-500/60",
+                        captionStyle === style.key &&
+                          "border-primary-500 ring-2 ring-primary-500/30"
+                      )}
+                    >
+                      <CaptionPreview
+                        style={style.key}
+                        fontKey={captionFont}
+                        stroke={captionStroke}
+                        shadow={captionShadow}
+                      />
+                      <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
+                </p>
+              </div>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={captionStroke}
+                    onChange={(e) => setCaptionStroke(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                  />
+                  Stroke
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={captionShadow}
+                    onChange={(e) => setCaptionShadow(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                  />
+                  Shadow
+                </label>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Caption font</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {CAPTION_FONTS.map((font) => (
+                    <button
+                      key={font.key}
+                      type="button"
+                      onClick={() => setCaptionFont(font.key)}
+                      style={{ fontFamily: font.cssVar }}
+                      className={cn(
+                        "truncate rounded-lg border px-2 py-2 text-sm transition-all hover:border-primary-500/60",
+                        captionFont === font.key &&
+                          "border-primary-500 ring-2 ring-primary-500/30"
+                      )}
+                    >
+                      {font.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={resetSrt}
+                  onChange={(e) => setResetSrt(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-[var(--primary)]"
+                />
+                Reset captions to AI-generated (discards edits below)
+              </label>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Caption editor + B-roll + Music */}
+        <div className="space-y-4">
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold">Captions</p>
+                <p className="text-xs text-muted-foreground">
+                  Each line appears on screen during its time range. Times are
+                  relative to the clip start.
+                </p>
+              </div>
+              <Button size="sm" variant="outline" onClick={addCue}>
+                <Plus /> Add line
+              </Button>
+            </div>
+
+            {resetSrt ? (
+              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                Captions will be regenerated from the transcript when you save.
+              </p>
+            ) : (
+              <div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
+                {cues.map((cue) => (
+                  <div key={cue.id} className="flex items-start gap-2">
+                    <div className="w-32 shrink-0 space-y-1">
+                      <Input
+                        className="h-7 px-2 text-[11px]"
+                        type="number"
+                        step={0.1}
+                        min={0}
+                        value={cue.start}
+                        onChange={(e) =>
+                          updateCue(cue.id, { start: Number(e.target.value) })
+                        }
+                      />
+                      <Input
+                        className="h-7 px-2 text-[11px]"
+                        type="number"
+                        step={0.1}
+                        min={0}
+                        value={cue.end}
+                        onChange={(e) => updateCue(cue.id, { end: Number(e.target.value) })}
+                      />
+                    </div>
+                    <Textarea
+                      className="min-h-[52px] flex-1 text-sm"
+                      value={cue.text}
+                      onChange={(e) => updateCue(cue.id, { text: e.target.value })}
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                      aria-label="Delete caption line"
+                      onClick={() => setCues((prev) => prev.filter((c) => c.id !== cue.id))}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+                {cues.length === 0 && (
+                  <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    No captions yet — add a line or reset to AI-generated.
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
           {/* B-roll */}
           <Card>
@@ -769,194 +959,7 @@ export default function ClipEditPage() {
             </CardContent>
           </Card>
 
-          {/* Timing + captions */}
-          <Card>
-            <CardContent className="space-y-4 p-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Start (seconds)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">End (seconds)</Label>
-                  <Input
-                    type="number"
-                    min={3}
-                    step={0.1}
-                    value={endTime}
-                    onChange={(e) => setEndTime(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Live caption preview</Label>
-                <AnimatedCaptionPreview
-                  style={captionStyle}
-                  fontKey={captionFont}
-                  stroke={captionStroke}
-                  shadow={captionShadow}
-                />
-                <p className="text-xs text-muted-foreground">
-                  The accented word follows the voice — exactly what the render
-                  produces.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Caption template</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {CAPTION_STYLES.map((style) => (
-                    <button
-                      key={style.key}
-                      type="button"
-                      onClick={() => setCaptionStyle(style.key)}
-                      className={cn(
-                        "rounded-lg border p-1.5 text-left transition-all hover:border-primary-500/60",
-                        captionStyle === style.key &&
-                          "border-primary-500 ring-2 ring-primary-500/30"
-                      )}
-                    >
-                      <CaptionPreview
-                        style={style.key}
-                        fontKey={captionFont}
-                        stroke={captionStroke}
-                        shadow={captionShadow}
-                      />
-                      <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
-                </p>
-              </div>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={captionStroke}
-                    onChange={(e) => setCaptionStroke(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--primary)]"
-                  />
-                  Stroke
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={captionShadow}
-                    onChange={(e) => setCaptionShadow(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--primary)]"
-                  />
-                  Shadow
-                </label>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Caption font</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {CAPTION_FONTS.map((font) => (
-                    <button
-                      key={font.key}
-                      type="button"
-                      onClick={() => setCaptionFont(font.key)}
-                      style={{ fontFamily: font.cssVar }}
-                      className={cn(
-                        "truncate rounded-lg border px-2 py-2 text-sm transition-all hover:border-primary-500/60",
-                        captionFont === font.key &&
-                          "border-primary-500 ring-2 ring-primary-500/30"
-                      )}
-                    >
-                      {font.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={resetSrt}
-                  onChange={(e) => setResetSrt(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[var(--primary)]"
-                />
-                Reset captions to AI-generated (discards edits below)
-              </label>
-            </CardContent>
-          </Card>
         </div>
-
-        {/* Caption editor */}
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-semibold">Captions</p>
-                <p className="text-xs text-muted-foreground">
-                  Each line appears on screen during its time range. Times are
-                  relative to the clip start.
-                </p>
-              </div>
-              <Button size="sm" variant="outline" onClick={addCue}>
-                <Plus /> Add line
-              </Button>
-            </div>
-
-            {resetSrt ? (
-              <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                Captions will be regenerated from the transcript when you save.
-              </p>
-            ) : (
-              <div className="max-h-[480px] space-y-2 overflow-y-auto pr-1">
-                {cues.map((cue) => (
-                  <div key={cue.id} className="flex items-start gap-2">
-                    <div className="w-32 shrink-0 space-y-1">
-                      <Input
-                        className="h-7 px-2 text-[11px]"
-                        type="number"
-                        step={0.1}
-                        min={0}
-                        value={cue.start}
-                        onChange={(e) =>
-                          updateCue(cue.id, { start: Number(e.target.value) })
-                        }
-                      />
-                      <Input
-                        className="h-7 px-2 text-[11px]"
-                        type="number"
-                        step={0.1}
-                        min={0}
-                        value={cue.end}
-                        onChange={(e) => updateCue(cue.id, { end: Number(e.target.value) })}
-                      />
-                    </div>
-                    <Textarea
-                      className="min-h-[52px] flex-1 text-sm"
-                      value={cue.text}
-                      onChange={(e) => updateCue(cue.id, { text: e.target.value })}
-                    />
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                      aria-label="Delete caption line"
-                      onClick={() => setCues((prev) => prev.filter((c) => c.id !== cue.id))}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ))}
-                {cues.length === 0 && (
-                  <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                    No captions yet — add a line or reset to AI-generated.
-                  </p>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </div>
     </Reveal>
   );
