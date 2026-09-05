@@ -131,6 +131,56 @@ router.get("/api/projects/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+/** Manually set the project's background music (free — no AI, no credits). */
+router.post("/api/projects/:id/music", requireAuth, async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        music_url: z
+          .string()
+          .url()
+          .refine((u) => {
+            try {
+              return new URL(u).hostname.endsWith("jamendo.com");
+            } catch {
+              return false;
+            }
+          }),
+        music_title: z.string().trim().min(1).max(200),
+        music_artist: z.string().trim().max(200).optional(),
+        music_mood: z.enum(MUSIC_MOODS),
+      })
+      .parse(req.body);
+
+    const { data: project, error: projectError } = await supabaseAdmin
+      .from("projects")
+      .select("id")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (projectError || !project) return res.status(404).json({ error: "Project not found" });
+
+    const { data: updated, error } = await supabaseAdmin
+      .from("projects")
+      .update({
+        music_url: body.music_url,
+        music_title: body.music_title,
+        music_artist: body.music_artist ?? null,
+        music_mood: body.music_mood,
+      })
+      .eq("id", project.id)
+      .select("id, music_url, music_title, music_artist, music_mood")
+      .single();
+    if (error) throw error;
+    res.json({ music: updated });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid music track" });
+    }
+    next(err);
+  }
+});
+
 router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
   try {
     const projectId = req.params.id;

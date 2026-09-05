@@ -94,8 +94,9 @@ export async function processRender(job) {
     // Stored alongside the clip (clip editor reads it back).
     const srtText = clip.srt_override ?? cuesToSrt(captionCues);
 
-    // 3b. B-roll — an editor-generated plan (clips.broll_json) wins:
+    // 3b. B-roll — an editor plan (clips.broll_json) wins:
     //   null = plan fresh with AI at render time, [] = explicitly none.
+    //   Editor plans may hold up to 8 manually-picked segments.
     let brollClips = [];
     if (Array.isArray(clip.broll_json)) {
       brollClips = clip.broll_json
@@ -106,7 +107,7 @@ export async function processRender(job) {
             Number(b.end) > Number(b.start) &&
             isTrustedStockUrl(b.src)
         )
-        .slice(0, 6)
+        .slice(0, 8)
         .map((b) => ({ start: Number(b.start), end: Number(b.end), src: String(b.src) }));
       job.log(`B-roll: using ${brollClips.length} editor-planned segment(s)`);
     } else if (brollConfigured()) {
@@ -157,6 +158,8 @@ export async function processRender(job) {
       captionCues,
       captionFontKey: clip.caption_font,
       captionStyle: clip.caption_style,
+      captionStroke: clip.caption_stroke === true,
+      captionShadow: clip.caption_shadow === true,
     });
 
     // Webhook completion is mandatory: without it the render could never be

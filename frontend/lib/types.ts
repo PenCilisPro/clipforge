@@ -47,6 +47,8 @@ export interface Clip {
   reason: string | null;
   hashtags: string[];
   caption_style: "classic" | "karaoke" | "bold-pop" | "neon" | "meme";
+  caption_stroke: boolean;
+  caption_shadow: boolean;
   caption_font:
     | "anton"
     | "bebas-neue"

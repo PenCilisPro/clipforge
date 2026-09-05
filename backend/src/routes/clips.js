@@ -3,7 +3,13 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
-import { aiConfigured, brollConfigured, planBrollSegments, pickMusicMood } from "../lib/aiEnhance.js";
+import {
+  aiConfigured,
+  brollConfigured,
+  planBrollSegments,
+  pickMusicMood,
+  searchStockClips,
+} from "../lib/aiEnhance.js";
 import { fetchCatalog } from "./music.js";
 
 const router = Router();
@@ -25,11 +31,15 @@ const CAPTION_FONTS = [
 const regenerateSchema = z.object({
   caption_style: z.enum(CAPTION_STYLES),
   caption_font: z.enum(CAPTION_FONTS).optional(),
+  caption_stroke: z.boolean().optional(),
+  caption_shadow: z.boolean().optional(),
 });
 
 const editSchema = z.object({
   caption_style: z.enum(CAPTION_STYLES).optional(),
   caption_font: z.enum(CAPTION_FONTS).optional(),
+  caption_stroke: z.boolean().optional(),
+  caption_shadow: z.boolean().optional(),
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.
   srt_content: z.string().max(20_000).optional(),
@@ -105,6 +115,8 @@ router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
     };
     if (body.caption_style) updates.caption_style = body.caption_style;
     if (body.caption_font) updates.caption_font = body.caption_font;
+    if (body.caption_stroke !== undefined) updates.caption_stroke = body.caption_stroke;
+    if (body.caption_shadow !== undefined) updates.caption_shadow = body.caption_shadow;
     if (timingChanged) {
       updates.start_time = start;
       updates.end_time = end;
@@ -178,6 +190,8 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
       .update({
         caption_style: body.caption_style,
         ...(body.caption_font ? { caption_font: body.caption_font } : {}),
+        ...(body.caption_stroke !== undefined ? { caption_stroke: body.caption_stroke } : {}),
+        ...(body.caption_shadow !== undefined ? { caption_shadow: body.caption_shadow } : {}),
         status: "queued",
         error_message: null,
         // Clear the previous render so the render stage re-processes the clip
@@ -384,6 +398,79 @@ router.post("/api/clips/:id/music/ai", requireAuth, async (req, res, next) => {
       credits_remaining: left,
     });
   } catch (err) {
+    next(err);
+  }
+});
+
+/** Keyword/category stock-footage search for the editor's b-roll picker (free). */
+router.get("/api/clips/:id/broll/search", requireAuth, async (req, res, next) => {
+  try {
+    if (!brollConfigured()) {
+      return res.status(501).json({ error: "Stock footage is not configured yet." });
+    }
+    const q = z.string().trim().min(2).max(80).parse(String(req.query.q ?? ""));
+    const results = await searchStockClips(q);
+    res.json({ query: q, results });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Search needs a keyword (2-80 chars)" });
+    }
+    next(err);
+  }
+});
+
+const brollSegmentSchema = z.object({
+  segments: z
+    .array(
+      z.object({
+        start: z.coerce.number().finite().min(0).max(43_200),
+        end: z.coerce.number().finite().min(0).max(43_200),
+        src: z
+          .string()
+          .url()
+          .refine((u) => {
+            try {
+              const host = new URL(u).hostname;
+              return (
+                u.startsWith("https:") &&
+                (host === "pexels.com" || host.endsWith(".pexels.com") ||
+                 host === "pixabay.com" || host.endsWith(".pixabay.com"))
+              );
+            } catch {
+              return false;
+            }
+          }, { message: "B-roll URLs must come from the stock providers" }),
+      })
+      .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
+      .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
+    )
+    .max(8),
+});
+
+/** Replace the clip's manually-curated b-roll segments (free). */
+router.post("/api/clips/:id/broll/segments", requireAuth, async (req, res, next) => {
+  try {
+    const body = brollSegmentSchema.parse(req.body);
+    const { data: clip, error: clipError } = await supabaseAdmin
+      .from("clips")
+      .select("id")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("clips")
+      .update({ broll_json: body.segments })
+      .eq("id", clip.id)
+      .select("id, broll_json")
+      .single();
+    if (updateError) throw updateError;
+    res.json({ broll: updated.broll_json });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid segments" });
+    }
     next(err);
   }
 });

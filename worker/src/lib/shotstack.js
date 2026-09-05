@@ -1,5 +1,5 @@
 import { env } from "./env.js";
-import { captionTrackClips, captionFont } from "./captions.js";
+import { captionTrackClips, captionUnderlayClips, captionFont } from "./captions.js";
 
 const BASE_URL = () =>
   env.shotstackEnv === "v1"
@@ -32,6 +32,8 @@ export function buildEditJson({
   captionCues = [],
   captionFontKey = "anton",
   captionStyle = "classic",
+  captionStroke = false,
+  captionShadow = false,
 }) {
   const videoTrack = {
     clips: [
@@ -58,6 +60,40 @@ export function buildEditJson({
   });
   if (captionClips.length > 0) {
     tracks.push({ clips: captionClips });
+  }
+
+  // Stroke/shadow = underlay tracks beneath the captions (the renderer
+  // ignores text-shadow/-webkit-text-stroke, so the effects are identical
+  // text copies offset per clip). 4 directional copies form the outline,
+  // one translucent shifted copy forms the shadow.
+  if (captionClips.length > 0 && captionStroke) {
+    const dirs = [
+      [0.0045, 0],
+      [-0.0045, 0],
+      [0, 0.0045],
+      [0, -0.0045],
+    ];
+    for (const [dx, dy] of dirs) {
+      const clips = captionUnderlayClips(captionCues, {
+        fontKey: captionFontKey,
+        style: captionStyle,
+        dx,
+        dy,
+        color: "#000000",
+      });
+      if (clips.length > 0) tracks.push({ clips });
+    }
+  }
+  if (captionClips.length > 0 && captionShadow) {
+    const clips = captionUnderlayClips(captionCues, {
+      fontKey: captionFontKey,
+      style: captionStyle,
+      dx: 0.006,
+      dy: 0.006,
+      color: "#000000",
+      opacity: 0.55,
+    });
+    if (clips.length > 0) tracks.push({ clips });
   }
 
   if (watermarkUrl) {

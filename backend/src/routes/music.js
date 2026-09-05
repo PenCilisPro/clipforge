@@ -72,15 +72,24 @@ router.get("/api/music", requireAuth, async (req, res, next) => {
       return res.json({ configured: false, tracks: [] });
     }
 
-    const mood = MOODS.includes(String(req.query.mood)) ? String(req.query.mood) : "background";
+  const mood = MOODS.includes(String(req.query.mood)) ? String(req.query.mood) : "background";
+  const q = String(req.query.q ?? "").trim().toLowerCase().slice(0, 80);
 
-    const allTracks = await fetchCatalog();
-    const strip = ({ tags, ...track }) => track;
-    const matching = allTracks.filter((t) => t.tags.includes(mood)).map(strip);
-    // No tagged match for this mood — offer the catalog rather than nothing.
-    const tracks = matching.length > 0 ? matching : allTracks.slice(0, 10).map(strip);
+  const allTracks = await fetchCatalog();
+  const strip = ({ tags, ...track }) => track;
+  const matching = allTracks.filter((t) => t.tags.includes(mood)).map(strip);
+  // No tagged match for this mood — offer the catalog rather than nothing.
+  let tracks = matching.length > 0 ? matching : allTracks.slice(0, 10).map(strip);
+  if (q) {
+    tracks = tracks.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.artist.toLowerCase().includes(q)
+    );
+  }
+  tracks = tracks.slice(0, 20);
 
-    res.json({ configured: true, mood, tracks });
+  res.json({ configured: true, mood, tracks });
   } catch (err) {
     next(err);
   }

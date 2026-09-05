@@ -3,7 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Film, Loader2, Music2, Plus, RotateCcw, Save, Sparkles, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Film,
+  Loader2,
+  Music2,
+  Plus,
+  RotateCcw,
+  Save,
+  Search,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
@@ -22,6 +33,44 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 const AI_CREDIT_COST = 10;
+
+const BROLL_CATEGORIES: { label: string; q: string }[] = [
+  { label: "Nature", q: "nature landscape" },
+  { label: "City", q: "city street aerial" },
+  { label: "People", q: "people walking" },
+  { label: "Business", q: "business office work" },
+  { label: "Tech", q: "technology computer" },
+  { label: "Food", q: "food cooking" },
+  { label: "Sports", q: "sports action" },
+  { label: "Abstract", q: "abstract background" },
+];
+
+const MUSIC_MOODS = [
+  "upbeat",
+  "chill",
+  "dramatic",
+  "corporate",
+  "energetic",
+  "happy",
+  "epic",
+  "background",
+];
+
+interface StockResult {
+  url: string;
+  poster: string | null;
+  provider: string;
+  duration: number;
+}
+
+interface MusicTrack {
+  id: string;
+  name: string;
+  artist: string;
+  duration: number;
+  audio: string;
+  image: string | null;
+}
 
 function formatTime(seconds: number) {
   const s = Math.max(0, Math.round(seconds));
@@ -45,15 +94,26 @@ export default function ClipEditPage() {
   const [cues, setCues] = useState<SrtCue[]>([]);
   const [captionStyle, setCaptionStyle] = useState<Clip["caption_style"]>("karaoke");
   const [captionFont, setCaptionFont] = useState<NonNullable<Clip["caption_font"]>>("anton");
+  const [captionStroke, setCaptionStroke] = useState(false);
+  const [captionShadow, setCaptionShadow] = useState(false);
   const [resetSrt, setResetSrt] = useState(false);
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("0");
   const [saving, setSaving] = useState(false);
 
+  const [brollQuery, setBrollQuery] = useState("");
+  const [brollResults, setBrollResults] = useState<StockResult[] | null>(null);
+  const [brollSearching, setBrollSearching] = useState(false);
+
+  const [musicMood, setMusicMood] = useState("background");
+  const [musicQuery, setMusicQuery] = useState("");
+  const [musicTracks, setMusicTracks] = useState<MusicTrack[] | null>(null);
+  const [musicLoading, setMusicLoading] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
-        const { project: loaded, } = await apiFetch<{
+        const { project: loaded } = await apiFetch<{
           project: { clips: Clip[] } & Project;
         }>(`/api/projects/${params.id}`);
         const found = (loaded.clips as Clip[]).find((c) => c.id === params.clipId);
@@ -62,6 +122,8 @@ export default function ClipEditPage() {
         setProject(loaded);
         setCaptionStyle(found.caption_style ?? "karaoke");
         setCaptionFont(found.caption_font ?? "anton");
+        setCaptionStroke(found.caption_stroke ?? false);
+        setCaptionShadow(found.caption_shadow ?? false);
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));
 
@@ -90,6 +152,33 @@ export default function ClipEditPage() {
     })();
   }, [params.id, params.clipId]);
 
+  async function loadCredits() {
+    try {
+      const me = await apiFetch<{ profile: { credits_remaining: number } }>("/api/me");
+      setCredits(me.profile.credits_remaining);
+    } catch {
+      // non-critical — the endpoints re-check server-side
+    }
+  }
+
+  useEffect(() => {
+    loadCredits();
+  }, []);
+
+  async function fetchMusic(mood: string, q: string) {
+    setMusicLoading(true);
+    try {
+      const res = await apiFetch<{ tracks: MusicTrack[] }>(
+        `/api/music?mood=${encodeURIComponent(mood)}${q ? `&q=${encodeURIComponent(q)}` : ""}`
+      );
+      setMusicTracks(res.tracks);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Music search failed");
+    } finally {
+      setMusicLoading(false);
+    }
+  }
+
   function updateCue(id: string, patch: Partial<SrtCue>) {
     setCues((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     setResetSrt(false);
@@ -105,18 +194,63 @@ export default function ClipEditPage() {
     setResetSrt(false);
   }
 
-  async function loadCredits() {
+  // ---------- B-roll ----------
+
+  async function saveBrollSegments(segments: NonNullable<Clip["broll_json"]>) {
+    if (!clip) return;
     try {
-      const me = await apiFetch<{ profile: { credits_remaining: number } }>("/api/me");
-      setCredits(me.profile.credits_remaining);
-    } catch {
-      // non-critical — the endpoints re-check server-side
+      const res = await apiFetch<{ broll: NonNullable<Clip["broll_json"]> }>(
+        `/api/clips/${clip.id}/broll/segments`,
+        { method: "POST", body: { segments } }
+      );
+      setClip({ ...clip, broll_json: res.broll });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save B-roll");
     }
   }
 
-  useEffect(() => {
-    loadCredits();
-  }, []);
+  async function searchBroll(q: string) {
+    if (!clip || !q.trim()) return;
+    setBrollSearching(true);
+    try {
+      const res = await apiFetch<{ results: StockResult[] }>(
+        `/api/clips/${clip.id}/broll/search?q=${encodeURIComponent(q.trim())}`
+      );
+      setBrollResults(res.results);
+      if (res.results.length === 0) toast.info("No stock clips found for that search");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "B-roll search failed");
+    } finally {
+      setBrollSearching(false);
+    }
+  }
+
+  async function addBrollSegment(result: StockResult) {
+    if (!clip) return;
+    const duration = Math.max(3, Number(endTime) - Number(startTime));
+    const segments = Array.isArray(clip.broll_json) ? clip.broll_json : [];
+    if (segments.length >= 8) {
+      toast.error("A clip can hold at most 8 B-roll scenes — remove one first");
+      return;
+    }
+    const lastEnd = segments.length > 0 ? segments[segments.length - 1].end : 0;
+    const start = Math.min(Math.max(lastEnd + 1, 0), Math.max(0, duration - 3));
+    const end = Math.min(start + 3, duration);
+    await saveBrollSegments([...segments, { start, end, src: result.url }]);
+    toast.success("B-roll scene added — adjust its timing below");
+  }
+
+  async function removeBrollSegment(index: number) {
+    if (!clip || !Array.isArray(clip.broll_json)) return;
+    await saveBrollSegments(clip.broll_json.filter((_, i) => i !== index));
+  }
+
+  async function updateBrollSegment(index: number, field: "start" | "end", value: number) {
+    if (!clip || !Array.isArray(clip.broll_json)) return;
+    const next = clip.broll_json.map((s, i) => (i === index ? { ...s, [field]: value } : s));
+    setClip({ ...clip, broll_json: next });
+    await saveBrollSegments(next);
+  }
 
   async function generateBroll() {
     if (!clip || brollBusy) return;
@@ -157,6 +291,35 @@ export default function ClipEditPage() {
     }
   }
 
+  // ---------- Music ----------
+
+  async function useTrack(track: MusicTrack, mood: string) {
+    if (!project) return;
+    try {
+      await apiFetch(`/api/projects/${project.id}/music`, {
+        method: "POST",
+        body: {
+          music_url: track.audio,
+          music_title: track.name,
+          music_artist: track.artist,
+          music_mood: mood,
+        },
+      });
+      setProject({
+        ...project,
+        music_url: track.audio,
+        music_title: track.name,
+        music_artist: track.artist,
+        music_mood: mood,
+      });
+      toast.success(`Music: ${track.name}`, {
+        description: "Applies to the project on the next re-render",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to set music");
+    }
+  }
+
   async function generateMusic() {
     if (!clip || musicBusy) return;
     setMusicBusy(true);
@@ -187,6 +350,8 @@ export default function ClipEditPage() {
     }
   }
 
+  // ---------- Save ----------
+
   async function save() {
     if (!clip || saving) return;
     const start = Number(startTime);
@@ -211,6 +376,8 @@ export default function ClipEditPage() {
         body: {
           caption_style: captionStyle,
           caption_font: captionFont,
+          caption_stroke: captionStroke,
+          caption_shadow: captionShadow,
           start_time: start,
           end_time: end,
           ...(resetSrt
@@ -254,6 +421,9 @@ export default function ClipEditPage() {
     );
   }
 
+  const clipDuration = Math.max(3, Number(endTime) - Number(startTime));
+  const brollSegments = Array.isArray(clip.broll_json) ? clip.broll_json : [];
+
   return (
     <Reveal className="mx-auto max-w-5xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -267,7 +437,8 @@ export default function ClipEditPage() {
             Edit — {clip.title ?? "Untitled clip"}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Edit captions, pick a style, trim the window, then re-render.
+            Edit captions, pick a style, add B-roll & music, trim the window,
+            then re-render.
           </p>
         </div>
         <Button onClick={save} disabled={saving}>
@@ -277,7 +448,7 @@ export default function ClipEditPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        {/* Preview + timing + style */}
+        {/* Preview + B-roll + Music + captions/timing */}
         <div className="space-y-4">
           <Card className="overflow-hidden">
             <div className="aspect-[9/16] max-h-96 w-full bg-zinc-900">
@@ -303,6 +474,302 @@ export default function ClipEditPage() {
             </CardContent>
           </Card>
 
+          {/* B-roll */}
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-center justify-between">
+                <p className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Film className="h-4 w-4 text-primary-500" /> B-roll
+                </p>
+                {credits != null && (
+                  <span className="text-xs text-muted-foreground">{credits} credits</span>
+                )}
+              </div>
+
+              {/* Where the scenes sit on the clip timeline */}
+              {brollSegments.length > 0 && (
+                <div>
+                  <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+                    {brollSegments.map((seg, i) => (
+                      <span
+                        key={i}
+                        className="absolute top-0 h-full bg-primary-500/80"
+                        style={{
+                          left: `${(seg.start / clipDuration) * 100}%`,
+                          width: `${Math.max(2, ((seg.end - seg.start) / clipDuration) * 100)}%`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    0:00 — {formatTime(clipDuration)}
+                  </p>
+                </div>
+              )}
+
+              {clip.broll_json == null ? (
+                <p className="text-xs text-muted-foreground">
+                  B-roll cutaways are planned automatically during each render.
+                </p>
+              ) : brollSegments.length === 0 ? (
+                <p className="text-xs text-muted-foreground">B-roll is off for this clip.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {brollSegments.map((seg, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                      <span className="w-4 text-muted-foreground">{i + 1}.</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={seg.start}
+                        onChange={(e) =>
+                          updateBrollSegment(i, "start", Number(e.target.value))
+                        }
+                        className="h-7 w-16 px-1.5 text-[11px]"
+                        aria-label="B-roll start (seconds)"
+                      />
+                      <span className="text-muted-foreground">→</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={seg.end}
+                        onChange={(e) => updateBrollSegment(i, "end", Number(e.target.value))}
+                        className="h-7 w-16 px-1.5 text-[11px]"
+                        aria-label="B-roll end (seconds)"
+                      />
+                      <span className="text-[10px] text-muted-foreground">sec</span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="ml-auto h-6 w-6 text-muted-foreground hover:text-destructive"
+                        aria-label="Remove B-roll scene"
+                        onClick={() => removeBrollSegment(i)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Search */}
+              <div className="space-y-2 border-t pt-3">
+                <form
+                  className="flex gap-1.5"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    searchBroll(brollQuery);
+                  }}
+                >
+                  <Input
+                    value={brollQuery}
+                    onChange={(e) => setBrollQuery(e.target.value)}
+                    placeholder="Search stock footage…"
+                    className="h-8 text-xs"
+                  />
+                  <Button type="submit" size="icon" variant="outline" className="h-8 w-8 shrink-0" disabled={brollSearching}>
+                    {brollSearching ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Search className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </form>
+                <div className="flex flex-wrap gap-1">
+                  {BROLL_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.label}
+                      type="button"
+                      onClick={() => {
+                        setBrollQuery(cat.q);
+                        searchBroll(cat.q);
+                      }}
+                      className="rounded-full border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary-500/60 hover:text-primary-500"
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+                {brollResults && brollResults.length > 0 && (
+                  <div className="grid max-h-56 grid-cols-3 gap-1.5 overflow-y-auto pr-1">
+                    {brollResults.map((r, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => addBrollSegment(r)}
+                        className="group relative aspect-[9/16] overflow-hidden rounded-md border bg-muted"
+                        title="Add as B-roll scene"
+                      >
+                        {r.poster ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={r.poster}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <span className="flex h-full items-center justify-center text-[10px] text-muted-foreground">
+                            clip
+                          </span>
+                        )}
+                        <span className="absolute inset-0 hidden items-center justify-center bg-black/50 group-hover:flex">
+                          <Plus className="h-5 w-5 text-white" />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={generateBroll}
+                  disabled={brollBusy}
+                >
+                  {brollBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  AI pick · {AI_CREDIT_COST} credits
+                </Button>
+                {clip.broll_json != null && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-muted-foreground"
+                      onClick={() => setBrollMode("auto")}
+                      disabled={brollBusy}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" /> Auto
+                    </Button>
+                    {brollSegments.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs text-muted-foreground"
+                        onClick={() => setBrollMode("none")}
+                        disabled={brollBusy}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Off
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Music */}
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-semibold">
+                <Music2 className="h-4 w-4 text-primary-500" /> Background music
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {project?.music_title
+                  ? `${project.music_title} · ${project.music_artist ?? ""}${
+                      project.music_mood ? ` (${project.music_mood})` : ""
+                    }`
+                  : "No background music yet."}
+              </p>
+
+              <div className="flex flex-wrap gap-1">
+                {MUSIC_MOODS.map((mood) => (
+                  <button
+                    key={mood}
+                    type="button"
+                    onClick={() => {
+                      setMusicMood(mood);
+                      setMusicQuery("");
+                      fetchMusic(mood, "");
+                    }}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground transition-colors hover:border-primary-500/60 hover:text-primary-500",
+                      musicMood === mood && "border-primary-500 text-primary-500"
+                    )}
+                  >
+                    {mood}
+                  </button>
+                ))}
+              </div>
+
+              <form
+                className="flex gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  fetchMusic(musicMood, musicQuery);
+                }}
+              >
+                <Input
+                  value={musicQuery}
+                  onChange={(e) => setMusicQuery(e.target.value)}
+                  placeholder="Search music…"
+                  className="h-8 text-xs"
+                />
+                <Button type="submit" size="icon" variant="outline" className="h-8 w-8 shrink-0" disabled={musicLoading}>
+                  {musicLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Search className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              </form>
+
+              {musicTracks && musicTracks.length > 0 && (
+                <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
+                  {musicTracks.map((track) => (
+                    <div
+                      key={track.id}
+                      className="flex items-center gap-2 rounded-md border px-2 py-1.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium">{track.name}</p>
+                        <p className="truncate text-[10px] text-muted-foreground">
+                          {track.artist} · {formatTime(track.duration)}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 shrink-0 px-2 text-[10px]"
+                        onClick={() => useTrack(track, musicMood)}
+                      >
+                        Use
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={generateMusic}
+                disabled={musicBusy}
+              >
+                {musicBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                AI pick · {AI_CREDIT_COST} credits
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                Music applies to the whole project on the next re-render.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Timing + captions */}
           <Card>
             <CardContent className="space-y-4 p-4">
               <div className="grid grid-cols-2 gap-3">
@@ -329,7 +796,12 @@ export default function ClipEditPage() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Live caption preview</Label>
-                <AnimatedCaptionPreview style={captionStyle} fontKey={captionFont} />
+                <AnimatedCaptionPreview
+                  style={captionStyle}
+                  fontKey={captionFont}
+                  stroke={captionStroke}
+                  shadow={captionShadow}
+                />
                 <p className="text-xs text-muted-foreground">
                   The accented word follows the voice — exactly what the render
                   produces.
@@ -349,7 +821,12 @@ export default function ClipEditPage() {
                           "border-primary-500 ring-2 ring-primary-500/30"
                       )}
                     >
-                      <CaptionPreview style={style.key} fontKey={captionFont} />
+                      <CaptionPreview
+                        style={style.key}
+                        fontKey={captionFont}
+                        stroke={captionStroke}
+                        shadow={captionShadow}
+                      />
                       <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
                     </button>
                   ))}
@@ -357,6 +834,26 @@ export default function ClipEditPage() {
                 <p className="text-xs text-muted-foreground">
                   {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
                 </p>
+              </div>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={captionStroke}
+                    onChange={(e) => setCaptionStroke(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                  />
+                  Stroke
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={captionShadow}
+                    onChange={(e) => setCaptionShadow(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                  />
+                  Shadow
+                </label>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Caption font</Label>
@@ -387,104 +884,6 @@ export default function ClipEditPage() {
                 />
                 Reset captions to AI-generated (discards edits below)
               </label>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="space-y-4 p-4">
-              <div className="flex items-center justify-between">
-                <p className="flex items-center gap-1.5 text-sm font-semibold">
-                  <Sparkles className="h-4 w-4 text-primary-500" /> AI enhancements
-                </p>
-                {credits != null && (
-                  <span className="text-xs text-muted-foreground">
-                    {credits} credits left
-                  </span>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <p className="flex items-center gap-1.5 text-xs font-medium">
-                  <Film className="h-3.5 w-3.5 text-muted-foreground" /> B-roll
-                </p>
-                {clip.broll_json == null ? (
-                  <p className="text-xs text-muted-foreground">
-                    B-roll cutaways are planned automatically during each render.
-                  </p>
-                ) : clip.broll_json.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    B-roll is off for this clip.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1">
-                    {clip.broll_json.map((seg, i) => (
-                      <Badge key={i} variant="secondary" className="text-[10px]">
-                        {formatTime(seg.start)}–{formatTime(seg.end)}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs"
-                    onClick={generateBroll}
-                    disabled={brollBusy}
-                  >
-                    {brollBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                    {clip.broll_json == null || clip.broll_json.length === 0 ? "Generate" : "Regenerate"} · {AI_CREDIT_COST} credits
-                  </Button>
-                  {clip.broll_json != null && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 text-xs text-muted-foreground"
-                      onClick={() => setBrollMode("auto")}
-                      disabled={brollBusy}
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" /> Auto
-                    </Button>
-                  )}
-                  {clip.broll_json != null && clip.broll_json.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 text-xs text-muted-foreground"
-                      onClick={() => setBrollMode("none")}
-                      disabled={brollBusy}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" /> Off
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2 border-t pt-3">
-                <p className="flex items-center gap-1.5 text-xs font-medium">
-                  <Music2 className="h-3.5 w-3.5 text-muted-foreground" /> Background music
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {project?.music_title
-                    ? `${project.music_title} · ${project.music_artist ?? ""}${
-                        project.music_mood ? ` (${project.music_mood})` : ""
-                      }`
-                    : "No background music yet."}
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs"
-                  onClick={generateMusic}
-                  disabled={musicBusy}
-                >
-                  {musicBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                  {project?.music_title ? "Pick another" : "Pick with AI"} · {AI_CREDIT_COST} credits
-                </Button>
-                <p className="text-[11px] text-muted-foreground">
-                  Music applies to the whole project on the next re-render.
-                </p>
-              </div>
             </CardContent>
           </Card>
         </div>
@@ -530,9 +929,7 @@ export default function ClipEditPage() {
                         step={0.1}
                         min={0}
                         value={cue.end}
-                        onChange={(e) =>
-                          updateCue(cue.id, { end: Number(e.target.value) })
-                        }
+                        onChange={(e) => updateCue(cue.id, { end: Number(e.target.value) })}
                       />
                     </div>
                     <Textarea

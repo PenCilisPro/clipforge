@@ -91,22 +91,32 @@ function escapeHtml(text) {
 
 // Each template = container markup + the accent applied to the currently-
 // spoken word. `render(family, inner)` keeps the static (no-accent) output
-// byte-identical to the original templates.
+// byte-identical to the original templates. `underlay(family, text, color)`
+// reproduces the exact same typography and padding WITHOUT the background —
+// used for the stroke/shadow underlay tracks (the stage renderer ignores
+// text-shadow/-webkit-text-stroke, so effects are layered clips beneath the
+// caption track: verified mechanics — track order, clip offset, clip opacity).
 const STYLES = {
   classic: {
     accent: "color:#ff5d1c",
     render: (family, inner) =>
       `<div style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:700;color:#ffffff;text-align:center;text-shadow:0 3px 10px rgba(0,0,0,.9),0 0 4px rgba(0,0,0,.8);padding:0 12px;">${inner}</div>`,
+    underlay: (family, text, color) =>
+      `<div style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:700;color:${color};text-align:center;padding:0 12px;">${text}</div>`,
   },
   karaoke: {
     accent: "background:#ffffff;color:#ff5d1c;padding:0 8px;border-radius:8px;",
     render: (family, inner) =>
       `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#ffffff;background:rgba(255,93,28,.92);padding:14px 30px;border-radius:16px;text-align:center;">${inner}</div>`,
+    underlay: (family, text, color) =>
+      `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:${color};padding:14px 30px;text-align:center;">${text}</div>`,
   },
   "bold-pop": {
     accent: "color:#ff5d1c",
     render: (family, inner) =>
       `<div style="font-family:'${family}';font-size:68px;line-height:1.1;font-weight:900;color:#ffffff;background:rgba(0,0,0,.78);padding:16px 30px;border-radius:14px;text-transform:uppercase;letter-spacing:1px;text-align:center;">${inner}</div>`,
+    underlay: (family, text, color) =>
+      `<div style="font-family:'${family}';font-size:68px;line-height:1.1;font-weight:900;color:${color};padding:16px 30px;text-transform:uppercase;letter-spacing:1px;text-align:center;">${text}</div>`,
   },
   // Neon sign: light-cyan text on a dark translucent slab (glow effects are
   // ignored by the stage renderer — see capability notes above).
@@ -114,6 +124,8 @@ const STYLES = {
     accent: "color:#ffffff",
     render: (family, inner) =>
       `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:#67e8f9;background:rgba(3,28,41,.85);padding:14px 30px;border-radius:16px;letter-spacing:2px;text-align:center;">${inner}</div>`,
+    underlay: (family, text, color) =>
+      `<div style="font-family:'${family}';font-size:60px;line-height:1.15;font-weight:800;color:${color};padding:14px 30px;letter-spacing:2px;text-align:center;">${text}</div>`,
   },
   // Meme look without text-stroke (unsupported): heavy uppercase white on a
   // solid black chip that hugs the text.
@@ -121,10 +133,44 @@ const STYLES = {
     accent: "color:#ff5d1c",
     render: (family, inner) =>
       `<div style="text-align:center;"><span style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:900;color:#ffffff;background:#000000;padding:12px 28px;border-radius:10px;display:inline-block;text-transform:uppercase;">${inner}</span></div>`,
+    underlay: (family, text, color) =>
+      `<div style="text-align:center;"><span style="font-family:'${family}';font-size:64px;line-height:1.15;font-weight:900;color:${color};padding:12px 28px;display:inline-block;text-transform:uppercase;">${text}</span></div>`,
   },
 };
 
 const MAX_WORD_CLIPS = 400;
+
+/**
+ * Underlay track clips for the stroke/shadow caption effects: one clip per
+ * cue (static full-cue text, no accent — it sits beneath the word-sync
+ * caption clips which only differ by the accented word). Offset is relative
+ * to the frame (0-1); dx/dy shift the copy so stacked tracks form an outline
+ * or drop shadow.
+ */
+export function captionUnderlayClips(cues, { fontKey, style, dx = 0, dy = 0, color = "#000000", opacity }) {
+  if (!Array.isArray(cues) || cues.length === 0) return [];
+  const family = captionFont(fontKey).family;
+  const def = STYLES[style] ?? STYLES.classic;
+
+  const offset = {};
+  if (dx) offset.x = Math.round(dx * 10000) / 10000;
+  const baseY = 0.08 + dy;
+  offset.y = Math.round(baseY * 10000) / 10000;
+
+  return cues.slice(0, 150).map((cue) => ({
+    asset: {
+      type: "html",
+      html: def.underlay(family, escapeHtml(cue.text), color),
+      width: 980,
+      height: 260,
+    },
+    start: Math.max(0, Number(cue.start) || 0),
+    length: Math.max(0.3, Number(cue.end) - Number(cue.start)),
+    position: "bottom",
+    offset,
+    ...(opacity != null ? { opacity } : {}),
+  }));
+}
 
 /**
  * Build the caption track clips. Cues with word timings render as one clip

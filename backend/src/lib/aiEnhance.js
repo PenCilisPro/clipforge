@@ -130,6 +130,68 @@ async function searchBrollClip(keyword) {
 }
 
 /**
+ * Multi-result stock search for the editor's keyword/category picker.
+ * Returns [{url, poster, provider, duration}] — poster is only available
+ * from Pexels; Pixabay results render a placeholder tile.
+ */
+export async function searchStockClips(query, perPage = 12) {
+  const results = [];
+  if (env.pexelsApiKey) {
+    try {
+      const res = await fetch(
+        `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&orientation=portrait&per_page=${perPage}`,
+        { headers: { Authorization: env.pexelsApiKey }, signal: AbortSignal.timeout(10_000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const video of data?.videos ?? []) {
+          const files = (video.video_files ?? [])
+            .filter((f) => f.file_type === "video/mp4" && Number(f.height) >= Number(f.width))
+            .sort((a, b) => Number(a.height) - Number(b.height));
+          const pick = files.find((f) => Number(f.height) >= 1280) ?? files[files.length - 1];
+          if (pick?.link && isTrustedStockUrl(pick.link)) {
+            results.push({
+              url: pick.link,
+              poster: typeof video.image === "string" ? video.image : null,
+              provider: "pexels",
+              duration: Number(video.duration ?? 0),
+            });
+          }
+        }
+      }
+    } catch {
+      // fall through to pixabay
+    }
+  }
+  if (results.length === 0 && env.pixabayApiKey) {
+    try {
+      const res = await fetch(
+        `https://pixabay.com/api/videos/?key=${encodeURIComponent(env.pixabayApiKey)}&q=${encodeURIComponent(query)}&orientation=vertical&per_page=${perPage}`,
+        { signal: AbortSignal.timeout(10_000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        for (const hit of data?.hits ?? []) {
+          const files = hit.videos ?? {};
+          const pick = files.large ?? files.medium ?? files.small;
+          if (pick?.url && isTrustedStockUrl(pick.url)) {
+            results.push({
+              url: pick.url,
+              poster: null,
+              provider: "pixabay",
+              duration: Number(hit.duration ?? 0),
+            });
+          }
+        }
+      }
+    } catch {
+      // no results
+    }
+  }
+  return results.slice(0, perPage);
+}
+
+/**
  * Plan B-roll for a clip window. Returns clip-local [{start,end,src}]
  * (throws on AI/parse failure — the caller decides how to degrade).
  */
