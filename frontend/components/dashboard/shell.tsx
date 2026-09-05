@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { label: "Projects", href: "/dashboard", icon: Clapperboard },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
   { label: "Connections", href: "/dashboard/connections", icon: Link2 },
+  { label: "Free upgrade", href: "/dashboard/upgrade", icon: Sparkles },
   { label: "Feedback", href: "/dashboard/feedback", icon: MessageSquare },
 ];
 

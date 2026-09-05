@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ExternalLink,
+  Gift,
   ImageIcon,
   Loader2,
   MessageSquare,
@@ -67,6 +68,27 @@ interface AdminFeedback {
   display_name: string | null;
 }
 
+interface UpgradeRequest {
+  id: string;
+  user_id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone_country: string;
+  phone_number: string;
+  header: string;
+  plan_use: string;
+  other_info: string | null;
+  attachment_path: string | null;
+  status: "pending" | "approved" | "rejected";
+  admin_note: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  account_email: string | null;
+  display_name: string | null;
+  account_plan: string | null;
+}
+
 interface PlanRow {
   plan_key: string;
   name: string;
@@ -110,6 +132,9 @@ export default function AdminPage() {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [feedback, setFeedback] = useState<AdminFeedback[]>([]);
+  const [upgradeRequests, setUpgradeRequests] = useState<UpgradeRequest[]>([]);
+  const [reviewNoteDrafts, setReviewNoteDrafts] = useState<Record<string, string>>({});
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [plans, setPlans] = useState<PlanRow[]>([]);
   const [planDrafts, setPlanDrafts] = useState<Record<string, PlanDraft>>({});
   const [loading, setLoading] = useState(true);
@@ -126,14 +151,16 @@ export default function AdminPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersData, feedbackData, pricingData, brandingData] = await Promise.all([
+      const [usersData, feedbackData, upgradeData, pricingData, brandingData] = await Promise.all([
         apiFetch<{ users: AdminUser[] }>("/api/admin/users"),
         apiFetch<{ feedback: AdminFeedback[] }>("/api/admin/feedback"),
+        apiFetch<{ requests: UpgradeRequest[] }>("/api/admin/upgrade-requests"),
         apiFetch<{ plans: PlanRow[] }>("/api/pricing"),
         apiFetch<{ logoUrl: string | null }>("/api/branding"),
       ]);
       setUsers(usersData.users);
       setFeedback(feedbackData.feedback);
+      setUpgradeRequests(upgradeData.requests);
       setCreditDrafts(
         Object.fromEntries(
           usersData.users.map((u) => [u.id, String(Number(u.credits_remaining))])
@@ -249,6 +276,40 @@ export default function AdminPage() {
     }
   }
 
+  async function reviewUpgradeRequest(r: UpgradeRequest, action: "approve" | "reject") {
+    if (reviewingId) return;
+    setReviewingId(r.id);
+    try {
+      const { request: updated } = await apiFetch<{ request: UpgradeRequest }>(
+        `/api/admin/upgrade-requests/${r.id}/review`,
+        {
+          method: "PATCH",
+          body: {
+            action,
+            note: (reviewNoteDrafts[r.id] ?? "").trim() || null,
+          },
+        }
+      );
+      setUpgradeRequests((prev) =>
+        prev.map((row) => (row.id === r.id ? { ...row, ...updated } : row))
+      );
+      setUsers((prev) =>
+        action === "approve"
+          ? prev.map((u) => (u.id === r.user_id ? { ...u, plan: "pro" } : u))
+          : prev
+      );
+      toast.success(
+        action === "approve"
+          ? "Approved — the user is now on the Pro plan"
+          : "Request rejected"
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to review request");
+    } finally {
+      setReviewingId(null);
+    }
+  }
+
   async function uploadBranding(file: File) {
     const okType = /\.(ico|png|svg)$/i.test(file.name);
     if (!okType) {
@@ -333,6 +394,14 @@ export default function AdminPage() {
       <Tabs defaultValue="users">
         <TabsList>
           <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="upgrades">
+            Upgrades
+            {upgradeRequests.filter((r) => r.status === "pending").length > 0 && (
+              <Badge variant="secondary" className="ml-2">
+                {upgradeRequests.filter((r) => r.status === "pending").length}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="feedback">
             Feedback
             {feedback.length > 0 && (
@@ -552,6 +621,160 @@ export default function AdminPage() {
                     );
                   })
               )}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="upgrades" className="mt-4">
+          {loading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+            </div>
+          ) : upgradeRequests.length === 0 ? (
+            <Card>
+              <CardContent className="flex flex-col items-center gap-2 p-10 text-center">
+                <Gift className="h-8 w-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
+                  No free-upgrade requests yet.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {upgradeRequests.map((r) => {
+                const supabase = createClient();
+                const attachmentUrl = r.attachment_path
+                  ? supabase.storage.from("assets").getPublicUrl(r.attachment_path).data.publicUrl
+                  : null;
+                const isMedia = /\.(mp4|mov|webm)$/i.test(r.attachment_path ?? "");
+                return (
+                  <Card key={r.id}>
+                    <CardContent className="p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant={
+                            r.status === "approved"
+                              ? "default"
+                              : r.status === "rejected"
+                                ? "destructive"
+                                : "secondary"
+                          }
+                          className="capitalize"
+                        >
+                          {r.status}
+                        </Badge>
+                        <p className="font-medium">{r.header}</p>
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {formatDateTime(r.created_at)}
+                          {r.reviewed_at && ` · reviewed ${formatDateTime(r.reviewed_at)}`}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                        <p>
+                          <span className="text-muted-foreground">Name:</span>{" "}
+                          {r.first_name} {r.last_name}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">Email:</span> {r.email}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">Phone:</span>{" "}
+                          {r.phone_country} {r.phone_number}
+                        </p>
+                        <p>
+                          <span className="text-muted-foreground">Account:</span>{" "}
+                          {r.display_name ?? "—"} · {r.account_email ?? r.user_id} ·{" "}
+                          <span className="capitalize">{r.account_plan ?? "?"}</span>
+                        </p>
+                      </div>
+
+                      <div className="mt-3 space-y-2 text-sm">
+                        <p>
+                          <span className="text-muted-foreground">Plan use:</span>{" "}
+                          <span className="whitespace-pre-wrap">{r.plan_use}</span>
+                        </p>
+                        {r.other_info && (
+                          <p>
+                            <span className="text-muted-foreground">Other info:</span>{" "}
+                            <span className="whitespace-pre-wrap">{r.other_info}</span>
+                          </p>
+                        )}
+                      </div>
+
+                      {attachmentUrl && (
+                        <a
+                          href={attachmentUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-block"
+                        >
+                          {isMedia ? (
+                            <span className="text-xs underline">View attached video</span>
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={attachmentUrl}
+                              alt="User attachment"
+                              className="max-h-36 rounded-lg border object-cover"
+                            />
+                          )}
+                        </a>
+                      )}
+
+                      {r.status === "pending" ? (
+                        <div className="mt-3 space-y-2">
+                          <Textarea
+                            rows={2}
+                            placeholder="Optional note for the user (shown on their requests)…"
+                            value={reviewNoteDrafts[r.id] ?? ""}
+                            onChange={(e) =>
+                              setReviewNoteDrafts((d) => ({ ...d, [r.id]: e.target.value }))
+                            }
+                          />
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-destructive"
+                              disabled={reviewingId === r.id}
+                              onClick={() => reviewUpgradeRequest(r, "reject")}
+                            >
+                              {reviewingId === r.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                "Reject"
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={reviewingId === r.id}
+                              onClick={() => reviewUpgradeRequest(r, "approve")}
+                            >
+                              {reviewingId === r.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Gift className="h-4 w-4" />
+                              )}
+                              Approve → Pro
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        r.admin_note && (
+                          <p className="mt-3 rounded-lg border-l-2 border-primary-500 bg-primary-500/5 p-3 text-sm">
+                            <span className="text-xs font-semibold text-primary-600 dark:text-primary-400">
+                              Note:
+                            </span>{" "}
+                            {r.admin_note}
+                          </p>
+                        )
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </TabsContent>

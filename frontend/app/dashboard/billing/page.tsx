@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { BadgeCheck, Check, Zap } from "lucide-react";
 import { toast } from "sonner";
 
@@ -194,7 +195,12 @@ export default function BillingPage() {
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
           Upgrades are processed by the ClipForge team — hit "Request upgrade"
-          (it sends us a billing request) and we'll apply it to your account.
+          (it sends us a billing request) and we'll apply it to your account. You
+          can also{" "}
+          <Link href="/dashboard/upgrade" className="underline">
+            apply for a free upgrade
+          </Link>{" "}
+          by telling us what you're building.
         </p>
       </div>
     </Reveal>

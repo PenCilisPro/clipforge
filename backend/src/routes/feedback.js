@@ -12,16 +12,17 @@ const feedbackSchema = z.object({
   category: z.enum(CATEGORIES).default("general"),
   rating: z.coerce.number().int().min(1).max(5).nullable().optional(),
   contact_email: z
-    .union([z.literal(""), z.string().trim().email().max(200)])
+    .union([z.literal(""), z.literal(null), z.string().trim().email().max(200)])
     .optional()
     .transform((v) => (v ? v : null)),
   // Screenshot uploaded by the browser straight to the user's own folder in
   // the public assets bucket — enforce ownership so paths can't be forged.
+  // nullish: clients send null explicitly when no file was attached.
   screenshot_path: z
     .string()
     .trim()
     .max(500)
-    .optional()
+    .nullish()
     .transform((v) => v || null),
 });
 

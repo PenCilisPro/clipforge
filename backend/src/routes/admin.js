@@ -106,9 +106,7 @@ router.get("/api/admin/feedback", async (req, res, next) => {
 
 const replySchema = z.object({
   reply: z.string().trim().min(1, "Reply cannot be empty").max(4000),
-});
-
-/** Admin: respond to a feedback entry. The reply shows on the user's feedback page. */
+});/** Admin: respond to a feedback entry. The reply shows on the user's feedback page. */
 router.patch("/api/admin/feedback/:id/reply", async (req, res, next) => {
   try {
     const { reply } = replySchema.parse(req.body);
@@ -126,6 +124,90 @@ router.patch("/api/admin/feedback/:id/reply", async (req, res, next) => {
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid reply" });
+    }
+    next(err);
+  }
+});
+
+/** Admin: free-upgrade requests with requester info. */
+router.get("/api/admin/upgrade-requests", async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("upgrade_requests")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+
+    const userIds = [...new Set((data ?? []).map((r) => r.user_id))];
+    const { data: requesters } = userIds.length
+      ? await supabaseAdmin
+          .from("profiles")
+          .select("id, email, display_name, plan")
+          .in("id", userIds)
+      : { data: [] };
+    const byId = new Map((requesters ?? []).map((p) => [p.id, p]));
+
+    res.json({
+      requests: (data ?? []).map((r) => ({
+        ...r,
+        account_email: byId.get(r.user_id)?.email ?? null,
+        display_name: byId.get(r.user_id)?.display_name ?? null,
+        account_plan: byId.get(r.user_id)?.plan ?? null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const reviewSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  note: z.string().trim().max(2000).nullish().transform((v) => v || null),
+});
+
+/**
+ * Admin: approve or reject a free-upgrade request. Approving sets the
+ * requester's plan to pro.
+ */
+router.patch("/api/admin/upgrade-requests/:id/review", async (req, res, next) => {
+  try {
+    const { action, note } = reviewSchema.parse(req.body);
+
+    const { data: request } = await supabaseAdmin
+      .from("upgrade_requests")
+      .select("id, user_id, status")
+      .eq("id", req.params.id)
+      .single();
+    if (!request) return res.status(404).json({ error: "Request not found" });
+    if (request.status !== "pending") {
+      return res.status(409).json({ error: `Request is already ${request.status}` });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("upgrade_requests")
+      .update({
+        status: action === "approve" ? "approved" : "rejected",
+        admin_note: note,
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq("id", request.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+
+    if (action === "approve") {
+      const { error: planError } = await supabaseAdmin
+        .from("profiles")
+        .update({ plan: "pro" })
+        .eq("id", request.user_id);
+      if (planError) throw planError;
+    }
+
+    res.json({ request: data });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid review" });
     }
     next(err);
   }
