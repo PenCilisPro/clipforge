@@ -49,12 +49,18 @@ export async function processPublish(job) {
     .single();
   if (!clip?.storage_path) throw new Error("Clip is not ready (missing storage_path)");
 
-  const { data: connection } = await supabaseAdmin
+  // Older posts have no stored connection — fall back to the earliest one.
+  let connectionQuery = supabaseAdmin
     .from("social_connections")
     .select("*")
     .eq("user_id", post.user_id)
-    .eq("platform", post.platform)
-    .single();
+    .eq("platform", post.platform);
+  if (post.social_connection_id) {
+    connectionQuery = connectionQuery.eq("id", post.social_connection_id);
+  } else {
+    connectionQuery = connectionQuery.order("connected_at", { ascending: true }).limit(1);
+  }
+  const { data: connection } = await connectionQuery.single();
   if (!connection) throw new Error(`No connected ${post.platform} account`);
 
   await supabaseAdmin

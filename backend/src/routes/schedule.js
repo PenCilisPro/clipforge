@@ -3,12 +3,14 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePublish, removePublishJob } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
+import { isProOrAdmin } from "../lib/tiers.js";
 
 const router = Router();
 
 const createSchema = z.object({
   clip_id: z.string().uuid(),
   platform: z.enum(["youtube", "instagram", "tiktok", "facebook"]),
+  connection_id: z.string().uuid().nullish(),
   caption_text: z.string().max(4000).nullish(),
   scheduled_time_utc: z.coerce.date(),
 });
@@ -34,6 +36,14 @@ router.post("/api/schedule", requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: "Scheduled time must be in the future" });
     }
 
+    // Auto-scheduled uploads are a paid-plan/admin feature.
+    if (!(await isProOrAdmin(req.user.id, req.user.email))) {
+      return res.status(403).json({
+        error:
+          "Scheduled uploads need a Pro subscription — upgrade your plan or publish manually by downloading the clip.",
+      });
+    }
+
     // The clip must belong to the caller.
     const { data: clip } = await supabaseAdmin
       .from("clips")
@@ -43,17 +53,36 @@ router.post("/api/schedule", requireAuth, async (req, res, next) => {
       .single();
     if (!clip) return res.status(404).json({ error: "Clip not found" });
 
-    // A connected account is required to auto-publish.
-    const { data: connection } = await supabaseAdmin
-      .from("social_connections")
-      .select("id")
-      .eq("user_id", req.user.id)
-      .eq("platform", body.platform)
-      .single();
-    if (!connection) {
-      return res.status(400).json({
-        error: `Connect your ${body.platform} account first (Dashboard → Connections).`,
-      });
+    // A connected account is required to auto-publish. The caller may pick a
+    // specific channel; otherwise fall back to the earliest connection.
+    let connectionId = body.connection_id ?? null;
+    if (connectionId) {
+      const { data: connection } = await supabaseAdmin
+        .from("social_connections")
+        .select("id")
+        .eq("user_id", req.user.id)
+        .eq("id", connectionId)
+        .eq("platform", body.platform)
+        .single();
+      if (!connection) {
+        return res.status(400).json({
+          error: `That ${body.platform} channel is not connected anymore.`,
+        });
+      }
+    } else {
+      const { data: connection } = await supabaseAdmin
+        .from("social_connections")
+        .select("id")
+        .eq("user_id", req.user.id)
+        .eq("platform", body.platform)
+        .order("connected_at", { ascending: true })
+        .limit(1);
+      if (!connection?.length) {
+        return res.status(400).json({
+          error: `Connect your ${body.platform} account first (Dashboard → Connections).`,
+        });
+      }
+      connectionId = connection[0].id;
     }
 
     const { data: post, error } = await supabaseAdmin
@@ -62,6 +91,7 @@ router.post("/api/schedule", requireAuth, async (req, res, next) => {
         user_id: req.user.id,
         clip_id: body.clip_id,
         platform: body.platform,
+        social_connection_id: connectionId,
         caption_text: body.caption_text ?? null,
         scheduled_time_utc: body.scheduled_time_utc.toISOString(),
         status: "scheduled",

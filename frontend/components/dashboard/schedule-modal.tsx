@@ -25,7 +25,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { PLATFORM_LABELS, type Clip, type Platform } from "@/lib/types";
+import { PLATFORM_LABELS, type Clip, type Platform, type SocialConnection } from "@/lib/types";
 
 /** Default to the preset day (calendar "+") or the next full hour. */
 function defaultLocalTime(presetDate?: Date | null): string {
@@ -55,19 +55,29 @@ export function ScheduleModal({
   const [clipOptions, setClipOptions] = useState<Clip[] | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<string>("");
   const [platform, setPlatform] = useState<Platform>("youtube");
+  const [channels, setChannels] = useState<SocialConnection[]>([]);
+  const [channelId, setChannelId] = useState<string>("");
   const [scheduledAt, setScheduledAt] = useState(defaultLocalTime(presetDate));
   const [caption, setCaption] = useState("");
   const [loading, setLoading] = useState(false);
 
   const activeClip = clip ?? clipOptions?.find((c) => c.id === selectedClipId) ?? null;
+  const platformChannels = channels.filter((c) => c.platform === platform);
 
   useEffect(() => {
     if (!open) return;
     setScheduledAt(defaultLocalTime(presetDate));
     setSelectedClipId("");
+    const supabase = createClient();
+    // Channels for the platform selector (users may connect several).
+    supabase
+      .from("social_connections")
+      .select("id, platform, platform_account_id, platform_username, connected_at")
+      .then(({ data }) =>
+        setChannels((data as SocialConnection[]) ?? [])
+      );
     if (!clip) {
       // Calendar flow — offer every ready clip of the user.
-      const supabase = createClient();
       supabase
         .from("clips")
         .select("id, title, hook_text, hashtags, status, project_id, caption_style, caption_font")
@@ -77,6 +87,11 @@ export function ScheduleModal({
         .then(({ data }) => setClipOptions((data as Clip[]) ?? []));
     }
   }, [open, clip, presetDate]);
+
+  // Reset the channel pick when the platform changes.
+  useEffect(() => {
+    setChannelId("");
+  }, [platform]);
 
   // Prefill the caption whenever the active clip changes.
   useEffect(() => {
@@ -103,6 +118,7 @@ export function ScheduleModal({
         body: {
           clip_id: activeClip.id,
           platform,
+          connection_id: channelId || undefined,
           caption_text: caption,
           scheduled_time_utc: utcIso,
         },
@@ -188,6 +204,27 @@ export function ScheduleModal({
               />
             </div>
           </div>
+
+          {platformChannels.length > 1 && (
+            <div className="space-y-1.5">
+              <Label>Channel</Label>
+              <Select value={channelId || "default"} onValueChange={setChannelId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">
+                    Default (first connected channel)
+                  </SelectItem>
+                  {platformChannels.map((channel) => (
+                    <SelectItem key={channel.id} value={channel.id}>
+                      @{channel.platform_username ?? channel.platform_account_id ?? "channel"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="caption">Caption</Label>

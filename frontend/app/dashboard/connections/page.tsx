@@ -39,25 +39,25 @@ const PLATFORMS: {
     key: "youtube",
     label: "YouTube Shorts",
     icon: Youtube,
-    description: "Upload vertical clips as Shorts on your channel.",
+    description: "Upload vertical clips as Shorts on your channels.",
   },
   {
     key: "instagram",
     label: "Instagram Reels",
     icon: Instagram,
-    description: "Publish Reels to a professional/business account.",
+    description: "Publish Reels to professional/business accounts.",
   },
   {
     key: "tiktok",
     label: "TikTok",
     icon: Music2,
-    description: "Post clips directly to your TikTok profile.",
+    description: "Post clips directly to your TikTok profiles.",
   },
   {
     key: "facebook",
     label: "Facebook Reels",
     icon: Facebook,
-    description: "Publish Reels to your Facebook page.",
+    description: "Publish Reels to your Facebook pages.",
   },
 ];
 
@@ -66,6 +66,7 @@ export default function ConnectionsPage() {
   const supabase = useMemo(() => createClient(), []);
   const [connections, setConnections] = useState<SocialConnection[] | null>(null);
   const [connecting, setConnecting] = useState<Platform | null>(null);
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -83,7 +84,8 @@ export default function ConnectionsPage() {
   async function load() {
     const { data } = await supabase
       .from("social_connections")
-      .select("id, user_id, platform, platform_account_id, platform_username, connected_at");
+      .select("id, user_id, platform, platform_account_id, platform_username, connected_at")
+      .order("connected_at", { ascending: true });
     setConnections((data as SocialConnection[]) ?? []);
   }
 
@@ -91,7 +93,8 @@ export default function ConnectionsPage() {
     setConnecting(platform);
     try {
       // Backend returns the OAuth authorize URL for this platform
-      // (it validates the Supabase JWT from the Authorization header).
+      // (it validates the Supabase JWT from the Authorization header,
+      // and enforces the Pro/admin gate for extra channels).
       const { authorizeUrl } = await apiFetch<{ authorizeUrl: string }>(
         `/api/social/${platform}/connect`
       );
@@ -102,13 +105,16 @@ export default function ConnectionsPage() {
     }
   }
 
-  async function handleDisconnect(platform: Platform) {
+  async function handleDisconnect(connection: SocialConnection, label: string) {
+    setDisconnectingId(connection.id);
     try {
-      await apiFetch(`/api/social/connections/${platform}`, { method: "DELETE" });
-      toast.success(`${platform} disconnected`);
+      await apiFetch(`/api/social/connections/${connection.id}`, { method: "DELETE" });
+      toast.success(`${label} disconnected`);
       await load();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Disconnect failed");
+    } finally {
+      setDisconnectingId(null);
     }
   }
 
@@ -122,9 +128,8 @@ export default function ConnectionsPage() {
 
       <div className="mt-6 space-y-4">
         {PLATFORMS.map((platform) => {
-          const connection = connections?.find(
-            (c) => c.platform === platform.key
-          );
+          const platformConnections =
+            connections?.filter((c) => c.platform === platform.key) ?? [];
           return (
             <Card key={platform.key}>
               <CardHeader className="pb-3">
@@ -138,51 +143,69 @@ export default function ConnectionsPage() {
                       <CardDescription>{platform.description}</CardDescription>
                     </div>
                   </div>
-                  {connection && (
+                  {platformConnections.length > 0 && (
                     <Badge
                       variant="outline"
                       className="border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
                     >
-                      <CheckCircle2 className="mr-1 h-3 w-3" /> Connected
+                      <CheckCircle2 className="mr-1 h-3 w-3" />
+                      {platformConnections.length > 1
+                        ? `${platformConnections.length} channels`
+                        : "Connected"}
                     </Badge>
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="flex items-center justify-between">
-                {connection ? (
-                  <>
+              <CardContent className="space-y-3">
+                {platformConnections.map((connection) => (
+                  <div
+                    key={connection.id}
+                    className="flex items-center justify-between rounded-md border px-3 py-2"
+                  >
                     <p className="text-sm text-muted-foreground">
-                      @{connection.platform_username ?? connection.platform_account_id ?? "account"}{" "}
+                      <span className="font-medium text-foreground">
+                        @{connection.platform_username ?? connection.platform_account_id ?? "account"}
+                      </span>{" "}
                       · connected {formatDateTime(connection.connected_at)}
                     </p>
                     <Button
                       size="sm"
                       variant="ghost"
                       className="text-destructive"
-                      onClick={() => handleDisconnect(platform.key)}
+                      disabled={disconnectingId !== null}
+                      onClick={() => handleDisconnect(connection, platform.label)}
                     >
-                      <Trash2 /> Disconnect
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-sm text-muted-foreground">
-                      Not connected yet
-                    </p>
-                    <Button
-                      size="sm"
-                      onClick={() => handleConnect(platform.key)}
-                      disabled={connecting !== null}
-                    >
-                      {connecting === platform.key ? (
+                      {disconnectingId === connection.id ? (
                         <Loader2 className="animate-spin" />
                       ) : (
-                        <Link2 />
+                        <Trash2 />
                       )}
-                      Connect
+                      Disconnect
                     </Button>
-                  </>
-                )}
+                  </div>
+                ))}
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-muted-foreground">
+                    {platformConnections.length === 0
+                      ? "Not connected yet"
+                      : `${platformConnections.length} channel${platformConnections.length > 1 ? "s" : ""} connected`}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant={platformConnections.length === 0 ? "default" : "outline"}
+                    onClick={() => handleConnect(platform.key)}
+                    disabled={connecting !== null}
+                  >
+                    {connecting === platform.key ? (
+                      <Loader2 className="animate-spin" />
+                    ) : platformConnections.length === 0 ? (
+                      <Link2 />
+                    ) : (
+                      <Plus />
+                    )}
+                    {platformConnections.length === 0 ? "Connect" : "Add channel"}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           );
@@ -192,11 +215,12 @@ export default function ConnectionsPage() {
       <div className="mt-8 rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
         <p className="flex items-center gap-2 font-medium text-foreground">
           <Plus className="h-3.5 w-3.5 text-primary-500" />
-          Why connect accounts?
+          Multiple channels
         </p>
         <p className="mt-1">
-          Connecting is only required for auto-scheduling and publishing. You
-          can always download clips and post them manually.
+          The first channel per platform is free for everyone. Connecting
+          additional channels — and scheduled uploads — require a Pro
+          subscription (or admin access).
         </p>
       </div>
     </div>

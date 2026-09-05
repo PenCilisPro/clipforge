@@ -3,14 +3,13 @@ import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
-import { env } from "../config/env.js";
+import { isProOrAdmin } from "../lib/tiers.js";
 
 const router = Router();
 
 const CLIP_LENGTH_PREFS = ["10-14", "15-30", "31-45", "60+", "ai_optimized"];
 // Tiers above "1-5" require a paid plan (pro/business) or an admin account.
 const CLIP_COUNT_TIERS = ["1-5", "6-10", "11-15"];
-const PAID_PLANS = ["pro", "business"];
 const MUSIC_MOODS = [
   "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
 ];
@@ -64,14 +63,7 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
 
     // Clip-count gate: tiers above 1-5 are a paid-plan/admin feature.
     if (body.clip_count_tier !== "1-5") {
-      const email = (req.user.email ?? "").toLowerCase();
-      const isAdmin = env.adminEmails.includes(email);
-      const { data: planRow } = await supabaseAdmin
-        .from("profiles")
-        .select("plan")
-        .eq("id", req.user.id)
-        .single();
-      if (!isAdmin && !PAID_PLANS.includes(planRow?.plan ?? "free")) {
+      if (!(await isProOrAdmin(req.user.id, req.user.email))) {
         return res.status(403).json({
           error:
             "More than 5 clips per video needs a Pro subscription — upgrade your plan or pick 1-5 clips.",
