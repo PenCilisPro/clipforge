@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -29,6 +29,12 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { createClient } from "@/lib/supabase/client";
+
+const CLIP_COUNT_TIERS = [
+  { value: "1-5", label: "1–5 clips" },
+  { value: "6-10", label: "6–10 clips", tier: "pro" },
+  { value: "11-15", label: "11–15 clips", tier: "pro" },
+] as const;
 
 const CLIP_LENGTHS = [
   { value: "10-14", label: "10–14 seconds" },
@@ -69,7 +75,26 @@ export default function NewProjectPage() {
   const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   // Render preferences
+  const [clipCountTier, setClipCountTier] = useState("1-5");
   const [clipLength, setClipLength] = useState("ai_optimized");
+  const [plan, setPlan] = useState<string>("free");
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { profile } = await apiFetch<{
+          profile: { plan?: string; is_admin?: boolean };
+        }>("/api/me");
+        setPlan(profile.plan ?? "free");
+        setIsAdmin(Boolean(profile.is_admin));
+      } catch {
+        // Non-fatal: the backend re-checks entitlements on create anyway.
+      }
+    })();
+  }, []);
+
+  const paidFeatures = plan === "pro" || plan === "business" || isAdmin;
   const [mood, setMood] = useState("upbeat");
   const [tracks, setTracks] = useState<MusicTrack[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(false);
@@ -117,7 +142,7 @@ export default function NewProjectPage() {
   async function createProject(body: Record<string, unknown>) {
     await apiFetch("/api/projects", {
       method: "POST",
-      body: { clip_length_pref: clipLength, ...musicFields(), ...body },
+      body: { clip_count_tier: clipCountTier, clip_length_pref: clipLength, ...musicFields(), ...body },
     });
   }
 
@@ -340,6 +365,46 @@ export default function NewProjectPage() {
 
       {/* Preferences — shared by both creation paths */}
       <div className="mt-6 space-y-6">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Number of clips</CardTitle>
+            <CardDescription>
+              How many clips should the AI pick from this video? Tiers above
+              5 clips need a Pro subscription.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Select
+              value={clipCountTier}
+              onValueChange={setClipCountTier}
+            >
+              <SelectTrigger className="w-full sm:w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CLIP_COUNT_TIERS.map((option) => {
+                  const locked = "tier" in option && !paidFeatures;
+                  return (
+                    <SelectItem
+                      key={option.value}
+                      value={option.value}
+                      disabled={locked}
+                    >
+                      {option.label}
+                      {locked ? " — Pro" : ""}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            {!paidFeatures && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Upgrade to Pro to generate up to 15 clips per video.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Clip length</CardTitle>

@@ -13,6 +13,9 @@ import { env } from "../lib/env.js";
  * spaced sample clips are created so the rest of the pipeline (trim →
  * Shotstack → storage) remains testable end-to-end.
  */
+/** User-chosen clip-count tier → upper bound handed to viral selection. */
+const CLIP_COUNT_MAX = { "1-5": 5, "6-10": 10, "11-15": 15 };
+
 export async function processAnalyze(job) {
   const { projectId, jobRowId } = job.data;
 
@@ -21,7 +24,7 @@ export async function processAnalyze(job) {
 
     const { data: project, error } = await supabaseAdmin
       .from("projects")
-      .select("id, transcript_json, duration_seconds, clip_length_pref")
+      .select("id, transcript_json, duration_seconds, clip_length_pref, clip_count_tier")
       .eq("id", projectId)
       .single();
     if (error || !project) throw new Error(`Project ${projectId} not found`);
@@ -35,7 +38,7 @@ export async function processAnalyze(job) {
       suggestions = await detectViralClips({
         transcriptJson: project.transcript_json,
         durationSeconds,
-        maxClips: env.maxClips,
+        maxClips: CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
         clipLengthPref,
       });
     } catch (err) {
