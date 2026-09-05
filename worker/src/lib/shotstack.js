@@ -16,6 +16,9 @@ const BASE_URL = () =>
  *
  * Captions are HTML text clips (native caption assets ignore timeline fonts
  * and accept no styling), so the chosen font's .ttf ships in timeline.fonts.
+ * Each fonts[] entry must be exactly { src } — family/size/etc. are rejected
+ * as unknown_property (stage API, probe-verified); the family name in the
+ * caption HTML resolves via the .ttf's internal name.
  */
 export function buildEditJson({
   rawClipUrl,
@@ -102,7 +105,7 @@ export function buildEditJson({
   return {
     timeline: {
       background: "#000000",
-      fonts: [captionFont(captionFontKey)],
+      fonts: [{ src: captionFont(captionFontKey).src }],
       tracks,
     },
     output: {
