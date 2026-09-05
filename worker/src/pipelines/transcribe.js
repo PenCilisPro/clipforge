@@ -5,6 +5,7 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds } from "../lib/ffmpeg.js";
+import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
 let speechClient = null;
@@ -56,13 +57,9 @@ export async function processTranscribe(job) {
 
     await ensureTmpDir();
 
-    // 1. Pull source video out of storage
-    const { data: videoBlob, error: dlError } = await supabaseAdmin.storage
-      .from("source-videos")
-      .download(project.original_video_path);
-    if (dlError) throw dlError;
+    // 1. Pull source video out of storage (reassembles split uploads)
     const localVideo = tmpPath(`source-${projectId}.mp4`);
-    await fs.writeFile(localVideo, Buffer.from(await videoBlob.arrayBuffer()));
+    await fetchSourceVideo(project, localVideo);
 
     // 2. FFmpeg → mono 16 kHz WAV
     const localAudio = tmpPath(`audio-${projectId}.wav`);

@@ -6,11 +6,11 @@ import {
   cleanup,
   trimSegment,
   generateThumbnail,
-  downloadToFile,
 } from "../lib/ffmpeg.js";
 import { buildCaptionsForClip, cuesToSrt, parseSrt, attachWordTimings } from "../lib/srt.js";
 import { buildEditJson, submitRender } from "../lib/shotstack.js";
 import { planBroll, brollConfigured, isTrustedStockUrl } from "../lib/broll.js";
+import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -64,14 +64,12 @@ export async function processRender(job) {
       return { clipId, skipped: true };
     }
 
-    // 1. Source video → local. Streamed to disk — buffering the whole file in
-    // the Node heap OOM-kills small containers before ffmpeg even starts.
+    // 1. Source video → local. Fetched part-by-part and written to disk —
+    // buffering the whole file in the Node heap OOM-kills small containers
+    // before ffmpeg even starts. Split uploads are reassembled on the fly.
     const fs = await import("node:fs/promises");
     const localSource = tmpPath(`source-${projectId}.mp4`);
-    await downloadToFile(
-      await signedSourceUrl("source-videos", project.original_video_path),
-      localSource
-    );
+    await fetchSourceVideo(project, localSource);
 
     const start = Number(clip.start_time);
     const duration = Math.max(3, Number(clip.end_time) - start);

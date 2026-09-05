@@ -177,22 +177,55 @@ export default function NewProjectPage() {
     setUploadPct(0);
     try {
       const userId = await getUserId();
-
-      const path = `${userId}/${Date.now()}-${safeUploadName(file.name)}`;
       const supabase = createClient();
 
-      const { error } = await supabase.storage
-        .from("source-videos")
-        .upload(path, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
-      if (error) throw error;
-      setUploadPct(100);
+      // Files over the free-plan 50 MB per-upload cap are split in the browser
+      // into ~40 MB parts; the worker stitches them back together locally.
+      const PART_BYTES = 40 * 1024 * 1024;
+      let storagePath: string;
+      if (file.size <= PART_BYTES) {
+        storagePath = `${userId}/${Date.now()}-${safeUploadName(file.name)}`;
+        const { error } = await supabase.storage
+          .from("source-videos")
+          .upload(storagePath, file, { cacheControl: "3600", upsert: false });
+        if (error) throw error;
+        setUploadPct(100);
+      } else {
+        const uploadId = `${Date.now()}-${safeUploadName(file.name).replace(/\.[^.]+$/, "")}`;
+        const folder = `${userId}/parts/${uploadId}`;
+        const parts: string[] = [];
+        for (let offset = 0, i = 0; offset < file.size; offset += PART_BYTES, i++) {
+          const partPath = `${folder}/part-${String(i).padStart(5, "0")}`;
+          const chunk = file.slice(offset, offset + PART_BYTES);
+          const { error } = await supabase.storage.from("source-videos").upload(partPath, chunk, {
+            cacheControl: "3600",
+            upsert: false,
+            contentType: "application/octet-stream",
+          });
+          if (error) throw error;
+          parts.push(partPath);
+          setUploadPct(Math.min(99, Math.round(((offset + PART_BYTES) / file.size) * 100)));
+        }
+        // Manifest is the project's storage_path — its presence means every
+        // part made it, and the worker keys off the .json suffix.
+        const manifestPath = `${folder}/manifest.json`;
+        const { error: manifestError } = await supabase.storage
+          .from("source-videos")
+          .upload(
+            manifestPath,
+            new Blob([JSON.stringify({ parts, size: file.size })], {
+              type: "application/json",
+            }),
+            { contentType: "application/json", upsert: false }
+          );
+        if (manifestError) throw manifestError;
+        storagePath = manifestPath;
+        setUploadPct(100);
+      }
 
       await createProject({
         source_type: "upload",
-        storage_path: path,
+        storage_path: storagePath,
         title: title || file.name,
       });
 

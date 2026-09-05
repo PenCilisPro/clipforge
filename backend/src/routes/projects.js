@@ -249,8 +249,21 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
     ]);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    // Split uploads live as part-N files under a folder next to manifest.json
+    // — remove the whole folder, not just the manifest.
+    let sourcePaths = [project.original_video_path];
+    if (project.original_video_path?.endsWith("/manifest.json")) {
+      const folder = project.original_video_path.split("/").slice(0, -1).join("/");
+      const { data: objects } = await supabaseAdmin.storage
+        .from("source-videos")
+        .list(folder, { limit: 1000 });
+      if (objects?.length) {
+        sourcePaths = objects.map((o) => `${folder}/${o.name}`);
+      }
+    }
+
     const byBucket = {
-      "source-videos": [project.original_video_path],
+      "source-videos": sourcePaths,
       clips: (clips ?? []).flatMap((c) => [c.raw_clip_path, c.srt_path, c.storage_path]),
       assets: (clips ?? []).map((c) => c.thumbnail_path),
     };
