@@ -26,3 +26,13 @@ export function scoreLabel(score: number | null | undefined): string {
   if (score == null) return "—";
   return `${Math.round(score)}`;
 }
+
+/** Supabase Storage rejects keys with characters like [ ] # ? % — keep only
+ *  alphanumerics, dash, underscore and dot, and cap the length. */
+export function safeUploadName(name: string): string {
+  const cleaned = name
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return (cleaned || "file").slice(-120);
+}

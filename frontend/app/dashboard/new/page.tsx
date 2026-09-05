@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Link2, Loader2, Music, Upload } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
-import { cn, formatDuration } from "@/lib/utils";
+import { cn, formatDuration, safeUploadName } from "@/lib/utils";
 import { Reveal } from "@/components/dashboard/reveal";
 import { Button } from "@/components/ui/button";
 import {
@@ -178,7 +178,7 @@ export default function NewProjectPage() {
     try {
       const userId = await getUserId();
 
-      const path = `${userId}/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+      const path = `${userId}/${Date.now()}-${safeUploadName(file.name)}`;
       const supabase = createClient();
 
       const { error } = await supabase.storage

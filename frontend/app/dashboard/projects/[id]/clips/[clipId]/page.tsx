@@ -33,7 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn, safeUploadName } from "@/lib/utils";
 
 const AI_CREDIT_COST = 10;
 
@@ -270,7 +270,7 @@ export default function ClipEditPage() {
     setBrollUploading(true);
     try {
       const userId = await getUserId();
-      const path = `${userId}/broll/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+      const path = `${userId}/broll/${Date.now()}-${safeUploadName(file.name)}`;
       const { error } = await supabase()
         .storage.from("user-uploads")
         .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "video/mp4" });
@@ -391,7 +391,7 @@ export default function ClipEditPage() {
     setMusicUploading(true);
     try {
       const userId = await getUserId();
-      const path = `${userId}/music/${Date.now()}-${file.name.replace(/\s+/g, "-")}`;
+      const path = `${userId}/music/${Date.now()}-${safeUploadName(file.name)}`;
       const { error } = await supabase()
         .storage.from("user-uploads")
         .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "audio/mpeg" });
