@@ -15,6 +15,28 @@ import { fetchCatalog } from "./music.js";
 
 const router = Router();
 
+// Per-user throttle for render-spawning endpoints: every re-render costs
+// Shotstack credits, and the global rate limiter alone permits ~120/min.
+// In-memory (per instance) — sufficient for the single-render-worker setup.
+const RENDER_WINDOW_MS = 60_000;
+const RENDER_MAX_PER_WINDOW = 10;
+const renderStarts = new Map();
+
+function renderRateLimit(req, res, next) {
+  const id = req.user?.id;
+  if (!id) return next();
+  const now = Date.now();
+  const recent = (renderStarts.get(id) ?? []).filter((t) => now - t < RENDER_WINDOW_MS);
+  if (recent.length >= RENDER_MAX_PER_WINDOW) {
+    return res
+      .status(429)
+      .json({ error: "Too many renders started — wait a moment and try again." });
+  }
+  recent.push(now);
+  renderStarts.set(id, recent);
+  next();
+}
+
 const CAPTION_STYLES = [
   "classic", "karaoke", "bold-pop", "neon", "meme",
   "green-screen", "highlighter", "ocean", "bubblegum", "royal", "minimal-mono",
@@ -70,6 +92,13 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
       return res.status(409).json({ error: "No video available yet — wait for the render." });
     }
 
+    // Defense in depth: clip rows were client-writable before hardening —
+    // never sign a storage path outside the caller's own folder.
+    const ownsPath = (p) => typeof p === "string" && p.startsWith(`${req.user.id}/`);
+    if (!ownsPath(videoPath) || (clip.srt_path && !ownsPath(clip.srt_path))) {
+      return res.status(403).json({ error: "Invalid clip path" });
+    }
+
     const [{ data: video }, srtResult] = await Promise.all([
       supabaseAdmin.storage.from("clips").createSignedUrl(videoPath, 60 * 60),
       clip.srt_path
@@ -109,6 +138,11 @@ router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next)
     if (!videoPath) {
       return res.status(409).json({ error: "No source video for this project." });
     }
+    // The project owner could have tampered the stored path — only sign
+    // sources under their own folder.
+    if (!String(videoPath).startsWith(`${req.user.id}/`)) {
+      return res.status(403).json({ error: "Invalid source path" });
+    }
     if (videoPath.endsWith("/manifest.json")) {
       return res.json({ video_url: null, split: true, duration });
     }
@@ -130,7 +164,7 @@ router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next)
  * source. Overrides are cleared when timing changes without new captions so
  * captions never desync from the new window.
  */
-router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
+router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res, next) => {
   try {
     const body = editSchema.parse(req.body);
 
@@ -211,11 +245,189 @@ router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
   }
 });
 
+// Clip columns that describe the edit — copied verbatim on split/duplicate.
+const CLIP_COPY_COLUMNS =
+  "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
+  "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
+  "caption_shadow, caption_shadow_color, caption_shadow_size, srt_override, broll_json";
+
+const splitSchema = z.object({
+  at: z.coerce.number().finite().min(0).max(43_200),
+  srt_part1: z.string().max(20_000).optional(),
+  srt_part2: z.string().max(20_000).optional(),
+  broll_part1: brollSegmentListSchema.optional(),
+  broll_part2: brollSegmentListSchema.optional(),
+});
+
+/**
+ * Split a clip into two at a source-time position: the current row becomes
+ * part 1 (start → at), a new row is created for part 2 (at → end), and both
+ * re-render. Caption cues / B-roll segments arrive pre-split from the editor
+ * (clip-relative); an empty SRT string clears the override so that part's
+ * captions regenerate from the transcript.
+ */
+router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, res, next) => {
+  try {
+    const body = splitSchema.parse(req.body);
+
+    const { data: clip, error: clipError } = await supabaseAdmin
+      .from("clips")
+      .select(CLIP_COPY_COLUMNS)
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const start = Number(clip.start_time);
+    const end = Number(clip.end_time);
+    if (body.at <= start + 3 || body.at >= end - 3) {
+      return res.status(400).json({ error: "Both parts must be at least 3 seconds long" });
+    }
+
+    const { data: part1, error: updateError } = await supabaseAdmin
+      .from("clips")
+      .update({
+        end_time: body.at,
+        status: "queued",
+        error_message: null,
+        storage_path: null,
+        shotstack_render_id: null,
+        srt_override: body.srt_part1 || null,
+        ...(body.broll_part1 !== undefined ? { broll_json: body.broll_part1 } : {}),
+      })
+      .eq("id", clip.id)
+      .select(CLIP_COPY_COLUMNS)
+      .single();
+    if (updateError) throw updateError;
+
+    const { data: part2, error: insertError } = await supabaseAdmin
+      .from("clips")
+      .insert({
+        project_id: clip.project_id,
+        user_id: clip.user_id,
+        title: clip.title ? `${clip.title} — Part 2` : null,
+        hook_text: clip.hook_text,
+        start_time: body.at,
+        end_time: end,
+        virality_score: clip.virality_score,
+        reason: clip.reason,
+        hashtags: clip.hashtags ?? [],
+        caption_style: clip.caption_style,
+        caption_font: clip.caption_font,
+        caption_color: clip.caption_color,
+        caption_stroke: clip.caption_stroke,
+        caption_stroke_color: clip.caption_stroke_color,
+        caption_stroke_size: clip.caption_stroke_size,
+        caption_shadow: clip.caption_shadow,
+        caption_shadow_color: clip.caption_shadow_color,
+        caption_shadow_size: clip.caption_shadow_size,
+        srt_override: body.srt_part2 || null,
+        ...(body.broll_part2 !== undefined ? { broll_json: body.broll_part2 } : {}),
+        status: "queued",
+      })
+      .select(CLIP_COPY_COLUMNS)
+      .single();
+    if (insertError) throw insertError;
+
+    for (const part of [part1, part2]) {
+      const { data: jobRow, error: jobError } = await supabaseAdmin
+        .from("jobs")
+        .insert({
+          project_id: clip.project_id,
+          clip_id: part.id,
+          job_type: "render",
+          status: "queued",
+        })
+        .select("id")
+        .single();
+      if (jobError) throw jobError;
+      await enqueuePipeline("render", {
+        projectId: clip.project_id,
+        clipId: part.id,
+        jobRowId: jobRow.id,
+      });
+    }
+
+    res.json({ part1, part2 });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid split" });
+    }
+    next(err);
+  }
+});
+
+/**
+ * Duplicate a clip: same window, captions, B-roll and style — the copy is
+ * queued for its own render.
+ */
+router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req, res, next) => {
+  try {
+    const { data: clip, error: clipError } = await supabaseAdmin
+      .from("clips")
+      .select(CLIP_COPY_COLUMNS)
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (clipError || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const { data: copy, error: insertError } = await supabaseAdmin
+      .from("clips")
+      .insert({
+        project_id: clip.project_id,
+        user_id: clip.user_id,
+        title: clip.title ? `${clip.title} (copy)` : null,
+        hook_text: clip.hook_text,
+        start_time: clip.start_time,
+        end_time: clip.end_time,
+        virality_score: clip.virality_score,
+        reason: clip.reason,
+        hashtags: clip.hashtags ?? [],
+        caption_style: clip.caption_style,
+        caption_font: clip.caption_font,
+        caption_color: clip.caption_color,
+        caption_stroke: clip.caption_stroke,
+        caption_stroke_color: clip.caption_stroke_color,
+        caption_stroke_size: clip.caption_stroke_size,
+        caption_shadow: clip.caption_shadow,
+        caption_shadow_color: clip.caption_shadow_color,
+        caption_shadow_size: clip.caption_shadow_size,
+        srt_override: clip.srt_override,
+        broll_json: clip.broll_json,
+        status: "queued",
+      })
+      .select(CLIP_COPY_COLUMNS)
+      .single();
+    if (insertError) throw insertError;
+
+    const { data: jobRow, error: jobError } = await supabaseAdmin
+      .from("jobs")
+      .insert({
+        project_id: clip.project_id,
+        clip_id: copy.id,
+        job_type: "render",
+        status: "queued",
+      })
+      .select("id")
+      .single();
+    if (jobError) throw jobError;
+    await enqueuePipeline("render", {
+      projectId: clip.project_id,
+      clipId: copy.id,
+      jobRowId: jobRow.id,
+    });
+
+    res.json({ clip: copy });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * Re-render a clip with a new caption style.
  * Resets the clip to `queued`, logs a render job and enqueues the stage.
  */
-router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => {
+router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (req, res, next) => {
   try {
     const body = regenerateSchema.parse(req.body);
 
@@ -499,36 +711,36 @@ function parseStorageSrc(src) {
   return String(src).match(STORAGE_SRC_RE)?.[1] ?? null;
 }
 
-const brollSegmentSchema = z.object({
-  segments: z
-    .array(
-      z.object({
-        start: z.coerce.number().finite().min(0).max(43_200),
-        end: z.coerce.number().finite().min(0).max(43_200),
-        src: z
-          .string()
-          .min(1)
-          .refine((u) => {
-            // A stock-provider URL or the user's own uploaded MP4, referenced
-            // as storage:user-uploads/<uid>/broll/<file>.
-            if (u.startsWith("storage:")) return STORAGE_SRC_RE.test(u);
-            try {
-              const host = new URL(u).hostname;
-              return (
-                u.startsWith("https:") &&
-                (host === "pexels.com" || host.endsWith(".pexels.com") ||
-                 host === "pixabay.com" || host.endsWith(".pixabay.com"))
-              );
-            } catch {
-              return false;
-            }
-          }, { message: "B-roll must come from the stock providers or your own uploads" }),
-      })
-      .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
-      .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
-    )
-    .max(8),
-});
+const brollSegmentListSchema = z
+  .array(
+    z.object({
+      start: z.coerce.number().finite().min(0).max(43_200),
+      end: z.coerce.number().finite().min(0).max(43_200),
+      src: z
+        .string()
+        .min(1)
+        .refine((u) => {
+          // A stock-provider URL or the user's own uploaded MP4, referenced
+          // as storage:user-uploads/<uid>/broll/<file>.
+          if (u.startsWith("storage:")) return STORAGE_SRC_RE.test(u);
+          try {
+            const host = new URL(u).hostname;
+            return (
+              u.startsWith("https:") &&
+              (host === "pexels.com" || host.endsWith(".pexels.com") ||
+               host === "pixabay.com" || host.endsWith(".pixabay.com"))
+            );
+          } catch {
+            return false;
+          }
+        }, { message: "B-roll must come from the stock providers or your own uploads" }),
+    })
+    .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
+    .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
+  )
+  .max(8);
+
+const brollSegmentSchema = z.object({ segments: brollSegmentListSchema });
 
 /** Replace the clip's manually-curated b-roll segments (free). */
 router.post("/api/clips/:id/broll/segments", requireAuth, async (req, res, next) => {

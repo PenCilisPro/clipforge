@@ -14,6 +14,7 @@ import {
   Play,
   Repeat,
   Scissors,
+  Split,
   Volume2,
   VolumeX,
   X,
@@ -52,6 +53,8 @@ interface TimelineEditorProps {
   onTrim: (start: number, end: number) => void;
   /** Fired once when a trim drag is released (commit-time side effects). */
   onTrimCommit?: () => void;
+  /** Split the clip into two at the given source time (playhead). */
+  onSplit?: (atSource: number) => void;
   cues: SrtCue[];
   onCuesChange: (cues: SrtCue[]) => void;
   /** null = AI plans B-roll at render; [] = off. */
@@ -83,6 +86,7 @@ export function TimelineEditor({
   end,
   onTrim,
   onTrimCommit,
+  onSplit,
   cues,
   onCuesChange,
   broll,
@@ -688,6 +692,19 @@ export function TimelineEditor({
               }}
             >
               <Scissors className="h-3.5 w-3.5" /> Set out
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={!canPlay || windowLen < 6}
+              title="Split into two clips at the playhead — both parts re-render immediately"
+              onClick={() => {
+                const t = videoRef.current?.currentTime;
+                if (t != null) onSplit?.(snap(t));
+              }}
+            >
+              <Split className="h-3.5 w-3.5" /> Split
             </Button>
             <Button
               size="sm"

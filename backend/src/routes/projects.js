@@ -114,6 +114,26 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         .json({ error: "Out of credits — upgrade your plan to keep forging clips." });
     }
 
+    // Uploads must reference a file in the caller's own source-videos folder
+    // (never another user's) and must actually exist — the worker downloads
+    // whatever path is stored here with the service role.
+    if (body.source_type === "upload") {
+      const path = body.storage_path;
+      if (!path.startsWith(`${req.user.id}/`)) {
+        return res.status(400).json({ error: "Invalid upload path" });
+      }
+      const folder = path.split("/").slice(0, -1).join("/");
+      const fileName = path.split("/").pop();
+      const { data: obj, error: objError } = await supabaseAdmin.storage
+        .from("source-videos")
+        .list(folder, { search: fileName, limit: 1 });
+      if (objError || !obj || obj.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Uploaded video not found — try uploading again" });
+      }
+    }
+
     const { data: project, error } = await supabaseAdmin
       .from("projects")
       .insert({

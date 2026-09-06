@@ -20,6 +20,12 @@ export function isSplitSource(path) {
  */
 export async function fetchSourceVideo(project, localPath) {
   const path = project.original_video_path;
+  // The stored path must live under the project owner's folder — the
+  // service role bypasses storage RLS, so this is the only guard against
+  // a tampered row pulling another user's video.
+  if (!String(path ?? "").startsWith(`${project.user_id}/`)) {
+    throw new Error("Source video path does not belong to the project owner");
+  }
   if (!isSplitSource(path)) {
     const { data: blob, error } = await supabaseAdmin.storage
       .from("source-videos")
@@ -39,6 +45,9 @@ export async function fetchSourceVideo(project, localPath) {
 
   await fs.writeFile(localPath, Buffer.alloc(0));
   for (const part of parts) {
+    if (!String(part ?? "").startsWith(`${project.user_id}/`)) {
+      throw new Error(`Upload part ${part} does not belong to the project owner`);
+    }
     const { data: blob, error } = await supabaseAdmin.storage
       .from("source-videos")
       .download(part);

@@ -98,17 +98,24 @@ export async function processRender(job) {
     //   (pexels/pixabay) or the user's own MP4 uploads ("storage:..." refs).
     const resolveBrollSrc = async (src) => {
       const match = String(src).match(/^storage:user-uploads\/(.+)$/);
-      return match ? await signedSourceUrl("user-uploads", match[1]) : String(src);
+      if (!match) return String(src);
+      // Service role bypasses storage RLS — only sign the project owner's
+      // own uploads, never another user's folder.
+      if (!match[1].startsWith(`${project.user_id}/broll/`)) {
+        throw new Error(`B-roll path does not belong to the project owner: ${match[1]}`);
+      }
+      return await signedSourceUrl("user-uploads", match[1]);
     };
     let brollClips = [];
     if (Array.isArray(clip.broll_json)) {
+      const ownStoragePrefix = `storage:user-uploads/${project.user_id}/broll/`;
       brollClips = clip.broll_json
         .filter(
           (b) =>
             b &&
             Number.isFinite(Number(b.start)) &&
             Number(b.end) > Number(b.start) &&
-            (isTrustedStockUrl(b.src) || /^storage:user-uploads\//.test(String(b.src)))
+            (isTrustedStockUrl(b.src) || String(b.src).startsWith(ownStoragePrefix))
         )
         .slice(0, 8);
       brollClips = await Promise.all(
@@ -157,10 +164,15 @@ export async function processRender(job) {
     // 5. Shotstack Edit JSON
     const rawClipUrl = await signedSourceUrl("clips", rawPath);
 
-    // Music: a Jamendo URL is fetched directly; an uploaded MP3 is signed.
+    // Music: a Jamendo URL is fetched directly; an uploaded MP3 is signed —
+    // but only if it lives in the project owner's own uploads folder.
     let musicUrl = project.music_url;
     if (!musicUrl && project.music_storage_path) {
-      musicUrl = await signedSourceUrl("user-uploads", project.music_storage_path);
+      if (String(project.music_storage_path).startsWith(`${project.user_id}/music/`)) {
+        musicUrl = await signedSourceUrl("user-uploads", project.music_storage_path);
+      } else {
+        job.log("Ignoring music_storage_path — path is outside the project owner's folder");
+      }
     }
 
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;

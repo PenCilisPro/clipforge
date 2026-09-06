@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  Copy,
   Film,
   Loader2,
   Music2,
@@ -24,7 +25,7 @@ import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import type { Clip, Project } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
-import { clamp, cuesFromTranscript } from "@/lib/timeline";
+import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
 import { TimelineEditor, type BrollSegment } from "@/components/dashboard/timeline-editor";
 import {
   CaptionStyleControls,
@@ -421,6 +422,101 @@ export default function ClipEditPage() {
     if (commit) void saveBrollSegments(segments);
   }
 
+  /**
+   * Split into two clips at the playhead (source seconds). Caption cues and
+   * B-roll segments are divided at the boundary and sent pre-split; the
+   * backend turns the current row into part 1, creates part 2 and re-renders
+   * both immediately (no Save step needed).
+   */
+  async function handleSplit(atSource: number) {
+    if (!clip || saving) return;
+    const start = Number(startTime);
+    const end = Number(endTime);
+    const at = clamp(atSource, start + MIN_CLIP_SECONDS, end - MIN_CLIP_SECONDS);
+    if (at - start < MIN_CLIP_SECONDS || end - at < MIN_CLIP_SECONDS) {
+      toast.error("Both parts must be at least 3 seconds long");
+      return;
+    }
+
+    const boundary = Number((at - start).toFixed(1));
+    const part1: SrtCue[] = [];
+    const part2: SrtCue[] = [];
+    for (const c of cues) {
+      if (c.end <= boundary) part1.push(c);
+      else if (c.start >= boundary) {
+        part2.push({
+          ...c,
+          id: crypto.randomUUID(),
+          start: Number((c.start - boundary).toFixed(1)),
+          end: Number((c.end - boundary).toFixed(1)),
+        });
+      } else {
+        // Cue spans the split — keep the piece on each side if it's readable.
+        if (boundary - c.start >= 0.3) part1.push({ ...c, end: boundary });
+        if (c.end - boundary >= 0.3) {
+          part2.push({ ...c, id: crypto.randomUUID(), start: 0, end: Number((c.end - boundary).toFixed(1)) });
+        }
+      }
+    }
+
+    const splitSegments = (segs: BrollSegment[]) => {
+      const p1: BrollSegment[] = [];
+      const p2: BrollSegment[] = [];
+      for (const s of segs) {
+        if (s.end <= boundary) p1.push(s);
+        else if (s.start >= boundary) {
+          p2.push({
+            ...s,
+            start: Number((s.start - boundary).toFixed(1)),
+            end: Number((s.end - boundary).toFixed(1)),
+          });
+        } else {
+          if (boundary - s.start >= 0.5) p1.push({ ...s, end: boundary });
+          if (s.end - boundary >= 0.5) {
+            p2.push({ ...s, start: 0, end: Number((s.end - boundary).toFixed(1)) });
+          }
+        }
+      }
+      return [p1, p2] as const;
+    };
+    const [brollPart1, brollPart2] = Array.isArray(clip.broll_json)
+      ? splitSegments(clip.broll_json)
+      : [undefined, undefined];
+
+    setSaving(true);
+    try {
+      await apiFetch(`/api/clips/${clip.id}/split`, {
+        method: "POST",
+        body: {
+          at,
+          srt_part1: cuesToSrtText(part1),
+          srt_part2: cuesToSrtText(part2),
+          ...(brollPart1 !== undefined ? { broll_part1: brollPart1, broll_part2: brollPart2 } : {}),
+        },
+      });
+      toast.success("Clip split — both parts are re-rendering");
+      router.push(`/dashboard/projects/${params.id}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to split clip");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDuplicate() {
+    if (!clip || saving) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/clips/${clip.id}/duplicate`, { method: "POST" });
+      toast.success("Clip duplicated — rendering the copy");
+      router.push(`/dashboard/projects/${params.id}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to duplicate clip");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function autoFillCaptions() {
     const words = project?.transcript_json?.words ?? [];
     const next = cuesFromTranscript(words, Number(startTime), Number(endTime));
@@ -689,10 +785,15 @@ export default function ClipEditPage() {
             style, add music — then re-render.
           </p>
         </div>
-        <Button onClick={save} disabled={saving}>
-          {saving ? <Loader2 className="animate-spin" /> : <Save />}
-          {saving ? "Re-rendering…" : "Save & re-render"}
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleDuplicate} disabled={saving}>
+            <Copy /> Duplicate
+          </Button>
+          <Button onClick={save} disabled={saving}>
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
+            {saving ? "Re-rendering…" : "Save & re-render"}
+          </Button>
+        </div>
       </div>
 
       {/* CapCut-style manual timeline editor (source video canvas) */}
@@ -705,6 +806,7 @@ export default function ClipEditPage() {
             end={Number(endTime)}
             onTrim={handleTrim}
             onTrimCommit={handleTrimCommit}
+            onSplit={handleSplit}
             cues={cues}
             onCuesChange={(next) => {
               setCues(next);

@@ -76,14 +76,15 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
       return res.status(502).json({ error: "The assistant returned an empty reply." });
     }
 
-    // Charge only on a successful reply — failed calls are free.
-    const { error: chargeError } = await supabaseAdmin
-      .from("profiles")
-      .update({ credits_remaining: Number(profile.credits_remaining) - 1 })
-      .eq("id", req.user.id);
+    // Charge atomically — a read-then-write here would race on concurrent
+    // messages and overdraw credits. Null result means insufficient credits.
+    const { data: left, error: chargeError } = await supabaseAdmin.rpc("deduct_credits", {
+      p_user_id: req.user.id,
+      p_amount: 1,
+    });
     if (chargeError) console.error("[chat] credit charge failed:", chargeError.message);
 
-    res.json({ reply, credits_remaining: Number(profile.credits_remaining) - 1 });
+    res.json({ reply, credits_remaining: left != null ? Number(left) : null });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid chat body" });

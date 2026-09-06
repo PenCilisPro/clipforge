@@ -154,6 +154,9 @@ router.patch("/api/schedule/:id", requireAuth, async (req, res, next) => {
       updates.bullmq_job_id = String(job.id);
     }
     if (typeof caption_text === "string") {
+      if (caption_text.length > 4000) {
+        return res.status(400).json({ error: "Caption text is too long (max 4000 characters)" });
+      }
       updates.caption_text = caption_text;
     }
 

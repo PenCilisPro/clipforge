@@ -1,9 +1,18 @@
 import { Router } from "express";
+import crypto from "node:crypto";
 import { supabaseAdmin } from "../../lib/supabase.js";
 import { enqueuePipeline } from "../../lib/queues.js";
 import { env } from "../../config/env.js";
 
 const router = Router();
+
+/** Constant-time secret compare (hash first so lengths always match). */
+function secretMatches(provided, expected) {
+  if (!expected) return false;
+  const a = crypto.createHash("sha256").update(String(provided)).digest();
+  const b = crypto.createHash("sha256").update(String(expected)).digest();
+  return crypto.timingSafeEqual(a, b);
+}
 
 /**
  * Shotstack render webhook.
@@ -17,7 +26,7 @@ const router = Router();
 router.post("/webhooks/shotstack", async (req, res) => {
   const provided =
     req.get("x-shotstack-webhook-secret") ?? req.query.secret ?? "";
-  if (provided !== env.shotstackWebhookSecret) {
+  if (!secretMatches(provided, env.shotstackWebhookSecret)) {
     return res.status(401).json({ error: "Invalid webhook secret" });
   }
 
