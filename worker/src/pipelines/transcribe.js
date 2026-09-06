@@ -48,7 +48,7 @@ export async function processTranscribe(job) {
 
     const { data: project, error } = await supabaseAdmin
       .from("projects")
-      .select("id, user_id, original_video_path, duration_seconds")
+      .select("id, user_id, original_video_path, duration_seconds, project_mode")
       .eq("id", projectId)
       .single();
     if (error || !project?.original_video_path) {
@@ -171,6 +171,16 @@ export async function processTranscribe(job) {
     if (updateError) throw updateError;
 
     await cleanup(localVideo, localAudio);
+
+    // Transcript-only projects stop here: no AI analysis, no clip rows, no
+    // renders — the transcript on the project row IS the deliverable.
+    if (project.project_mode === "transcript") {
+      await setProjectStatus(projectId, "done");
+      await setJobStatus(jobRowId, "completed");
+      job.log(`Transcript ready (${words.length} words) — transcript-only project, done.`);
+      return { projectId, wordCount: words.length, transcriptOnly: true };
+    }
+
     await setJobStatus(jobRowId, "completed");
     // Chain to the next stage — nothing else enqueues analyze.
     const analyzeJobRowId = await insertJobRow(projectId, "analyze");

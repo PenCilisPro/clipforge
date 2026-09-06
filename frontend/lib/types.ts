@@ -13,6 +13,9 @@ export interface Profile {
 
 export type ProjectStatus = "pending" | "processing" | "done" | "failed";
 
+/** 'transcript' projects stop after transcription — no AI clips, no renders. */
+export type ProjectMode = "clips" | "transcript";
+
 export interface Project {
   id: string;
   user_id: string;
@@ -25,6 +28,7 @@ export interface Project {
   status: ProjectStatus;
   error_message: string | null;
   created_at: string;
+  project_mode?: ProjectMode;
   clip_length_pref?: string;
   music_url?: string | null;
   music_storage_path?: string | null;

@@ -4,20 +4,28 @@ import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { PIPELINE_STAGES, type Job, type ProjectStatus } from "@/lib/types";
+import { PIPELINE_STAGES, type Job, type ProjectMode, type ProjectStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
- * Shows the 4 pipeline stages with live status derived from the jobs table.
+ * Shows the pipeline stages with live status derived from the jobs table.
+ * Transcript-only projects only ever run download + transcribe.
  */
 export function PipelineTracker({
   jobs,
   projectStatus,
+  mode = "clips",
 }: {
   jobs: Job[];
   projectStatus: ProjectStatus;
+  mode?: ProjectMode;
 }) {
-  const stageState = PIPELINE_STAGES.map((stage) => {
+  const stages =
+    mode === "transcript"
+      ? PIPELINE_STAGES.filter((s) => s.key === "download" || s.key === "transcribe")
+      : PIPELINE_STAGES;
+
+  const stageState = stages.map((stage) => {
     const stageJobs = jobs.filter((job) => job.job_type === stage.key);
     const latest = stageJobs[stageJobs.length - 1];
     return {
@@ -55,7 +63,12 @@ export function PipelineTracker({
         </div>
         <Progress value={Math.min(100, progress)} className="mt-2" />
 
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div
+          className={cn(
+            "mt-4 grid grid-cols-2 gap-3",
+            stageState.length > 2 ? "sm:grid-cols-4" : "sm:grid-cols-2"
+          )}
+        >
           {stageState.map((stage) => (
             <div
               key={stage.key}

@@ -5,6 +5,12 @@ import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isProOrAdmin } from "../lib/tiers.js";
 import { ensureMonthlyCredits } from "../lib/credits.js";
+import {
+  buildDocx,
+  buildMarkdown,
+  buildPdf,
+  transcriptFilename,
+} from "../lib/transcript-export.js";
 
 const router = Router();
 
@@ -45,6 +51,8 @@ const captionDefaultsShape = {
 const createSchema = z
   .object({
     source_type: z.enum(["url", "upload"]),
+    // 'transcript' projects stop after transcription — no AI clips, no renders.
+    mode: z.enum(["clips", "transcript"]).default("clips"),
     source_url: z.string().url().optional(),
     storage_path: z.string().min(1).optional(),
     title: z.string().max(200).nullish(),
@@ -141,6 +149,7 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         title: body.title ?? null,
         source_url: body.source_url ?? null,
         source_type: body.source_type,
+        project_mode: body.mode,
         original_video_path: body.storage_path ?? null,
         status: "pending",
         clip_length_pref: body.clip_length_pref,
@@ -344,6 +353,61 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
     if (error) throw error;
     res.json({ ok: true });
   } catch (err) {
+    next(err);
+  }
+});
+
+const transcriptFormatSchema = z.enum(["md", "pdf", "docx"]);
+
+/**
+ * Download the project's transcript as a file. Transcript-only projects are
+ * the main consumer, but any transcribed project can use it.
+ *   ?format=md   → text/markdown
+ *   ?format=pdf  → application/pdf (pdfkit)
+ *   ?format=docx → Word document (docx)
+ */
+router.get("/api/projects/:id/transcript", requireAuth, async (req, res, next) => {
+  try {
+    const format = transcriptFormatSchema.parse(String(req.query.format ?? "md"));
+
+    const { data: project, error: projectError } = await supabaseAdmin
+      .from("projects")
+      .select("id, user_id, title, created_at, duration_seconds, transcript_json")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (projectError || !project) return res.status(404).json({ error: "Project not found" });
+    if (!project.transcript_json) {
+      return res.status(409).json({ error: "This project has no transcript yet." });
+    }
+
+    const filename = transcriptFilename(project, format);
+    const disposition = `attachment; filename="${filename}"`;
+
+    if (format === "md") {
+      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+      res.setHeader("Content-Disposition", disposition);
+      return res.send(buildMarkdown(project));
+    }
+
+    let buffer;
+    if (format === "pdf") {
+      buffer = await buildPdf(project);
+      res.setHeader("Content-Type", "application/pdf");
+    } else {
+      buffer = await buildDocx(project);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      );
+    }
+    res.setHeader("Content-Disposition", disposition);
+    res.setHeader("Content-Length", buffer.length);
+    return res.send(buffer);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "format must be md, pdf or docx" });
+    }
     next(err);
   }
 });

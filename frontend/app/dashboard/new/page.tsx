@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, Link2, Loader2, Music, Type, Upload } from "lucide-react";
+import { ArrowLeft, FileText, Link2, Loader2, Music, Sparkles, Type, Upload } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
 import { cn, formatDuration, safeUploadName } from "@/lib/utils";
@@ -79,6 +79,9 @@ export default function NewProjectPage() {
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
 
+  // What the pipeline should produce: AI clips (default) or just a transcript.
+  const [mode, setMode] = useState<"clips" | "transcript">("clips");
+
   // Render preferences
   const [clipCountTier, setClipCountTier] = useState("1-5");
   const [clipLength, setClipLength] = useState("ai_optimized");
@@ -150,6 +153,7 @@ export default function NewProjectPage() {
     await apiFetch("/api/projects", {
       method: "POST",
       body: {
+        mode,
         clip_count_tier: clipCountTier,
         clip_length_pref: clipLength,
         ...captionStyle,
@@ -169,7 +173,10 @@ export default function NewProjectPage() {
         title: title || null,
       });
       toast.success("Project created", {
-        description: "The pipeline is running — follow progress on the project page.",
+        description:
+          mode === "transcript"
+            ? "Transcription is running — your downloadable transcript will appear on the project page."
+            : "The pipeline is running — follow progress on the project page.",
       });
       router.push("/dashboard");
     } catch (error) {
@@ -243,7 +250,10 @@ export default function NewProjectPage() {
       });
 
       toast.success("Upload complete", {
-        description: "Transcription and AI analysis are starting now.",
+        description:
+          mode === "transcript"
+            ? "Transcription is starting — your downloadable transcript will appear on the project page."
+            : "Transcription and AI analysis are starting now.",
       });
       router.push("/dashboard");
     } catch (error) {
@@ -409,8 +419,51 @@ export default function NewProjectPage() {
         </TabsContent>
       </Tabs>
 
+      {/* Project type — clips pipeline or transcript only */}
+      <div className="mt-6">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setMode("clips")}
+            className={cn(
+              "rounded-xl border p-4 text-left transition-colors",
+              mode === "clips"
+                ? "border-primary-500 ring-2 ring-primary-500/30"
+                : "hover:border-primary-500/50"
+            )}
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold">
+              <Sparkles className="h-4 w-4 text-primary-500" /> Auto clips
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Transcribe, find viral moments and render captioned vertical clips.
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("transcript")}
+            className={cn(
+              "rounded-xl border p-4 text-left transition-colors",
+              mode === "transcript"
+                ? "border-primary-500 ring-2 ring-primary-500/30"
+                : "hover:border-primary-500/50"
+            )}
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold">
+              <FileText className="h-4 w-4 text-primary-500" /> Transcript only
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Just transcribe the video — download the transcript as Markdown,
+              PDF or Word. No clips.
+            </span>
+          </button>
+        </div>
+      </div>
+
       {/* Preferences — shared by both creation paths */}
       <div className="mt-6 space-y-6">
+        {mode === "clips" && (
+          <>
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Number of clips</CardTitle>
@@ -599,6 +652,8 @@ export default function NewProjectPage() {
             )}
           </CardContent>
         </Card>
+          </>
+        )}
       </div>
     </Reveal>
   );
