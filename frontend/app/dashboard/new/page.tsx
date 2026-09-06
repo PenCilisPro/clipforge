@@ -4,11 +4,16 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, Link2, Loader2, Music, Upload } from "lucide-react";
+import { ArrowLeft, Link2, Loader2, Music, Type, Upload } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
 import { cn, formatDuration, safeUploadName } from "@/lib/utils";
 import { Reveal } from "@/components/dashboard/reveal";
+import {
+  CaptionStyleControls,
+  DEFAULT_CAPTION_STYLE,
+  type CaptionStyleValue,
+} from "@/components/dashboard/caption-style-controls";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -79,6 +84,8 @@ export default function NewProjectPage() {
   const [clipLength, setClipLength] = useState("ai_optimized");
   const [plan, setPlan] = useState<string>("free");
   const [isAdmin, setIsAdmin] = useState(false);
+  // Caption defaults — applied to every clip this project creates.
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyleValue>(DEFAULT_CAPTION_STYLE);
 
   useEffect(() => {
     (async () => {
@@ -142,7 +149,13 @@ export default function NewProjectPage() {
   async function createProject(body: Record<string, unknown>) {
     await apiFetch("/api/projects", {
       method: "POST",
-      body: { clip_count_tier: clipCountTier, clip_length_pref: clipLength, ...musicFields(), ...body },
+      body: {
+        clip_count_tier: clipCountTier,
+        clip_length_pref: clipLength,
+        ...captionStyle,
+        ...musicFields(),
+        ...body,
+      },
     });
   }
 
@@ -443,7 +456,9 @@ export default function NewProjectPage() {
             <CardTitle className="text-base">Clip length</CardTitle>
             <CardDescription>
               How long should the generated clips be? "AI optimized" lets the AI
-              pick the most engaging length per moment.
+              pick the most engaging length per moment. Clips always end on a
+              finished sentence — if a sentence needs a little more room, the AI
+              trims from the front instead of cutting it short.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -459,6 +474,24 @@ export default function NewProjectPage() {
                 ))}
               </SelectContent>
             </Select>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Type className="h-4 w-4 text-primary-500" /> Caption style
+            </CardTitle>
+            <CardDescription>
+              Template, font, colors and effects for your captions — applied to
+              every clip in this project. You can still tweak each clip later.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <CaptionStyleControls
+              value={captionStyle}
+              onChange={(patch) => setCaptionStyle((prev) => ({ ...prev, ...patch }))}
+            />
           </CardContent>
         </Card>
 

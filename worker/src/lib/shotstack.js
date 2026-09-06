@@ -32,6 +32,7 @@ export function buildEditJson({
   captionCues = [],
   captionFontKey = "anton",
   captionStyle = "classic",
+  captionTextColor = "#ffffff",
   captionStroke = false,
   captionShadow = false,
   captionStrokeColor = "#000000",
@@ -61,6 +62,7 @@ export function buildEditJson({
   const captionClips = captionTrackClips(captionCues, {
     fontKey: captionFontKey,
     style: captionStyle,
+    textColor: captionTextColor,
   });
   if (captionClips.length > 0) {
     tracks.push({ clips: captionClips });

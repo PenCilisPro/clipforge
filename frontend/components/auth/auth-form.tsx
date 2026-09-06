@@ -81,7 +81,8 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           password,
         });
         if (error) throw error;
-        router.push("/dashboard");
+        // Land straight on the New Project page after login.
+        router.push("/dashboard/new");
         router.refresh();
       }
     } catch (error) {

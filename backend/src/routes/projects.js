@@ -15,6 +15,33 @@ const MUSIC_MOODS = [
   "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
 ];
 
+const CAPTION_STYLES = [
+  "classic", "karaoke", "bold-pop", "neon", "meme",
+  "green-screen", "highlighter", "ocean", "bubblegum", "royal", "minimal-mono",
+];
+const CAPTION_FONTS = [
+  "anton", "bebas-neue", "archivo-black", "poppins", "bangers", "luckiest-guy",
+  "titan-one", "russo-one", "righteous", "permanent-marker",
+  "lato", "bungee", "alfa-slab-one", "black-ops-one", "pacifico", "lobster",
+];
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+// Project-level caption defaults — applied to EVERY clip the project creates
+// (the analyze stage seeds them onto each clip row).
+const captionDefaultsShape = {
+  caption_style: z.enum(CAPTION_STYLES).default("karaoke"),
+  caption_font: z.enum(CAPTION_FONTS).default("anton"),
+  // '#ffffff' keeps the template's own default text color.
+  caption_color: z.string().regex(HEX_COLOR).default("#ffffff"),
+  caption_stroke: z.boolean().default(false),
+  caption_stroke_color: z.string().regex(HEX_COLOR).default("#000000"),
+  caption_stroke_size: z.coerce.number().int().min(1).max(10).default(4),
+  caption_shadow: z.boolean().default(false),
+  caption_shadow_color: z.string().regex(HEX_COLOR).default("#000000"),
+  caption_shadow_size: z.coerce.number().int().min(1).max(10).default(6),
+};
+
 const createSchema = z
   .object({
     source_type: z.enum(["url", "upload"]),
@@ -37,6 +64,7 @@ const createSchema = z
     music_title: z.string().trim().max(200).optional(),
     music_artist: z.string().trim().max(200).optional(),
     music_mood: z.enum(MUSIC_MOODS).optional(),
+    ...captionDefaultsShape,
   })
   .refine((data) => data.source_type === "upload" || !!data.source_url, {
     message: "source_url is required for url projects",
@@ -101,6 +129,15 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         music_title: body.music_title ?? null,
         music_artist: body.music_artist ?? null,
         music_mood: body.music_mood ?? null,
+        caption_style: body.caption_style,
+        caption_font: body.caption_font,
+        caption_color: body.caption_color,
+        caption_stroke: body.caption_stroke,
+        caption_stroke_color: body.caption_stroke_color,
+        caption_stroke_size: body.caption_stroke_size,
+        caption_shadow: body.caption_shadow,
+        caption_shadow_color: body.caption_shadow_color,
+        caption_shadow_size: body.caption_shadow_size,
       })
       .select("*")
       .single();

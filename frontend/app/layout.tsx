@@ -11,6 +11,12 @@ import {
   Russo_One,
   Righteous,
   Permanent_Marker,
+  Lato,
+  Bungee,
+  Alfa_Slab_One,
+  Black_Ops_One,
+  Pacifico,
+  Lobster,
 } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -28,6 +34,12 @@ const titan = Titan_One({ weight: "400", subsets: ["latin"], variable: "--font-c
 const russo = Russo_One({ weight: "400", subsets: ["latin"], variable: "--font-caption-russo" });
 const righteous = Righteous({ weight: "400", subsets: ["latin"], variable: "--font-caption-righteous" });
 const marker = Permanent_Marker({ weight: "400", subsets: ["latin"], variable: "--font-caption-marker" });
+const lato = Lato({ weight: "900", subsets: ["latin"], variable: "--font-caption-lato" });
+const bungee = Bungee({ weight: "400", subsets: ["latin"], variable: "--font-caption-bungee" });
+const alfa = Alfa_Slab_One({ weight: "400", subsets: ["latin"], variable: "--font-caption-alfa" });
+const blackops = Black_Ops_One({ weight: "400", subsets: ["latin"], variable: "--font-caption-blackops" });
+const pacifico = Pacifico({ weight: "400", subsets: ["latin"], variable: "--font-caption-pacifico" });
+const lobster = Lobster({ weight: "400", subsets: ["latin"], variable: "--font-caption-lobster" });
 
 export const metadata: Metadata = {
   title: "ClipForge — Turn Long Videos Into Viral Clips",
@@ -43,7 +55,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${anton.variable} ${bebas.variable} ${archivo.variable} ${poppins.variable} ${bangers.variable} ${luckiest.variable} ${titan.variable} ${russo.variable} ${righteous.variable} ${marker.variable} font-sans`}
+        className={`${anton.variable} ${bebas.variable} ${archivo.variable} ${poppins.variable} ${bangers.variable} ${luckiest.variable} ${titan.variable} ${russo.variable} ${righteous.variable} ${marker.variable} ${lato.variable} ${bungee.variable} ${alfa.variable} ${blackops.variable} ${pacifico.variable} ${lobster.variable} font-sans`}
       >
         <ThemeProvider
           attribute="class"

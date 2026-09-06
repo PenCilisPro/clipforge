@@ -22,9 +22,13 @@ import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { CAPTION_FONTS, CAPTION_STYLES, type Clip, type Project } from "@/lib/types";
+import type { Clip, Project } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
-import { AnimatedCaptionPreview, CaptionPreview } from "@/components/dashboard/caption-preview";
+import {
+  CaptionStyleControls,
+  DEFAULT_CAPTION_STYLE,
+  type CaptionStyleValue,
+} from "@/components/dashboard/caption-style-controls";
 import { Reveal } from "@/components/dashboard/reveal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +40,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn, safeUploadName } from "@/lib/utils";
 
 const AI_CREDIT_COST = 10;
+
+/** Synthetic id for the AI-picked track's preview player. */
+const AI_PICKED_ID = "ai-picked";
 
 /** Music (MP3) and B-roll (MP4) uploads may not exceed this size. */
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -98,14 +105,7 @@ export default function ClipEditPage() {
   const [musicBusy, setMusicBusy] = useState(false);
 
   const [cues, setCues] = useState<SrtCue[]>([]);
-  const [captionStyle, setCaptionStyle] = useState<Clip["caption_style"]>("karaoke");
-  const [captionFont, setCaptionFont] = useState<NonNullable<Clip["caption_font"]>>("anton");
-  const [captionStroke, setCaptionStroke] = useState(false);
-  const [captionShadow, setCaptionShadow] = useState(false);
-  const [strokeColor, setStrokeColor] = useState("#000000");
-  const [strokeSize, setStrokeSize] = useState(4);
-  const [shadowColor, setShadowColor] = useState("#000000");
-  const [shadowSize, setShadowSize] = useState(6);
+  const [caption, setCaption] = useState<CaptionStyleValue>(DEFAULT_CAPTION_STYLE);
   const [resetSrt, setResetSrt] = useState(false);
   const [startTime, setStartTime] = useState("0");
   const [endTime, setEndTime] = useState("0");
@@ -122,6 +122,13 @@ export default function ClipEditPage() {
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [musicUploading, setMusicUploading] = useState(false);
   const [brollUploading, setBrollUploading] = useState(false);
+  // The track the AI just picked — shown with its own preview player.
+  const [aiPickedTrack, setAiPickedTrack] = useState<{
+    name: string;
+    artist: string;
+    mood: string;
+    audio: string;
+  } | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const musicFileRef = useRef<HTMLInputElement | null>(null);
   const brollFileRef = useRef<HTMLInputElement | null>(null);
@@ -136,14 +143,17 @@ export default function ClipEditPage() {
         if (!found) throw new Error("Clip not found");
         setClip(found);
         setProject(loaded);
-        setCaptionStyle(found.caption_style ?? "karaoke");
-        setCaptionFont(found.caption_font ?? "anton");
-        setCaptionStroke(found.caption_stroke ?? false);
-        setCaptionShadow(found.caption_shadow ?? false);
-        setStrokeColor(found.caption_stroke_color ?? "#000000");
-        setStrokeSize(found.caption_stroke_size ?? 4);
-        setShadowColor(found.caption_shadow_color ?? "#000000");
-        setShadowSize(found.caption_shadow_size ?? 6);
+        setCaption({
+          caption_style: found.caption_style ?? "karaoke",
+          caption_font: found.caption_font ?? "anton",
+          caption_color: found.caption_color ?? "#ffffff",
+          caption_stroke: found.caption_stroke ?? false,
+          caption_stroke_color: found.caption_stroke_color ?? "#000000",
+          caption_stroke_size: found.caption_stroke_size ?? 4,
+          caption_shadow: found.caption_shadow ?? false,
+          caption_shadow_color: found.caption_shadow_color ?? "#000000",
+          caption_shadow_size: found.caption_shadow_size ?? 6,
+        });
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));
 
@@ -406,6 +416,8 @@ export default function ClipEditPage() {
           music_mood: musicMood,
         },
       });
+      stopPreview();
+      setAiPickedTrack(null);
       setProject({
         ...project,
         music_url: null,
@@ -428,6 +440,7 @@ export default function ClipEditPage() {
   async function useTrack(track: MusicTrack, mood: string) {
     if (!project) return;
     stopPreview();
+    setAiPickedTrack(null);
     try {
       await apiFetch(`/api/projects/${project.id}/music`, {
         method: "POST",
@@ -459,20 +472,27 @@ export default function ClipEditPage() {
     setMusicBusy(true);
     try {
       const res = await apiFetch<{
-        track: { name: string; artist: string; mood: string };
+        track: { name: string; artist: string; audio: string; mood: string };
         credits_remaining: number;
       }>(`/api/clips/${clip.id}/music/ai`, { method: "POST" });
       setProject((prev) =>
         prev
           ? {
               ...prev,
-              music_url: null,
+              music_url: res.track.audio,
+              music_storage_path: null,
               music_title: res.track.name,
               music_artist: res.track.artist,
               music_mood: res.track.mood,
             }
           : prev
       );
+      setAiPickedTrack({
+        name: res.track.name,
+        artist: res.track.artist,
+        mood: res.track.mood,
+        audio: res.track.audio,
+      });
       setCredits(res.credits_remaining);
       toast.success(`Music: ${res.track.name}`, {
         description: `${res.track.artist} · ${res.track.mood} · 10 credits used · applies on re-render`,
@@ -508,14 +528,7 @@ export default function ClipEditPage() {
       await apiFetch(`/api/clips/${clip.id}/edit`, {
         method: "POST",
         body: {
-          caption_style: captionStyle,
-          caption_font: captionFont,
-          caption_stroke: captionStroke,
-          caption_shadow: captionShadow,
-          caption_stroke_color: strokeColor,
-          caption_stroke_size: strokeSize,
-          caption_shadow_color: shadowColor,
-          caption_shadow_size: shadowSize,
+          ...caption,
           start_time: start,
           end_time: end,
           ...(resetSrt
@@ -637,133 +650,10 @@ export default function ClipEditPage() {
                   />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Live caption preview</Label>
-                <AnimatedCaptionPreview
-                  style={captionStyle}
-                  fontKey={captionFont}
-                  stroke={captionStroke}
-                  shadow={captionShadow}
-                  strokeColor={strokeColor}
-                  strokeSize={strokeSize}
-                  shadowColor={shadowColor}
-                  shadowSize={shadowSize}
-                />
-                <p className="text-xs text-muted-foreground">
-                  The accented word follows the voice — exactly what the render
-                  produces.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Caption template</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {CAPTION_STYLES.map((style) => (
-                    <button
-                      key={style.key}
-                      type="button"
-                      onClick={() => setCaptionStyle(style.key)}
-                      className={cn(
-                        "rounded-lg border p-1.5 text-left transition-all hover:border-primary-500/60",
-                        captionStyle === style.key &&
-                          "border-primary-500 ring-2 ring-primary-500/30"
-                      )}
-                    >
-                      <CaptionPreview
-                        style={style.key}
-                        fontKey={captionFont}
-                        stroke={captionStroke}
-                        shadow={captionShadow}
-                        strokeColor={strokeColor}
-                        strokeSize={strokeSize}
-                        shadowColor={shadowColor}
-                        shadowSize={shadowSize}
-                      />
-                      <p className="mt-1.5 text-xs font-semibold">{style.label}</p>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {CAPTION_STYLES.find((s) => s.key === captionStyle)?.description}
-                </p>
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={captionStroke}
-                    onChange={(e) => setCaptionStroke(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--primary)]"
-                  />
-                  <span className="font-medium">Stroke</span>
-                  <input
-                    type="color"
-                    value={strokeColor}
-                    onChange={(e) => setStrokeColor(e.target.value)}
-                    disabled={!captionStroke}
-                    aria-label="Stroke color"
-                    className="h-6 w-8 cursor-pointer rounded border bg-transparent p-0.5 disabled:opacity-40"
-                  />
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    value={strokeSize}
-                    onChange={(e) => setStrokeSize(Number(e.target.value))}
-                    disabled={!captionStroke}
-                    aria-label="Stroke size"
-                    className="h-1 flex-1 accent-[var(--primary)] disabled:opacity-40"
-                  />
-                  <span className="w-4 text-right tabular-nums">{strokeSize}</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={captionShadow}
-                    onChange={(e) => setCaptionShadow(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--primary)]"
-                  />
-                  <span className="font-medium">Shadow</span>
-                  <input
-                    type="color"
-                    value={shadowColor}
-                    onChange={(e) => setShadowColor(e.target.value)}
-                    disabled={!captionShadow}
-                    aria-label="Shadow color"
-                    className="h-6 w-8 cursor-pointer rounded border bg-transparent p-0.5 disabled:opacity-40"
-                  />
-                  <input
-                    type="range"
-                    min={1}
-                    max={10}
-                    value={shadowSize}
-                    onChange={(e) => setShadowSize(Number(e.target.value))}
-                    disabled={!captionShadow}
-                    aria-label="Shadow size"
-                    className="h-1 flex-1 accent-[var(--primary)] disabled:opacity-40"
-                  />
-                  <span className="w-4 text-right tabular-nums">{shadowSize}</span>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Caption font</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {CAPTION_FONTS.map((font) => (
-                    <button
-                      key={font.key}
-                      type="button"
-                      onClick={() => setCaptionFont(font.key)}
-                      style={{ fontFamily: font.cssVar }}
-                      className={cn(
-                        "truncate rounded-lg border px-2 py-2 text-sm transition-all hover:border-primary-500/60",
-                        captionFont === font.key &&
-                          "border-primary-500 ring-2 ring-primary-500/30"
-                      )}
-                    >
-                      {font.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <CaptionStyleControls
+                value={caption}
+                onChange={(patch) => setCaption((prev) => ({ ...prev, ...patch }))}
+              />
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
@@ -1073,6 +963,44 @@ export default function ClipEditPage() {
               <p className="flex items-center gap-1.5 text-sm font-semibold">
                 <Music2 className="h-4 w-4 text-primary-500" /> Background music
               </p>
+
+              {/* The track the AI picked — name + playable preview */}
+              {aiPickedTrack && (
+                <div className="flex items-center gap-2 rounded-md border border-primary-500/50 bg-primary-500/5 px-2 py-1.5">
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors hover:border-primary-500/60 hover:text-primary-500",
+                      previewingId === AI_PICKED_ID && "border-primary-500 text-primary-500"
+                    )}
+                    aria-label={previewingId === AI_PICKED_ID ? "Pause preview" : "Play preview"}
+                    onClick={() =>
+                      togglePreview({
+                        id: AI_PICKED_ID,
+                        name: aiPickedTrack.name,
+                        artist: aiPickedTrack.artist,
+                        duration: 0,
+                        audio: aiPickedTrack.audio,
+                        image: null,
+                      })
+                    }
+                  >
+                    {previewingId === AI_PICKED_ID ? (
+                      <Pause className="h-3 w-3" />
+                    ) : (
+                      <Play className="h-3 w-3" />
+                    )}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium">{aiPickedTrack.name}</p>
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {aiPickedTrack.artist} · {aiPickedTrack.mood}
+                    </p>
+                  </div>
+                  <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary-500" />
+                </div>
+              )}
+
               <p className="text-xs text-muted-foreground">
                 {project?.music_title
                   ? `${project.music_title} · ${project.music_artist ?? ""}${

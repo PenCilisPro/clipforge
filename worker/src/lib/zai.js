@@ -15,10 +15,11 @@ STRICT RULES:
 2. Each element must have exactly these keys:
    {"start": <seconds:number>, "end": <seconds:number>, "title": <string>, "hook": <string>, "virality_score": <0-100 number>, "reason": <string>, "hashtags": [<string>, ...]}
 3. "start" and "end" are seconds within the video. CLIP_LENGTH_RULE and must not extend beyond the video duration.
-4. Choose moments that are self-contained: a complete thought, story, or insight with a strong hook in the first 3 seconds.
-5. "title" is a punchy title (max 60 chars). "hook" is a first-line caption for posting (max 100 chars). "hashtags" has 3-5 lowercase items without spaces.
-6. Score 90+ only for exceptional, highly shareable moments. Rank clips by virality_score, best first.
-7. Return at most the number of clips requested. If the transcript is too short or bland, return fewer clips.`;
+4. "end" MUST fall right after a spoken sentence finishes (a word ending with ".", "!" or "?") — never mid-sentence or mid-word. If ending the sentence would exceed the requested length, move "start" later (trim from the front) rather than cutting the sentence short.
+5. Choose moments that are self-contained: a complete thought, story, or insight with a strong hook in the first 3 seconds.
+6. "title" is a punchy title (max 60 chars). "hook" is a first-line caption for posting (max 100 chars). "hashtags" has 3-5 lowercase items without spaces.
+7. Score 90+ only for exceptional, highly shareable moments. Rank clips by virality_score, best first.
+8. Return at most the number of clips requested. If the transcript is too short or bland, return fewer clips.`;
 
 /**
  * One bounded chat completion against the z.ai OpenAI-compatible API.
@@ -94,7 +95,7 @@ Transcript with word timestamps:
 ${transcriptText}`;
 
   const content = await chatComplete(systemPrompt, userPrompt);
-  return parseClipJson(content, durationSeconds, maxClips, clipLengthPref);
+  return parseClipJson(content, durationSeconds, maxClips, clipLengthPref, words);
 }
 
 function prefBounds(clipLengthPref) {
@@ -107,7 +108,77 @@ function prefBounds(clipLengthPref) {
   }
 }
 
-function parseClipJson(content, durationSeconds, maxClips, clipLengthPref) {
+const SENTENCE_END_RE = /[.!?…]["')\]»]*$/;
+
+export { snapToBounds };
+
+/**
+ * Snap a suggested clip onto the word-level transcript so it ends on a
+ * completed word — and, within a few seconds' grace, on a completed sentence:
+ * - `end` never cuts a word. If the sentence runs a little past the suggested
+ *   end, `end` stretches to the sentence's last word.
+ * - Stretching may push the clip past the requested max length; the FRONT is
+ *   then clipped shorter (start moves later) so the ending always survives —
+ *   an unfinished sentence is worse than a trimmed intro.
+ * - `start` snaps back to the beginning of the word it lands in, so the first
+ *   word isn't cut mid-word either.
+ */
+function snapToBounds(clip, words, { min, max }) {
+  if (!Array.isArray(words) || words.length === 0) return clip;
+
+  const GRACE = 3.5; // seconds `end` may hunt forward for a sentence end
+
+  // Last word that starts inside the clip window.
+  let lastIdx = -1;
+  for (let i = 0; i < words.length; i++) {
+    if (Number(words[i].start) < clip.end) lastIdx = i;
+    else break;
+  }
+  if (lastIdx === -1) return clip;
+
+  // 1. Never end mid-word.
+  let end = Math.max(clip.end, Number(words[lastIdx].end));
+
+  // 2. If the suggested end lands mid-sentence, stretch to the next
+  //    sentence-ending word within the grace window.
+  if (!SENTENCE_END_RE.test(String(words[lastIdx].word))) {
+    for (let i = lastIdx + 1; i < words.length; i++) {
+      const w = words[i];
+      if (Number(w.start) > clip.end + GRACE) break;
+      if (Number(w.end) - clip.start > max + GRACE) break;
+      if (SENTENCE_END_RE.test(String(w.word))) {
+        end = Math.max(end, Number(w.end));
+        break;
+      }
+    }
+  }
+
+  // 3. Over the requested length now? Shorten from the front.
+  let start = clip.start;
+  if (end - start > max) start = end - max;
+
+  // 4. Don't cut the first word in half: pull the start back to the start of
+  //    the word containing it (or skip that word when pulling would overgrow
+  //    the clip again).
+  for (let i = 0; i < words.length; i++) {
+    const wStart = Number(words[i].start);
+    const wEnd = Number(words[i].end);
+    if (wStart <= start && start < wEnd) {
+      if (end - Math.max(0, wStart) <= max + 1.5) start = Math.max(0, wStart);
+      else start = wEnd;
+      break;
+    }
+    if (wStart > start) break;
+  }
+
+  // 5. Length sanity: keep at least `min` seconds of content.
+  start = Math.max(0, start);
+  if (end - start < min) end = start + min;
+
+  return { ...clip, start, end };
+}
+
+function parseClipJson(content, durationSeconds, maxClips, clipLengthPref, words = []) {
   let parsed;
   try {
     parsed = parseJsonArray(content);
@@ -141,6 +212,8 @@ function parseClipJson(content, durationSeconds, maxClips, clipLengthPref) {
       }
       return c;
     })
+    // Land the boundaries on real words / finished sentences.
+    .map((c) => snapToBounds(c, words, { min, max }))
     .filter((c) => c.end - c.start >= Math.min(min, 8))
     .map((c) => ({
       ...c,

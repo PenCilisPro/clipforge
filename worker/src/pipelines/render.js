@@ -173,6 +173,7 @@ export async function processRender(job) {
       captionCues,
       captionFontKey: clip.caption_font,
       captionStyle: clip.caption_style,
+      captionTextColor: clip.caption_color ?? "#ffffff",
       captionStroke: clip.caption_stroke === true,
       captionShadow: clip.caption_shadow === true,
       captionStrokeColor: clip.caption_stroke_color ?? "#000000",

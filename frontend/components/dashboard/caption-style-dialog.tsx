@@ -81,7 +81,17 @@ export function CaptionStyleDialog({
                   "border-primary-500 ring-2 ring-primary-500/30"
               )}
             >
-              <CaptionPreview style={style.key} fontKey={font} />
+              <CaptionPreview
+                style={style.key}
+                fontKey={font}
+                textColor={clip.caption_color}
+                stroke={clip.caption_stroke}
+                shadow={clip.caption_shadow}
+                strokeColor={clip.caption_stroke_color}
+                strokeSize={clip.caption_stroke_size}
+                shadowColor={clip.caption_shadow_color}
+                shadowSize={clip.caption_shadow_size}
+              />
               <p className="mt-2 text-xs font-semibold">{style.label}</p>
               <p className="text-[11px] leading-tight text-muted-foreground">
                 {style.description}

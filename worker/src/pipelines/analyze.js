@@ -24,11 +24,30 @@ export async function processAnalyze(job) {
 
     const { data: project, error } = await supabaseAdmin
       .from("projects")
-      .select("id, transcript_json, duration_seconds, clip_length_pref, clip_count_tier")
+      .select(
+        `id, transcript_json, duration_seconds, clip_length_pref, clip_count_tier,
+         caption_style, caption_font, caption_color, caption_stroke,
+         caption_stroke_color, caption_stroke_size, caption_shadow,
+         caption_shadow_color, caption_shadow_size`
+      )
       .eq("id", projectId)
       .single();
     if (error || !project) throw new Error(`Project ${projectId} not found`);
     if (!project.transcript_json) throw new Error("No transcript — transcribe must run first");
+
+    // Project-level caption defaults (chosen on the New Project page) are
+    // seeded onto every clip so the whole project renders consistently.
+    const captionDefaults = {
+      caption_style: project.caption_style ?? "karaoke",
+      caption_font: project.caption_font ?? "anton",
+      caption_color: project.caption_color ?? "#ffffff",
+      caption_stroke: project.caption_stroke ?? false,
+      caption_stroke_color: project.caption_stroke_color ?? "#000000",
+      caption_stroke_size: project.caption_stroke_size ?? 4,
+      caption_shadow: project.caption_shadow ?? false,
+      caption_shadow_color: project.caption_shadow_color ?? "#000000",
+      caption_shadow_size: project.caption_shadow_size ?? 6,
+    };
 
     const durationSeconds = Number(project.duration_seconds ?? 0);
     const clipLengthPref = project.clip_length_pref ?? "ai_optimized";
@@ -65,6 +84,7 @@ export async function processAnalyze(job) {
           reason: suggestion.reason,
           hashtags: suggestion.hashtags,
           status: "queued",
+          ...captionDefaults,
         })
         .select("id")
         .single();

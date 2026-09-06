@@ -15,18 +15,14 @@ import { fetchCatalog } from "./music.js";
 
 const router = Router();
 
-const CAPTION_STYLES = ["classic", "karaoke", "bold-pop", "neon", "meme"];
+const CAPTION_STYLES = [
+  "classic", "karaoke", "bold-pop", "neon", "meme",
+  "green-screen", "highlighter", "ocean", "bubblegum", "royal", "minimal-mono",
+];
 const CAPTION_FONTS = [
-  "anton",
-  "bebas-neue",
-  "archivo-black",
-  "poppins",
-  "bangers",
-  "luckiest-guy",
-  "titan-one",
-  "russo-one",
-  "righteous",
-  "permanent-marker",
+  "anton", "bebas-neue", "archivo-black", "poppins", "bangers", "luckiest-guy",
+  "titan-one", "russo-one", "righteous", "permanent-marker",
+  "lato", "bungee", "alfa-slab-one", "black-ops-one", "pacifico", "lobster",
 ];
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -37,6 +33,8 @@ const effectShape = {
   caption_stroke_size: z.coerce.number().int().min(1).max(10).optional(),
   caption_shadow_color: z.string().regex(HEX_COLOR).optional(),
   caption_shadow_size: z.coerce.number().int().min(1).max(10).optional(),
+  // Caption text color ('#ffffff' = keep the template's own default).
+  caption_color: z.string().regex(HEX_COLOR).optional(),
 };
 
 const regenerateSchema = z.object({
@@ -131,6 +129,7 @@ router.post("/api/clips/:id/edit", requireAuth, async (req, res, next) => {
       "caption_stroke_size",
       "caption_shadow_color",
       "caption_shadow_size",
+      "caption_color",
     ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
@@ -213,6 +212,7 @@ router.post("/api/clips/:id/regenerate", requireAuth, async (req, res, next) => 
         ...(body.caption_stroke_size ? { caption_stroke_size: body.caption_stroke_size } : {}),
         ...(body.caption_shadow_color ? { caption_shadow_color: body.caption_shadow_color } : {}),
         ...(body.caption_shadow_size ? { caption_shadow_size: body.caption_shadow_size } : {}),
+        ...(body.caption_color ? { caption_color: body.caption_color } : {}),
         status: "queued",
         error_message: null,
         // Clear the previous render so the render stage re-processes the clip

@@ -9,6 +9,7 @@ import {
   Clapperboard,
   Link2,
   MessageSquare,
+  PlusCircle,
   ShieldCheck,
   Sparkles,
   Tag,
@@ -24,6 +25,8 @@ import { isAdminEmail } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
+  // The first tab users see after login — the New Project page.
+  { label: "New Project", href: "/dashboard/new", icon: PlusCircle },
   { label: "Projects", href: "/dashboard", icon: Clapperboard },
   { label: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
