@@ -89,6 +89,42 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
 });
 
 /**
+ * Signed URL for the project's ORIGINAL source video, used by the timeline
+ * editor as the editing canvas. Split uploads (>40 MB) were stored as parts
+ * behind a manifest.json — the browser can't play those, so callers get
+ * `split: true` and fall back to trimming without source playback.
+ */
+router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next) => {
+  try {
+    const { data: clip, error } = await supabaseAdmin
+      .from("clips")
+      .select("id, projects(original_video_path, duration_seconds)")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .single();
+    if (error || !clip) return res.status(404).json({ error: "Clip not found" });
+
+    const videoPath = clip.projects?.original_video_path;
+    const duration = clip.projects?.duration_seconds ?? null;
+    if (!videoPath) {
+      return res.status(409).json({ error: "No source video for this project." });
+    }
+    if (videoPath.endsWith("/manifest.json")) {
+      return res.json({ video_url: null, split: true, duration });
+    }
+
+    const { data: video } = await supabaseAdmin.storage
+      .from("source-videos")
+      .createSignedUrl(videoPath, 60 * 60);
+    if (!video?.signedUrl) return res.status(500).json({ error: "Could not sign source video URL" });
+
+    res.json({ video_url: video.signedUrl, split: false, duration });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * Edit a clip (caption text, caption style, timing) and re-render it.
  * Caption edits persist as `srt_override`; timing changes re-trim from the
  * source. Overrides are cleared when timing changes without new captions so

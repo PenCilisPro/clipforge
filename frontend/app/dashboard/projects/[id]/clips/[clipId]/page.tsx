@@ -24,6 +24,8 @@ import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import type { Clip, Project } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
+import { clamp, cuesFromTranscript } from "@/lib/timeline";
+import { TimelineEditor, type BrollSegment } from "@/components/dashboard/timeline-editor";
 import {
   CaptionStyleControls,
   DEFAULT_CAPTION_STYLE,
@@ -34,7 +36,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, safeUploadName } from "@/lib/utils";
@@ -111,6 +112,10 @@ export default function ClipEditPage() {
   const [endTime, setEndTime] = useState("0");
   const [saving, setSaving] = useState(false);
 
+  // Source video for the timeline editor (signed URL; null for split uploads).
+  const [sourceVideoUrl, setSourceVideoUrl] = useState<string | null>(null);
+  const [sourceDuration, setSourceDuration] = useState<number | null>(null);
+
   const [brollQuery, setBrollQuery] = useState("");
   const [brollResults, setBrollResults] = useState<StockResult[] | null>(null);
   const [brollSearching, setBrollSearching] = useState(false);
@@ -156,6 +161,7 @@ export default function ClipEditPage() {
         });
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));
+        lastTrimRef.current = { start: Number(found.start_time), end: Number(found.end_time) };
 
         // Manual overrides show up directly; otherwise fetch the stored SRT.
         if (found.srt_override) {
@@ -169,6 +175,19 @@ export default function ClipEditPage() {
         }>(`/api/clips/${params.clipId}/playback`);
         setVideoUrl(playback.video_url);
         setIsFinalRender(playback.is_final_render);
+
+        // Source video powers the CapCut-style timeline (split uploads: null).
+        try {
+          const src = await apiFetch<{
+            video_url: string | null;
+            split: boolean;
+            duration: number | null;
+          }>(`/api/clips/${params.clipId}/source-playback`);
+          setSourceVideoUrl(src.video_url);
+          setSourceDuration(src.duration);
+        } catch {
+          // Non-fatal: the timeline degrades to handle-only trimming.
+        }
 
         if (!found.srt_override && playback.srt_url) {
           const res = await fetch(playback.srt_url);
@@ -351,6 +370,71 @@ export default function ClipEditPage() {
     }
   }
 
+  // ---------- Timeline editor ----------
+
+  // Mirrors the trim window synchronously so repeated pointer-move events
+  // (which can land between React renders) never double-apply cue shifts.
+  const lastTrimRef = useRef<{ start: number; end: number } | null>(null);
+
+  function handleTrim(newStart: number, newEnd: number) {
+    const oldStart = lastTrimRef.current?.start ?? Number(startTime);
+    lastTrimRef.current = { start: newStart, end: newEnd };
+    setStartTime(String(Number(newStart.toFixed(1))));
+    setEndTime(String(Number(newEnd.toFixed(1))));
+
+    // Captions belong to the spoken words in the source, so shifting the
+    // window shifts their clip-relative times by the same amount. Lines that
+    // end up outside the window are dropped at save (a hint offers auto-fill).
+    const shift = Number((newStart - oldStart).toFixed(1));
+    if (shift !== 0) {
+      setCues((prev) =>
+        prev.map((c) => ({
+          ...c,
+          start: Number((c.start - shift).toFixed(1)),
+          end: Number((c.end - shift).toFixed(1)),
+        }))
+      );
+    }
+  }
+
+  function handleTrimCommit() {
+    // Once per trim drag: keep stored B-roll inside the final window so
+    // renders stay valid, persisting through the existing segments endpoint.
+    if (!clip || !Array.isArray(clip.broll_json) || !lastTrimRef.current) return;
+    const winLen = lastTrimRef.current.end - lastTrimRef.current.start;
+    const clamped = clip.broll_json
+      .map((s) => ({
+        ...s,
+        start: clamp(s.start, 0, Math.max(0, winLen - 0.5)),
+        end: clamp(s.end, 0.5, winLen),
+      }))
+      .filter((s) => s.end - s.start >= 0.5)
+      .map((s) => ({ ...s, start: Number(s.start.toFixed(1)), end: Number(s.end.toFixed(1)) }));
+    if (JSON.stringify(clamped) !== JSON.stringify(clip.broll_json)) {
+      setClip({ ...clip, broll_json: clamped });
+      void saveBrollSegments(clamped);
+    }
+  }
+
+  function updateBrollFromTimeline(segments: BrollSegment[], commit: boolean) {
+    setClip((prev) => (prev ? { ...prev, broll_json: segments } : prev));
+    if (commit) void saveBrollSegments(segments);
+  }
+
+  function autoFillCaptions() {
+    const words = project?.transcript_json?.words ?? [];
+    const next = cuesFromTranscript(words, Number(startTime), Number(endTime));
+    if (next.length === 0) {
+      toast.error("No transcript words inside this window");
+      return;
+    }
+    setCues(next);
+    setResetSrt(false);
+    toast.success(
+      `Filled ${next.length} caption line${next.length === 1 ? "" : "s"} from the transcript`
+    );
+  }
+
   // ---------- Music ----------
 
   function stopPreview() {
@@ -514,8 +598,14 @@ export default function ClipEditPage() {
       toast.error("Clip must be at least 3 seconds long");
       return;
     }
+    // Caption times are clip-relative — lines outside the trim window no
+    // longer belong to this clip and are dropped (the pipeline regenerates
+    // captions when the override comes back empty).
+    const winLen = end - start;
+    const inWindow = cues.filter((c) => c.end > 0.05 && c.start < winLen - 0.05);
+    const dropped = cues.length - inWindow.length;
     if (!resetSrt) {
-      for (const cue of cues) {
+      for (const cue of inWindow) {
         if (!cue.text.trim()) {
           toast.error("Caption lines can't be empty — delete the line instead");
           return;
@@ -533,13 +623,18 @@ export default function ClipEditPage() {
           end_time: end,
           ...(resetSrt
             ? { srt_content: "" } // clear override → pipeline regenerates
-            : cues.length > 0
-              ? { srt_content: cuesToSrtText(cues) }
-              : {}),
+            : inWindow.length > 0
+              ? { srt_content: cuesToSrtText(inWindow) }
+              : cues.length > 0
+                ? { srt_content: "" } // every line drifted out of the window
+                : {}),
         },
       });
       toast.success("Saved — re-render started", {
-        description: "The clip will show its new look once rendering finishes.",
+        description:
+          dropped > 0
+            ? `${dropped} caption line${dropped === 1 ? "" : "s"} outside the trim window will be regenerated.`
+            : "The clip will show its new look once rendering finishes.",
       });
       router.push(`/dashboard/projects/${params.id}`);
     } catch (err) {
@@ -574,6 +669,8 @@ export default function ClipEditPage() {
 
   const clipDuration = Math.max(3, Number(endTime) - Number(startTime));
   const brollSegments = Array.isArray(clip.broll_json) ? clip.broll_json : [];
+  const outsideCues = cues.filter((c) => c.end <= 0.05 || c.start >= clipDuration - 0.05).length;
+  const hasTranscriptWords = (project?.transcript_json?.words?.length ?? 0) > 0;
 
   return (
     <Reveal className="mx-auto max-w-5xl space-y-6">
@@ -588,8 +685,8 @@ export default function ClipEditPage() {
             Edit — {clip.title ?? "Untitled clip"}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Edit captions, pick a style, add B-roll & music, trim the window,
-            then re-render.
+            Trim the clip, retime captions and B-roll on the timeline, pick a
+            style, add music — then re-render.
           </p>
         </div>
         <Button onClick={save} disabled={saving}>
@@ -597,6 +694,28 @@ export default function ClipEditPage() {
           {saving ? "Re-rendering…" : "Save & re-render"}
         </Button>
       </div>
+
+      {/* CapCut-style manual timeline editor (source video canvas) */}
+      <Card>
+        <CardContent className="p-4">
+          <TimelineEditor
+            videoUrl={sourceVideoUrl}
+            sourceDuration={sourceDuration}
+            start={Number(startTime)}
+            end={Number(endTime)}
+            onTrim={handleTrim}
+            onTrimCommit={handleTrimCommit}
+            cues={cues}
+            onCuesChange={(next) => {
+              setCues(next);
+              setResetSrt(false);
+            }}
+            broll={clip.broll_json}
+            onBrollChange={updateBrollFromTimeline}
+            musicTitle={project?.music_title ?? null}
+          />
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
         {/* Preview + captions/timing | captions editor + B-roll + Music */}
@@ -618,38 +737,17 @@ export default function ClipEditPage() {
                 </div>
               )}
             </div>
-            <CardContent className="p-3">
+            <CardContent className="p-3 space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Last render</p>
               <Badge variant={isFinalRender ? "default" : "secondary"}>
                 {isFinalRender ? "Final render" : "Raw trim preview"}
               </Badge>
             </CardContent>
           </Card>
 
-          {/* Timing + captions */}
+          {/* Caption style */}
           <Card>
             <CardContent className="space-y-4 p-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Start (seconds)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">End (seconds)</Label>
-                  <Input
-                    type="number"
-                    min={3}
-                    step={0.1}
-                    value={endTime}
-                    onChange={(e) => setEndTime(e.target.value)}
-                  />
-                </div>
-              </div>
               <CaptionStyleControls
                 value={caption}
                 onChange={(patch) => setCaption((prev) => ({ ...prev, ...patch }))}
@@ -679,10 +777,32 @@ export default function ClipEditPage() {
                   relative to the clip start.
                 </p>
               </div>
-              <Button size="sm" variant="outline" onClick={addCue}>
-                <Plus /> Add line
-              </Button>
+              <div className="flex shrink-0 gap-1.5">
+                {hasTranscriptWords && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={autoFillCaptions}
+                    title="Rebuild caption lines from the transcript for the current trim window"
+                  >
+                    <Sparkles /> Auto-fill
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={addCue}>
+                  <Plus /> Add line
+                </Button>
+              </div>
             </div>
+
+            {outsideCues > 0 && (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                {outsideCues} caption line{outsideCues === 1 ? " sits" : "s sit"} outside the
+                trim window and will be dropped on save.{" "}
+                {hasTranscriptWords
+                  ? "Auto-fill rebuilds them for the new window."
+                  : "Consider resetting to AI-generated."}
+              </div>
+            )}
 
             {resetSrt ? (
               <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
