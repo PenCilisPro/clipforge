@@ -251,6 +251,35 @@ const CLIP_COPY_COLUMNS =
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, srt_override, broll_json";
 
+// B-roll segments: stock-provider URLs or the user's own uploaded MP4,
+// referenced as storage:user-uploads/<uid>/broll/<file>.
+const brollSegmentListSchema = z
+  .array(
+    z.object({
+      start: z.coerce.number().finite().min(0).max(43_200),
+      end: z.coerce.number().finite().min(0).max(43_200),
+      src: z
+        .string()
+        .min(1)
+        .refine((u) => {
+          if (u.startsWith("storage:")) return STORAGE_SRC_RE.test(u);
+          try {
+            const host = new URL(u).hostname;
+            return (
+              u.startsWith("https:") &&
+              (host === "pexels.com" || host.endsWith(".pexels.com") ||
+               host === "pixabay.com" || host.endsWith(".pixabay.com"))
+            );
+          } catch {
+            return false;
+          }
+        }, { message: "B-roll must come from the stock providers or your own uploads" }),
+    })
+    .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
+    .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
+  )
+  .max(8);
+
 const splitSchema = z.object({
   at: z.coerce.number().finite().min(0).max(43_200),
   srt_part1: z.string().max(20_000).optional(),
@@ -710,35 +739,6 @@ const STORAGE_SRC_RE = /^storage:user-uploads\/(.+)$/;
 function parseStorageSrc(src) {
   return String(src).match(STORAGE_SRC_RE)?.[1] ?? null;
 }
-
-const brollSegmentListSchema = z
-  .array(
-    z.object({
-      start: z.coerce.number().finite().min(0).max(43_200),
-      end: z.coerce.number().finite().min(0).max(43_200),
-      src: z
-        .string()
-        .min(1)
-        .refine((u) => {
-          // A stock-provider URL or the user's own uploaded MP4, referenced
-          // as storage:user-uploads/<uid>/broll/<file>.
-          if (u.startsWith("storage:")) return STORAGE_SRC_RE.test(u);
-          try {
-            const host = new URL(u).hostname;
-            return (
-              u.startsWith("https:") &&
-              (host === "pexels.com" || host.endsWith(".pexels.com") ||
-               host === "pixabay.com" || host.endsWith(".pixabay.com"))
-            );
-          } catch {
-            return false;
-          }
-        }, { message: "B-roll must come from the stock providers or your own uploads" }),
-    })
-    .refine((s) => s.end > s.start, { message: "Segment end must be after its start" })
-    .transform((s) => ({ start: s.start, end: s.end, src: s.src }))
-  )
-  .max(8);
 
 const brollSegmentSchema = z.object({ segments: brollSegmentListSchema });
 
