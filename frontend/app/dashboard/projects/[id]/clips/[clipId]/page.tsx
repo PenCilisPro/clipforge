@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
+import { uploadToR2 } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/client";
 import type { Clip, Project } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
@@ -301,10 +302,7 @@ export default function ClipEditPage() {
     try {
       const userId = await getUserId();
       const path = `${userId}/broll/${Date.now()}-${safeUploadName(file.name)}`;
-      const { error } = await supabase()
-        .storage.from("user-uploads")
-        .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "video/mp4" });
-      if (error) throw error;
+      await uploadToR2("user-uploads", path, file, "video/mp4");
 
       const duration = Math.max(3, Number(endTime) - Number(startTime));
       const lastEnd = segments.length > 0 ? segments[segments.length - 1].end : 0;
@@ -582,10 +580,7 @@ export default function ClipEditPage() {
     try {
       const userId = await getUserId();
       const path = `${userId}/music/${Date.now()}-${safeUploadName(file.name)}`;
-      const { error } = await supabase()
-        .storage.from("user-uploads")
-        .upload(path, file, { cacheControl: "3600", upsert: false, contentType: "audio/mpeg" });
-      if (error) throw error;
+      await uploadToR2("user-uploads", path, file, "audio/mpeg");
 
       const title = file.name.replace(/\.[^.]+$/, "").slice(0, 200);
       await apiFetch(`/api/projects/${project.id}/music`, {

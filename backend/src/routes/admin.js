@@ -1,6 +1,12 @@
 import express, { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
+import {
+  r2Key,
+  upload as r2Upload,
+  remove as r2Remove,
+  publicUrl as r2PublicUrl,
+} from "../lib/r2.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/admin.js";
 import { planCreditsPerMonth } from "../lib/credits.js";
@@ -284,23 +290,16 @@ router.post("/api/admin/branding", brandingParser, async (req, res, next) => {
     }
 
     const path = `branding/logo.${ext}`;
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from("assets")
-      .upload(path, buffer, { contentType, upsert: true });
-    if (uploadError) throw uploadError;
+    await r2Upload(r2Key("assets", path), buffer, contentType);
 
-    const { data: publicUrl } = supabaseAdmin.storage.from("assets").getPublicUrl(path);
-    const url = `${publicUrl.publicUrl}?v=${Date.now()}`; // cache-bust favicon
+    const url = `${r2PublicUrl(r2Key("assets", path))}?v=${Date.now()}`; // cache-bust favicon
 
     // Keep only the current file around.
-    await supabaseAdmin.storage
-      .from("assets")
-      .remove(
-        Object.keys(BRANDING_EXTENSIONS)
-          .filter((e) => e !== ext)
-          .map((e) => `branding/logo.${e}`)
-      )
-      .catch(() => {});
+    await r2Remove(
+      Object.keys(BRANDING_EXTENSIONS)
+        .filter((e) => e !== ext)
+        .map((e) => r2Key("assets", `branding/logo.${e}`))
+    ).catch(() => {});
 
     const now = new Date().toISOString();
     const { error: upsertError } = await supabaseAdmin
@@ -324,10 +323,9 @@ router.post("/api/admin/branding", brandingParser, async (req, res, next) => {
 router.delete("/api/admin/branding", async (req, res, next) => {
   try {
     await supabaseAdmin.from("app_branding").delete().in("key", ["logo_url", "favicon_url"]);
-    await supabaseAdmin.storage
-      .from("assets")
-      .remove(Object.keys(BRANDING_EXTENSIONS).map((e) => `branding/logo.${e}`))
-      .catch(() => {});
+    await r2Remove(
+      Object.keys(BRANDING_EXTENSIONS).map((e) => r2Key("assets", `branding/logo.${e}`))
+    ).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     next(err);

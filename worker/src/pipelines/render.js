@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "../lib/supabase.js";
+import { r2Key, upload as r2Upload, presignGet } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
 import {
   ensureTmpDir,
@@ -16,11 +17,7 @@ import { env } from "../lib/env.js";
 async function signedSourceUrl(bucket, path) {
   // Long-lived signed URLs — Shotstack fetches them within minutes, but the
   // extra headroom avoids flaky auth on slow retries.
-  const { data, error } = await supabaseAdmin.storage
-    .from(bucket)
-    .createSignedUrl(path, 60 * 60 * 24 * 7);
-  if (error) throw error;
-  return data.signedUrl;
+  return presignGet(r2Key(bucket, path), 60 * 60 * 24 * 7);
 }
 
 /**
@@ -142,20 +139,9 @@ export async function processRender(job) {
     const thumbPath = `${project.user_id}/${clipId}.jpg`;
     const srtPath = `${project.user_id}/srt/${clipId}.srt`;
 
-    const { error: rawUploadError } = await supabaseAdmin.storage
-      .from("clips")
-      .upload(rawPath, await fs.readFile(localRawClip), { contentType: "video/mp4", upsert: true });
-    if (rawUploadError) throw rawUploadError;
-
-    const { error: thumbUploadError } = await supabaseAdmin.storage
-      .from("assets")
-      .upload(thumbPath, await fs.readFile(localThumb), { contentType: "image/jpeg", upsert: true });
-    if (thumbUploadError) throw thumbUploadError;
-
-    const { error: srtUploadError } = await supabaseAdmin.storage
-      .from("clips")
-      .upload(srtPath, Buffer.from(srtText, "utf8"), { contentType: "application/x-subrip", upsert: true });
-    if (srtUploadError) throw srtUploadError;
+    await r2Upload(r2Key("clips", rawPath), await fs.readFile(localRawClip), "video/mp4");
+    await r2Upload(r2Key("assets", thumbPath), await fs.readFile(localThumb), "image/jpeg");
+    await r2Upload(r2Key("clips", srtPath), Buffer.from(srtText, "utf8"), "application/x-subrip");
 
     await supabaseAdmin
       .from("clips")

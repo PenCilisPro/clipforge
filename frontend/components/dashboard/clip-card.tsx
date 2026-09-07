@@ -18,13 +18,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScheduleModal } from "@/components/dashboard/schedule-modal";
 import { CaptionStyleDialog } from "@/components/dashboard/caption-style-dialog";
 import { StatusPill } from "@/components/dashboard/status-pill";
-import { createClient } from "@/lib/supabase/client";
 import { apiFetch } from "@/lib/api";
+import { publicAssetUrl } from "@/lib/storage";
 import { formatDuration } from "@/lib/utils";
 import { CAPTION_STYLES, type Clip } from "@/lib/types";
 
 export function ClipCard({ clip }: { clip: Clip }) {
-  const supabase = useMemo(() => createClient(), []);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [retryLoading, setRetryLoading] = useState(false);
@@ -36,29 +35,36 @@ export function ClipCard({ clip }: { clip: Clip }) {
 
     async function loadUrl() {
       if (!clip.storage_path || clip.status !== "ready") return;
-      const { data } = await supabase.storage
-        .from("clips")
-        .createSignedUrl(clip.storage_path, 60 * 60);
-      if (!cancelled) setVideoUrl(data?.signedUrl ?? null);
+      // Playback URL is a presigned R2 link minted by the backend.
+      const data = await apiFetch<{ video_url: string | null }>(
+        `/api/clips/${clip.id}/playback`
+      ).catch(() => null);
+      if (!cancelled) setVideoUrl(data?.video_url ?? null);
     }
 
     loadUrl();
     return () => {
       cancelled = true;
     };
-  }, [clip.storage_path, clip.status, supabase]);
+  }, [clip.storage_path, clip.status]);
 
   async function handleDownload() {
     if (!clip.storage_path) return;
     setDownloadLoading(true);
     try {
-      const { data } = await supabase.storage
-        .from("clips")
-        .createSignedUrl(clip.storage_path, 60, {
-          download: `${(clip.title ?? "clip").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.mp4`,
-        });
-      if (data?.signedUrl) {
-        window.open(data.signedUrl, "_blank");
+      const data = await apiFetch<{ video_url: string | null }>(
+        `/api/clips/${clip.id}/playback`
+      );
+      if (data.video_url) {
+        // Presigned URLs can't carry a Content-Disposition, so force the
+        // filename client-side.
+        const a = document.createElement("a");
+        a.href = data.video_url;
+        a.download = `${(clip.title ?? "clip").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.mp4`;
+        a.target = "_blank";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       } else {
         throw new Error("Could not generate download link");
       }
@@ -86,10 +92,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
     }
   }
 
-  const thumbUrl = clip.thumbnail_path
-    ? supabase.storage.from("assets").getPublicUrl(clip.thumbnail_path).data
-        .publicUrl
-    : null;
+  const thumbUrl = clip.thumbnail_path ? publicAssetUrl(clip.thumbnail_path) : null;
 
   const duration = clip.end_time - clip.start_time;
 

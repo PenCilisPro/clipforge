@@ -18,6 +18,13 @@ export const env = {
   supabaseUrl: required("SUPABASE_URL"),
   supabaseServiceKey: required("SUPABASE_SERVICE_KEY"),
 
+  // Cloudflare R2 (file storage; replaces Supabase Storage)
+  r2AccountId: required("R2_ACCOUNT_ID"),
+  r2AccessKeyId: required("R2_ACCESS_KEY_ID"),
+  r2SecretAccessKey: required("R2_SECRET_ACCESS_KEY"),
+  r2Bucket: required("R2_BUCKET"),
+  r2PublicBaseUrl: required("R2_PUBLIC_BASE_URL"),
+
   redisUrl: required("REDIS_URL", "redis://127.0.0.1:6379"),
   appSecret: required("APP_SECRET", "dev-insecure-secret"),
   shotstackWebhookSecret: required("SHOTSTACK_WEBHOOK_SECRET", "dev-insecure-hook"),
@@ -58,7 +65,16 @@ export const env = {
 };
 
 export function assertCriticalEnv() {
-  for (const key of ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "REDIS_URL"]) {
+  for (const key of [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_KEY",
+    "REDIS_URL",
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_BUCKET",
+    "R2_PUBLIC_BASE_URL",
+  ]) {
     if (!process.env[key]) {
       console.warn(`[env] ${key} is not set — API will start in degraded mode.`);
     }

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { r2Key, presignGet, exists as r2Exists } from "../lib/r2.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { ensureMonthlyCredits } from "../lib/credits.js";
@@ -99,17 +100,15 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Invalid clip path" });
     }
 
-    const [{ data: video }, srtResult] = await Promise.all([
-      supabaseAdmin.storage.from("clips").createSignedUrl(videoPath, 60 * 60),
-      clip.srt_path
-        ? supabaseAdmin.storage.from("clips").createSignedUrl(clip.srt_path, 60 * 60)
-        : Promise.resolve({ data: null }),
-    ]);
-    if (!video?.signedUrl) return res.status(500).json({ error: "Could not sign video URL" });
+    const videoUrl = await presignGet(r2Key("clips", videoPath), 60 * 60);
+    const srtUrl = clip.srt_path
+      ? await presignGet(r2Key("clips", clip.srt_path), 60 * 60)
+      : null;
+    if (!videoUrl) return res.status(500).json({ error: "Could not sign video URL" });
 
     res.json({
-      video_url: video.signedUrl,
-      srt_url: srtResult.data?.signedUrl ?? null,
+      video_url: videoUrl,
+      srt_url: srtUrl,
       is_final_render: Boolean(clip.storage_path),
     });
   } catch (err) {
@@ -147,12 +146,10 @@ router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next)
       return res.json({ video_url: null, split: true, duration });
     }
 
-    const { data: video } = await supabaseAdmin.storage
-      .from("source-videos")
-      .createSignedUrl(videoPath, 60 * 60);
-    if (!video?.signedUrl) return res.status(500).json({ error: "Could not sign source video URL" });
+    const videoUrl = await presignGet(r2Key("source-videos", videoPath), 60 * 60);
+    if (!videoUrl) return res.status(500).json({ error: "Could not sign source video URL" });
 
-    res.json({ video_url: video.signedUrl, split: false, duration });
+    res.json({ video_url: videoUrl, split: false, duration });
   } catch (err) {
     next(err);
   }
@@ -754,12 +751,8 @@ router.post("/api/clips/:id/broll/segments", requireAuth, async (req, res, next)
       if (!path.startsWith(`${req.user.id}/broll/`)) {
         return res.status(400).json({ error: "Invalid uploaded B-roll file" });
       }
-      const folder = path.split("/").slice(0, -1).join("/");
-      const fileName = path.split("/").pop();
-      const { data: obj, error: objError } = await supabaseAdmin.storage
-        .from("user-uploads")
-        .list(folder, { search: fileName, limit: 1 });
-      if (objError || !obj || obj.length === 0) {
+      const fileExists = await r2Exists(r2Key("user-uploads", path));
+      if (!fileExists) {
         return res.status(400).json({ error: "Uploaded B-roll file not found" });
       }
     }

@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "../lib/supabase.js";
+import { presignGet } from "../lib/r2.js";
 import { decryptToken } from "../lib/crypto.js";
 import { publishToYouTube } from "./youtube.js";
 import { publishToMeta } from "./meta.js";
@@ -13,11 +14,7 @@ const PUBLISHERS = {
 };
 
 async function signedClipUrl(storagePath) {
-  const { data, error } = await supabaseAdmin.storage
-    .from("clips")
-    .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-  if (error) throw error;
-  return data.signedUrl;
+  return presignGet(`clips/${storagePath}`, 60 * 60 * 24 * 7);
 }
 
 /**

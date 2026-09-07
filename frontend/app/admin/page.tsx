@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
+import { publicAssetUrl } from "@/lib/storage";
 import { isAdminEmail } from "@/lib/admin";
 import { PLAN_ICON_KEYS, planIcon } from "@/lib/plan-icons";
 import { FEEDBACK_CATEGORIES, categoryLabel } from "@/lib/feedback";
@@ -571,7 +572,7 @@ export default function AdminPage() {
                   .map((f) => {
                     const supabase = createClient();
                     const screenshotUrl = f.screenshot_path
-                      ? supabase.storage.from("assets").getPublicUrl(f.screenshot_path).data.publicUrl
+                      ? publicAssetUrl(f.screenshot_path)
                       : null;
                     return (
                       <Card key={f.id}>
@@ -676,7 +677,7 @@ export default function AdminPage() {
               {upgradeRequests.map((r) => {
                 const supabase = createClient();
                 const attachmentUrl = r.attachment_path
-                  ? supabase.storage.from("assets").getPublicUrl(r.attachment_path).data.publicUrl
+                  ? publicAssetUrl(r.attachment_path)
                   : null;
                 const isMedia = /\.(mp4|mov|webm)$/i.test(r.attachment_path ?? "");
                 return (

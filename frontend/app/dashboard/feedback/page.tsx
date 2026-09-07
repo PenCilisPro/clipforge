@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
+import { uploadToR2, publicAssetUrl } from "@/lib/storage";
 import { formatDateTime } from "@/lib/utils";
 import { FEEDBACK_CATEGORIES, categoryLabel, type FeedbackCategory } from "@/lib/feedback";
 import { Reveal } from "@/components/dashboard/reveal";
@@ -104,10 +105,7 @@ export default function FeedbackPage() {
         if (!user) throw new Error("Not signed in");
         const ext = (image.name.split(".").pop() ?? "png").toLowerCase().replace(/[^a-z0-9]/g, "");
         screenshotPath = `${user.id}/feedback-${Date.now()}.${ext}`;
-        const { error: uploadError } = await supabase.storage
-          .from("assets")
-          .upload(screenshotPath, image, { contentType: image.type, upsert: false });
-        if (uploadError) throw uploadError;
+        await uploadToR2("assets", screenshotPath, image, image.type || "image/png");
       }
 
       await apiFetch("/api/feedback", {
@@ -263,7 +261,7 @@ export default function FeedbackPage() {
           <h2 className="text-sm font-medium text-muted-foreground">Your previous feedback</h2>
           {history.map((row, i) => {
             const screenshotUrl = row.screenshot_path
-              ? supabase.storage.from("assets").getPublicUrl(row.screenshot_path).data.publicUrl
+              ? publicAssetUrl(row.screenshot_path)
               : null;
             return (
               <Reveal key={row.id} delay={i * 0.05}>

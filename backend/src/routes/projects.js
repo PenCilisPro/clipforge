@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { remove as r2Remove, exists as r2Exists, listByPrefix } from "../lib/r2.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isProOrAdmin } from "../lib/tiers.js";
@@ -131,12 +132,8 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
       if (!path.startsWith(`${req.user.id}/`)) {
         return res.status(400).json({ error: "Invalid upload path" });
       }
-      const folder = path.split("/").slice(0, -1).join("/");
-      const fileName = path.split("/").pop();
-      const { data: obj, error: objError } = await supabaseAdmin.storage
-        .from("source-videos")
-        .list(folder, { search: fileName, limit: 1 });
-      if (objError || !obj || obj.length === 0) {
+      const fileExists = await r2Exists(`source-videos/${path}`);
+      if (!fileExists) {
         return res
           .status(400)
           .json({ error: "Uploaded video not found — try uploading again" });
@@ -254,13 +251,8 @@ router.post("/api/projects/:id/music", requireAuth, async (req, res, next) => {
 
     // Uploaded tracks must actually exist and belong to the caller.
     if ("music_storage_path" in body) {
-      const { data: obj, error: objError } = await supabaseAdmin.storage
-        .from("user-uploads")
-        .list(body.music_storage_path.split("/").slice(0, -1).join("/"), {
-          search: body.music_storage_path.split("/").pop(),
-          limit: 1,
-        });
-      if (objError || !obj || obj.length === 0) {
+      const fileExists = await r2Exists(`user-uploads/${body.music_storage_path}`);
+      if (!fileExists) {
         return res.status(400).json({ error: "Uploaded music file not found" });
       }
     }
@@ -322,11 +314,9 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
     let sourcePaths = [project.original_video_path];
     if (project.original_video_path?.endsWith("/manifest.json")) {
       const folder = project.original_video_path.split("/").slice(0, -1).join("/");
-      const { data: objects } = await supabaseAdmin.storage
-        .from("source-videos")
-        .list(folder, { limit: 1000 });
-      if (objects?.length) {
-        sourcePaths = objects.map((o) => `${folder}/${o.name}`);
+      const keys = await listByPrefix(`source-videos/${folder}/`).catch(() => []);
+      if (keys.length) {
+        sourcePaths = keys.map((k) => k.replace(/^source-videos\//, ""));
       }
     }
 
@@ -346,16 +336,10 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
       assets: (clips ?? []).map((c) => c.thumbnail_path),
       "user-uploads": uploadPaths,
     };
-    await Promise.all(
-      Object.entries(byBucket).map(([bucket, paths]) => {
-        const objects = paths.filter(Boolean);
-        if (objects.length === 0) return Promise.resolve();
-        return supabaseAdmin.storage
-          .from(bucket)
-          .remove(objects)
-          .catch(() => {});
-      })
+    const keys = Object.entries(byBucket).flatMap(([bucket, paths]) =>
+      paths.filter(Boolean).map((p) => `${bucket}/${p}`)
     );
+    await r2Remove(keys).catch(() => {});
 
     // DB rows go by cascade: clips → jobs / scheduled_posts.
     const { error } = await supabaseAdmin

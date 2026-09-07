@@ -21,6 +21,7 @@ import analyticsRoutes from "./routes/analytics.js";
 import pricingRoutes from "./routes/pricing.js";
 import musicRoutes from "./routes/music.js";
 import brandingRoutes from "./routes/branding.js";
+import uploadRoutes from "./routes/uploads.js";
 
 assertCriticalEnv();
 
@@ -61,6 +62,7 @@ app.use(analyticsRoutes);
 app.use(pricingRoutes);
 app.use(musicRoutes);
 app.use(brandingRoutes);
+app.use(uploadRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

@@ -3,6 +3,12 @@ import "dotenv/config";
 export const env = {
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
+
+  // Cloudflare R2 (file storage; replaces Supabase Storage)
+  r2AccountId: process.env.R2_ACCOUNT_ID,
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  r2Bucket: process.env.R2_BUCKET,
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
   concurrency: Number(process.env.WORKER_CONCURRENCY ?? 2),
   maxClips: Number(process.env.MAX_CLIPS_PER_VIDEO ?? 6),
@@ -39,6 +45,10 @@ export function warnMissing() {
   const checks = {
     SUPABASE_URL: env.supabaseUrl,
     SUPABASE_SERVICE_KEY: env.supabaseServiceKey,
+    R2_ACCOUNT_ID: env.r2AccountId,
+    R2_ACCESS_KEY_ID: env.r2AccessKeyId,
+    R2_SECRET_ACCESS_KEY: env.r2SecretAccessKey,
+    R2_BUCKET: env.r2Bucket,
     REDIS_URL: process.env.REDIS_URL,
   };
   for (const [name, value] of Object.entries(checks)) {

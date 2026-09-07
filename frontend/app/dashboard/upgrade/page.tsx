@@ -6,6 +6,7 @@ import { BadgeCheck, Clock, Loader2, Paperclip, Send, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
+import { uploadToR2 } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/client";
 import { formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -172,10 +173,7 @@ export default function UpgradeRequestPage() {
         if (!user) throw new Error("Not signed in");
         const ext = (file.name.split(".").pop() ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "");
         attachmentPath = `${user.id}/upgrade-${Date.now()}.${ext}`;
-        const { error: uploadError } = await supabase.storage
-          .from("assets")
-          .upload(attachmentPath, file, { contentType: file.type, upsert: false });
-        if (uploadError) throw uploadError;
+        await uploadToR2("assets", attachmentPath, file, file.type || "application/octet-stream");
       }
 
       await apiFetch("/api/upgrade-requests", {
