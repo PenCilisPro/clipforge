@@ -48,7 +48,7 @@ export async function processRender(job) {
 
     const { data: project, error: projectError } = await supabaseAdmin
       .from("projects")
-      .select("id, user_id, original_video_path, transcript_json, music_url, music_storage_path")
+      .select("id, user_id, original_video_path, transcript_json, music_url, music_storage_path, broll_enabled")
       .eq("id", projectId)
       .single();
     if (projectError || !project) throw new Error(`Project ${projectId} not found`);
@@ -93,7 +93,8 @@ export async function processRender(job) {
     const srtText = clip.srt_override ?? cuesToSrt(captionCues);
 
     // 3b. B-roll — an editor plan (clips.broll_json) wins:
-    //   null = plan fresh with AI at render time, [] = explicitly none.
+    //   null = plan fresh with AI at render time (only when the project's
+    //   broll_enabled toggle is on), [] = explicitly none.
     //   Editor plans may hold up to 8 manually-picked segments: stock URLs
     //   (pexels/pixabay) or the user's own MP4 uploads ("storage:..." refs).
     const resolveBrollSrc = async (src) => {
@@ -126,7 +127,7 @@ export async function processRender(job) {
         }))
       );
       job.log(`B-roll: using ${brollClips.length} editor-planned segment(s)`);
-    } else if (brollConfigured()) {
+    } else if (project.broll_enabled !== false && brollConfigured()) {
       brollClips = await planBroll({
         transcriptJson: project.transcript_json,
         clipStart: start,

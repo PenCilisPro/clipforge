@@ -126,7 +126,7 @@ export { snapToBounds };
 function snapToBounds(clip, words, { min, max }) {
   if (!Array.isArray(words) || words.length === 0) return clip;
 
-  const GRACE = 3.5; // seconds `end` may hunt forward for a sentence end
+  const GRACE = 5; // seconds `end` may hunt forward for a sentence end
 
   // Last word that starts inside the clip window.
   let lastIdx = -1;
@@ -142,12 +142,26 @@ function snapToBounds(clip, words, { min, max }) {
   // 2. If the suggested end lands mid-sentence, stretch to the next
   //    sentence-ending word within the grace window.
   if (!SENTENCE_END_RE.test(String(words[lastIdx].word))) {
+    let stretched = false;
     for (let i = lastIdx + 1; i < words.length; i++) {
       const w = words[i];
       if (Number(w.start) > clip.end + GRACE) break;
       if (Number(w.end) - clip.start > max + GRACE) break;
       if (SENTENCE_END_RE.test(String(w.word))) {
         end = Math.max(end, Number(w.end));
+        stretched = true;
+        break;
+      }
+    }
+    // No sentence finishes just ahead? Fall back to ending on the last
+    // completed sentence BEFORE the suggested end — a slightly shorter clip
+    // still beats one that cuts a sentence in half.
+    if (!stretched) {
+      for (let i = lastIdx; i >= 0; i--) {
+        const w = words[i];
+        if (!SENTENCE_END_RE.test(String(w.word))) continue;
+        if (Number(w.end) - clip.start < min) break; // earlier ones are shorter
+        end = Number(w.end);
         break;
       }
     }

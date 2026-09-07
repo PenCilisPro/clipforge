@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, FileText, Link2, Loader2, Music, Sparkles, Type, Upload } from "lucide-react";
+import { ArrowLeft, Clapperboard, FileText, Link2, Loader2, Music, Sparkles, Type, Upload } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
 import { cn, formatDuration, safeUploadName } from "@/lib/utils";
@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { createClient } from "@/lib/supabase/client";
 
@@ -85,6 +86,7 @@ export default function NewProjectPage() {
   // Render preferences
   const [clipCountTier, setClipCountTier] = useState("1-5");
   const [clipLength, setClipLength] = useState("ai_optimized");
+  const [brollEnabled, setBrollEnabled] = useState(true);
   const [plan, setPlan] = useState<string>("free");
   const [isAdmin, setIsAdmin] = useState(false);
   // Caption defaults — applied to every clip this project creates.
@@ -156,6 +158,7 @@ export default function NewProjectPage() {
         mode,
         clip_count_tier: clipCountTier,
         clip_length_pref: clipLength,
+        broll_enabled: brollEnabled,
         ...captionStyle,
         ...musicFields(),
         ...body,
@@ -527,6 +530,31 @@ export default function NewProjectPage() {
                 ))}
               </SelectContent>
             </Select>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Clapperboard className="h-4 w-4 text-primary-500" /> AI B-roll
+            </CardTitle>
+            <CardDescription>
+              Let the AI cut away to stock footage during descriptive moments —
+              it keeps the hook on-camera and never covers more than 40% of a
+              clip. You can fine-tune the cutaways per clip later.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="broll-toggle" className="text-sm font-normal">
+                Add AI-picked B-roll to every clip
+              </Label>
+              <Switch
+                id="broll-toggle"
+                checked={brollEnabled}
+                onCheckedChange={setBrollEnabled}
+              />
+            </div>
           </CardContent>
         </Card>
 

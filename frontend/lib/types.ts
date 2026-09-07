@@ -30,6 +30,7 @@ export interface Project {
   created_at: string;
   project_mode?: ProjectMode;
   clip_length_pref?: string;
+  broll_enabled?: boolean;
   music_url?: string | null;
   music_storage_path?: string | null;
   music_title?: string | null;

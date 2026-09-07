@@ -58,6 +58,7 @@ const createSchema = z
     title: z.string().max(200).nullish(),
     clip_length_pref: z.enum(CLIP_LENGTH_PREFS).default("ai_optimized"),
     clip_count_tier: z.enum(CLIP_COUNT_TIERS).default("1-5"),
+    broll_enabled: z.boolean().default(true),
     music_url: z
       .string()
       .url()
@@ -154,6 +155,7 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         status: "pending",
         clip_length_pref: body.clip_length_pref,
         clip_count_tier: body.clip_count_tier,
+        broll_enabled: body.broll_enabled,
         music_url: body.music_url ?? null,
         music_title: body.music_title ?? null,
         music_artist: body.music_artist ?? null,
@@ -303,13 +305,13 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
     const [{ data: project }, { data: clips }] = await Promise.all([
       supabaseAdmin
         .from("projects")
-        .select("original_video_path")
+        .select("original_video_path, music_storage_path")
         .eq("id", projectId)
         .eq("user_id", req.user.id)
         .single(),
       supabaseAdmin
         .from("clips")
-        .select("raw_clip_path, srt_path, storage_path, thumbnail_path")
+        .select("raw_clip_path, srt_path, storage_path, thumbnail_path, broll_json")
         .eq("project_id", projectId)
         .eq("user_id", req.user.id),
     ]);
@@ -328,10 +330,21 @@ router.delete("/api/projects/:id", requireAuth, async (req, res, next) => {
       }
     }
 
+    // B-roll segments the user uploaded live in user-uploads, referenced as
+    // "storage:user-uploads/<path>" inside clips.broll_json; the project's
+    // uploaded music track lives there too.
+    const uploadPaths = (clips ?? []).flatMap((c) =>
+      (Array.isArray(c.broll_json) ? c.broll_json : [])
+        .map((b) => String(b?.src ?? "").match(/^storage:user-uploads\/(.+)$/)?.[1])
+        .filter(Boolean)
+    );
+    if (project.music_storage_path) uploadPaths.push(project.music_storage_path);
+
     const byBucket = {
       "source-videos": sourcePaths,
       clips: (clips ?? []).flatMap((c) => [c.raw_clip_path, c.srt_path, c.storage_path]),
       assets: (clips ?? []).map((c) => c.thumbnail_path),
+      "user-uploads": uploadPaths,
     };
     await Promise.all(
       Object.entries(byBucket).map(([bucket, paths]) => {
