@@ -61,11 +61,27 @@ export async function processAnalyze(job) {
         clipLengthPref,
       });
     } catch (err) {
-      // AI selection is an enhancement, not a hard dependency — a missing,
-      // unfunded, or erroring provider must not fail an otherwise complete
-      // pipeline. Sample clips keep render/finalize productive.
-      job.log(`AI viral selection unavailable (${err.message}) — falling back to sample clips`);
-      suggestions = buildSampleClips(durationSeconds, clipLengthPref);
+      // One retry — long-transcript calls occasionally time out or return
+      // malformed JSON, and a second attempt usually succeeds.
+      job.log(`AI viral selection failed (${err.message}) — retrying once`);
+      try {
+        suggestions = await detectViralClips({
+          transcriptJson: project.transcript_json,
+          durationSeconds,
+          maxClips: CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
+          clipLengthPref,
+        });
+      } catch (retryErr) {
+        // AI selection is an enhancement, not a hard dependency — a missing,
+        // unfunded, or erroring provider must not fail an otherwise complete
+        // pipeline. Sample clips keep render/finalize productive.
+        job.log(`AI viral selection failed twice (${retryErr.message}) — falling back to sample clips`);
+        suggestions = buildSampleClips(
+          durationSeconds,
+          clipLengthPref,
+          CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips
+        );
+      }
     }
 
     // Persist clip rows
@@ -125,16 +141,18 @@ const SAMPLE_CLIP_LENGTHS = {
   ai_optimized: 35,
 };
 
-function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized") {
+function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", count = 3) {
   const total = durationSeconds > 0 ? durationSeconds : 600;
   const len = SAMPLE_CLIP_LENGTHS[clipLengthPref] ?? 35;
-  const windows = [
-    [Math.min(30, total * 0.1), Math.min(30, total * 0.1) + len],
-    [total * 0.4, total * 0.4 + len],
-    [total * 0.7, total * 0.7 + len],
-  ];
+  const margin = Math.min(30, total * 0.1);
+  const usable = total - 2 * margin - len;
+  const windows = [];
+  for (let i = 0; i < count; i++) {
+    const start = margin + (count === 1 ? usable / 2 : (usable * i) / (count - 1));
+    const end = start + len;
+    if (end <= total && end > start) windows.push([start, end]);
+  }
   return windows
-    .filter(([s, e]) => e <= total && e > s)
     .map(([start, end], i) => ({
       start,
       end,

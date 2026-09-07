@@ -89,12 +89,12 @@ export async function detectViralClips({
     .slice(0, 180_000); // stay comfortably under the context window
 
   const userPrompt = `Video duration: ${Math.round(durationSeconds)} seconds.
-Find up to ${maxClips} clips.
+Find up to ${maxClips} clips — return the full ${maxClips} unless the video genuinely has fewer distinct moments.
 
 Transcript with word timestamps:
 ${transcriptText}`;
 
-  const content = await chatComplete(systemPrompt, userPrompt);
+  const content = await chatComplete(systemPrompt, userPrompt, { timeoutMs: 240_000 });
   return parseClipJson(content, durationSeconds, maxClips, clipLengthPref, words);
 }
 
