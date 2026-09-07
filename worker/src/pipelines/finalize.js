@@ -49,6 +49,23 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
     .eq("id", clipId);
   if (updateError) throw updateError;
 
+  // The raw intermediate clip (`raw/<clipId>.mp4`) only exists so Shotstack
+  // can fetch it during submission — the render is done now, and re-renders
+  // re-trim from the source video, so the raw file is dead weight. Removing
+  // it roughly halves per-clip storage. Best-effort.
+  const { data: rawClip } = await supabaseAdmin
+    .from("clips")
+    .select("raw_clip_path")
+    .eq("id", clipId)
+    .single();
+  if (rawClip?.raw_clip_path) {
+    try {
+      await supabaseAdmin.storage.from("clips").remove([rawClip.raw_clip_path]);
+    } catch {
+      // Best-effort — never fail a finished clip over cleanup.
+    }
+  }
+
   await reconcileProjectDone(projectId);
   if (jobRowId) await setJobStatus(jobRowId, "completed");
   return { clipId, storagePath };
