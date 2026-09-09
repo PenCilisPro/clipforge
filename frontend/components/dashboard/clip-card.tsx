@@ -25,6 +25,7 @@ import { CAPTION_STYLES, type Clip } from "@/lib/types";
 
 export function ClipCard({ clip }: { clip: Clip }) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [retryLoading, setRetryLoading] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -35,11 +36,15 @@ export function ClipCard({ clip }: { clip: Clip }) {
 
     async function loadUrl() {
       if (!clip.storage_path || clip.status !== "ready") return;
-      // Playback URL is a presigned R2 link minted by the backend.
-      const data = await apiFetch<{ video_url: string | null }>(
+      // Playback URL is a presigned R2 link minted by the backend; the
+      // thumbnail rides along so it works even without a public bucket.
+      const data = await apiFetch<{ video_url: string | null; thumbnail_url?: string | null }>(
         `/api/clips/${clip.id}/playback`
       ).catch(() => null);
-      if (!cancelled) setVideoUrl(data?.video_url ?? null);
+      if (!cancelled) {
+        setVideoUrl(data?.video_url ?? null);
+        setThumbUrl(data?.thumbnail_url ?? null);
+      }
     }
 
     loadUrl();
@@ -92,7 +97,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
     }
   }
 
-  const thumbUrl = clip.thumbnail_path ? publicAssetUrl(clip.thumbnail_path) : null;
+  const fallbackThumbUrl = clip.thumbnail_path ? publicAssetUrl(clip.thumbnail_path) : null;
 
   const duration = clip.end_time - clip.start_time;
 
@@ -102,7 +107,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
         {clip.status === "ready" && videoUrl ? (
           <video
             src={videoUrl}
-            poster={thumbUrl ?? undefined}
+            poster={thumbUrl ?? fallbackThumbUrl ?? undefined}
             controls
             playsInline
             preload="metadata"

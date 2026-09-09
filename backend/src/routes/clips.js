@@ -82,7 +82,7 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
   try {
     const { data: clip, error } = await supabaseAdmin
       .from("clips")
-      .select("id, storage_path, raw_clip_path, srt_path")
+      .select("id, user_id, storage_path, raw_clip_path, srt_path, thumbnail_path")
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .single();
@@ -100,15 +100,20 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Invalid clip path" });
     }
 
-    const videoUrl = await presignGet(r2Key("clips", videoPath), 60 * 60);
-    const srtUrl = clip.srt_path
-      ? await presignGet(r2Key("clips", clip.srt_path), 60 * 60)
-      : null;
+    const signJobs = [
+      presignGet(r2Key("clips", videoPath), 60 * 60),
+      clip.srt_path ? presignGet(r2Key("clips", clip.srt_path), 60 * 60) : null,
+      clip.thumbnail_path && clip.user_id === req.user.id
+        ? presignGet(r2Key("assets", clip.thumbnail_path), 60 * 60)
+        : null,
+    ];
+    const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signJobs);
     if (!videoUrl) return res.status(500).json({ error: "Could not sign video URL" });
 
     res.json({
       video_url: videoUrl,
       srt_url: srtUrl,
+      thumbnail_url: thumbUrl,
       is_final_render: Boolean(clip.storage_path),
     });
   } catch (err) {
