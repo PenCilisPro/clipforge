@@ -1,8 +1,8 @@
 FROM node:20-alpine
 WORKDIR /app
-COPY package*.json ./
+COPY frontend/package*.json ./
 RUN npm install
-COPY . .
+COPY frontend/. .
 # NEXT_PUBLIC_* vars are inlined at build time — pass them as build args.
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
