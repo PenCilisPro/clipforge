@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { downloadBuffer, listByPrefix } from "./r2.js";
+import { pipeline } from "node:stream/promises";
+import { download, downloadBuffer, listByPrefix } from "./r2.js";
 
 /**
  * Source-video retrieval. Large uploads are stored as multiple parts
@@ -16,6 +17,20 @@ export function isSplitSource(path) {
 }
 
 /**
+ * Stream one object straight to a file. Never buffer a video in the Node
+ * heap — a multi-hundred-MB source OOM-kills the whole container (this
+ * shipped once: the worker crash-looped and every clip sat in "rendering").
+ */
+async function downloadToFile(key, filePath, { append = false } = {}) {
+  const body = await download(key);
+  if (append) {
+    await pipeline(body, fs.createWriteStream(filePath, { flags: "a" }));
+  } else {
+    await pipeline(body, fs.createWriteStream(filePath));
+  }
+}
+
+/**
  * Pull the project's source video to a local file, transparently
  * reassembling split uploads. `localPath` is written incrementally.
  */
@@ -28,7 +43,7 @@ export async function fetchSourceVideo(project, localPath) {
     throw new Error("Source video path does not belong to the project owner");
   }
   if (!isSplitSource(path)) {
-    await fs.writeFile(localPath, await downloadBuffer(`${BUCKET}/${path}`));
+    await downloadToFile(`${BUCKET}/${path}`, localPath);
     return localPath;
   }
 
@@ -38,12 +53,13 @@ export async function fetchSourceVideo(project, localPath) {
   const parts = Array.isArray(manifest.parts) ? manifest.parts : [];
   if (parts.length === 0) throw new Error("Split upload manifest has no parts");
 
-  await fs.writeFile(localPath, Buffer.alloc(0));
+  let first = true;
   for (const part of parts) {
     if (!String(part ?? "").startsWith(`${project.user_id}/`)) {
       throw new Error(`Upload part ${part} does not belong to the project owner`);
     }
-    await fs.appendFile(localPath, await downloadBuffer(`${BUCKET}/${part}`));
+    await downloadToFile(`${BUCKET}/${part}`, localPath, { append: !first });
+    first = false;
   }
   return localPath;
 }

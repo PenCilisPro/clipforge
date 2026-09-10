@@ -10,7 +10,11 @@ export const env = {
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   r2Bucket: process.env.R2_BUCKET,
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
-  concurrency: Number(process.env.WORKER_CONCURRENCY ?? 2),
+  // Default 1: each render decodes the source with ffmpeg (~400MB+ RSS for
+  // 4K) inside a container that also runs the API and redis — two concurrent
+  // renders OOM-kill small plans. Raise via WORKER_CONCURRENCY on bigger
+  // instances only.
+  concurrency: Number(process.env.WORKER_CONCURRENCY ?? 1),
   maxClips: Number(process.env.MAX_CLIPS_PER_VIDEO ?? 6),
   sttLanguage: process.env.STT_LANGUAGE_CODE ?? "en-US",
 
