@@ -69,6 +69,30 @@ export async function extractAudio(inputPath, outputPath) {
   ]);
 }
 
+/**
+ * Split an audio file into fixed-length WAV chunks that each stay under
+ * Google STT's 10 MiB inline payload limit (180s of 16 kHz mono PCM ≈ 5.5 MB
+ * raw ≈ 7.4 MB base64). Returns [{path, startSeconds}] covering the file in
+ * order; the last chunk carries whatever remains.
+ */
+export async function splitAudioChunks(inputPath, chunkSeconds = 180) {
+  const duration = await probeDurationSeconds(inputPath);
+  if (!duration || duration <= chunkSeconds) return [{ path: inputPath, startSeconds: 0 }];
+  const chunks = [];
+  for (let start = 0; start < duration; start += chunkSeconds) {
+    const out = tmpPath(`audio-chunk-${start}.wav`);
+    await runFfmpeg([
+      "-ss", String(start),
+      "-i", inputPath,
+      "-t", String(chunkSeconds),
+      "-c:a", "pcm_s16le",
+      out,
+    ]);
+    chunks.push({ path: out, startSeconds: start });
+  }
+  return chunks;
+}
+
 // Heavy re-encode trims are serialized: two concurrent 4K trims OOM small
 // containers (512MB on Railway's trial plan). Other stages stay concurrent.
 let trimChain = Promise.resolve();
