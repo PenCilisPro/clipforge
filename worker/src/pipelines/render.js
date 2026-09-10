@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabase.js";
-import { r2Key, upload as r2Upload, presignGet } from "../lib/r2.js";
+import { r2Key, upload as r2Upload, uploadFile as r2UploadFile, presignGet } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
 import {
   ensureTmpDir,
@@ -64,7 +64,6 @@ export async function processRender(job) {
     // 1. Source video → local. Fetched part-by-part and written to disk —
     // buffering the whole file in the Node heap OOM-kills small containers
     // before ffmpeg even starts. Split uploads are reassembled on the fly.
-    const fs = await import("node:fs/promises");
     const localSource = tmpPath(`source-${projectId}.mp4`);
     await fetchSourceVideo(project, localSource);
 
@@ -139,8 +138,10 @@ export async function processRender(job) {
     const thumbPath = `${project.user_id}/${clipId}.jpg`;
     const srtPath = `${project.user_id}/srt/${clipId}.srt`;
 
-    await r2Upload(r2Key("clips", rawPath), await fs.readFile(localRawClip), "video/mp4");
-    await r2Upload(r2Key("assets", thumbPath), await fs.readFile(localThumb), "image/jpeg");
+    // Streamed from disk — readFile'ing the raw clip spikes the heap by its
+    // full size and can OOM the container mid-render.
+    await r2UploadFile(r2Key("clips", rawPath), localRawClip, "video/mp4");
+    await r2UploadFile(r2Key("assets", thumbPath), localThumb, "image/jpeg");
     await r2Upload(r2Key("clips", srtPath), Buffer.from(srtText, "utf8"), "application/x-subrip");
 
     await supabaseAdmin

@@ -1,6 +1,5 @@
-import fs from "node:fs/promises";
 import { supabaseAdmin } from "../lib/supabase.js";
-import { upload as r2Upload, remove as r2Remove } from "../lib/r2.js";
+import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
 import { ensureTmpDir, tmpPath, cleanup } from "../lib/ffmpeg.js";
 import { downloadRenderedClip } from "../lib/shotstack.js";
@@ -35,7 +34,7 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
   await downloadRenderedClip(renderUrl, localFinal);
 
   const storagePath = `${clip.user_id}/${clipId}.mp4`;
-  await r2Upload(`clips/${storagePath}`, await fs.readFile(localFinal), "video/mp4");
+  await r2UploadFile(`clips/${storagePath}`, localFinal, "video/mp4");
   await cleanup(localFinal);
 
   const { error: updateError } = await supabaseAdmin

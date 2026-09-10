@@ -214,8 +214,31 @@ export async function submitRender(editJson, callbackUrl) {
   return String(renderId);
 }
 
-/** Poll-free design: render completion arrives via the Shotstack webhook
- * (backend /webhooks/shotstack → finalize stage). Nothing to poll here. */
+/**
+ * Poll a render's status. Primary completion path is the webhook
+ * (backend /webhooks/shotstack → finalize), but the worker's watchdog polls
+ * as a fallback so a webhook that never arrives can't strand a finished
+ * render. Returns {status, url, error}.
+ */
+export async function getRender(renderId) {
+  if (!env.shotstackApiKey) throw new Error("SHOTSTACK_API_KEY is not configured");
+  if (!RENDER_ID_RE.test(String(renderId))) throw new Error("Invalid render id");
+
+  const res = await fetch(`${BASE_URL()}render/${encodeURIComponent(renderId)}`, {
+    headers: { "X-Api-Key": env.shotstackApiKey },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Shotstack render poll failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const r = data?.response ?? {};
+  return {
+    status: String(r.status ?? "").toLowerCase(),
+    url: typeof r.url === "string" ? r.url : null,
+    error: r.error ?? null,
+  };
+}
 
 /**
  * Download a finished render from Shotstack's CDN to a local path.

@@ -48,6 +48,27 @@ export async function upload(key, body, contentType) {
   );
 }
 
+/**
+ * Upload straight from a file on disk. Reading the whole video into the heap
+ * first (fs.readFile → Buffer) spikes RSS by the file size and OOM-kills
+ * small containers while ffmpeg is trying to allocate its own buffers.
+ */
+export async function uploadFile(key, filePath, contentType) {
+  const { createReadStream } = await import("node:fs");
+  const { stat } = await import("node:fs/promises");
+  const { size } = await stat(filePath);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: env.r2Bucket,
+      Key: key,
+      Body: createReadStream(filePath),
+      ContentLength: size,
+      ContentType: contentType,
+    }),
+    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+  );
+}
+
 export async function download(key) {
   const res = await client.send(
     new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }),

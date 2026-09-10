@@ -4,6 +4,7 @@ import IORedis from "ioredis";
 import { env } from "./env.js";
 import { supabaseAdmin } from "./supabase.js";
 import { insertJobRow, reconcileProjectDone } from "./jobs.js";
+import { getRender } from "./shotstack.js";
 
 /**
  * Queue recovery. Redis here is ephemeral (in-container, wiped on every
@@ -105,6 +106,57 @@ async function failLostWebhookRenders() {
   console.log(`[recovery] marked ${clips.length} lost-webhook render(s) as failed`);
 }
 
+/**
+ * Poll Shotstack directly for submitted renders that have been waiting more
+ * than 5 minutes. The webhook remains the fast path; this guarantees a
+ * finished render is still finalized (and a failed one surfaced) even when
+ * the webhook never reaches the backend.
+ */
+async function pollSubmittedRenders() {
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const { data: clips, error } = await supabaseAdmin
+    .from("clips")
+    .select("id, project_id, shotstack_render_id")
+    .eq("status", "rendering")
+    .not("shotstack_render_id", "is", null)
+    .is("storage_path", null)
+    .or(`render_submitted_at.lt.${cutoff},and(render_submitted_at.is.null,created_at.lt.${cutoff})`)
+    .limit(10);
+  if (error) {
+    console.error("[recovery] poll query failed:", error.message);
+    return;
+  }
+  for (const clip of clips ?? []) {
+    let render;
+    try {
+      render = await getRender(clip.shotstack_render_id);
+    } catch (err) {
+      console.error(`[recovery] poll render ${clip.shotstack_render_id}:`, err.message);
+      continue;
+    }
+    if (render.status === "done" && render.url) {
+      await queue.add(
+        "finalize",
+        { projectId: clip.project_id, clipId: clip.id, renderUrl: render.url, jobRowId: null },
+        { ...RECOVERY_JOB_OPTS, attempts: 5 }
+      );
+      console.log(`[recovery] render ${clip.shotstack_render_id} done — finalize enqueued via poll`);
+    } else if (render.status === "failed" || render.status === "canceled") {
+      await supabaseAdmin
+        .from("clips")
+        .update({
+          status: "failed",
+          error_message:
+            render.error?.message ?? `Shotstack render ${render.status} (found by poll)`,
+        })
+        .eq("id", clip.id)
+        .eq("status", "rendering");
+      await reconcileProjectDone(clip.project_id);
+    }
+    // otherwise still queued/rendering on Shotstack — nothing to do yet
+  }
+}
+
 export function startRecovery() {
   // Startup: short delay so redis/supabase connections are warm. Age floor of
   // 10 minutes skips clips enqueued moments before a routine restart.
@@ -118,9 +170,12 @@ export function startRecovery() {
     reenqueueStrandedRenders(30 * 60 * 1000).catch((e) =>
       console.error("[recovery] periodic pass failed:", e.message)
     );
+    pollSubmittedRenders().catch((e) =>
+      console.error("[recovery] render-poll pass failed:", e.message)
+    );
     failLostWebhookRenders().catch((e) =>
       console.error("[recovery] webhook-timeout pass failed:", e.message)
     );
-  }, 10 * 60 * 1000);
+  }, 60 * 1000);
   timer.unref?.();
 }

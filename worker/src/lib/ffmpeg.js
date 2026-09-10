@@ -103,36 +103,47 @@ let trimChain = Promise.resolve();
  * (-c copy) snaps to keyframes and desyncs captions on variable-keyframe files.
  * Downscales anything above 1080p first: re-encoding 4K with libx264 blows
  * past small containers' RAM (two concurrent trims get OOM-killed).
+ * If the container's OOM killer still takes ffmpeg out (SIGKILL), retry once
+ * at 720p with a cheaper encoder config rather than failing the clip.
  */
-export function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
-  const run = () =>
-    runFfmpeg([
-      // Input-side thread cap limits the AV1/H264 decoder's per-thread frame
-      // buffers — dav1d defaults to one thread per core at 4K and each holds
-      // big reference frames. Measured on a 4K AV1 source: threads=2 → 890MB,
-      // threads=1 → 410MB, so single-threaded decode is the big lever.
-      "-threads", "1",
-      "-filter_threads", "1",
-      "-ss", String(startSeconds),
-      "-i", inputPath,
-      "-t", String(durationSeconds),
-      "-vf", "scale='min(1920,iw)':-2",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-      // Cap encoder threads — x264 sizes its thread pool from detected cores,
-      // which balloons RSS on big hosts and OOMs small containers.
-      "-threads", "2",
-      "-c:a", "aac", "-b:a", "128k",
-      "-movflags", "+faststart",
-      outputPath,
-    ]);
-  const result = trimChain.then(run);
-  // Keep the chain alive regardless of failures, and drop settled results so
-  // a long session doesn't hold references.
-  trimChain = result.then(
-    () => {},
-    () => {}
-  );
-  return result;
+export async function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
+  const args = (maxHeight, crf) => [
+    // Input-side thread cap limits the AV1/H264 decoder's per-thread frame
+    // buffers — dav1d defaults to one thread per core at 4K and each holds
+    // big reference frames. Measured on a 4K AV1 source: threads=2 → 890MB,
+    // threads=1 → 410MB, so single-threaded decode is the big lever.
+    "-threads", "1",
+    "-filter_threads", "1",
+    "-ss", String(startSeconds),
+    "-i", inputPath,
+    "-t", String(durationSeconds),
+    "-vf", `scale='min(1920,iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`,
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", String(crf),
+    // Cap encoder threads — x264 sizes its thread pool from detected cores,
+    // which balloons RSS on big hosts and OOMs small containers.
+    "-threads", "2",
+    "-c:a", "aac", "-b:a", "128k",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+  const run = (a) => {
+    const p = trimChain.then(() => runFfmpeg(a));
+    // Keep the chain alive regardless of failures, and drop settled results so
+    // a long session doesn't hold references.
+    trimChain = p.then(
+      () => {},
+      () => {}
+    );
+    return p;
+  };
+
+  try {
+    return await run(args(1080, 20));
+  } catch (err) {
+    if (!/signal SIGKILL/.test(err.message)) throw err;
+    console.warn("[ffmpeg] trim OOM-killed — retrying at 720p with a lighter encode");
+    return run(args(720, 23));
+  }
 }
 
 /** Grab a vertical thumbnail from a clip. */
