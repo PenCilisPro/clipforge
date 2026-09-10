@@ -103,7 +103,7 @@ export async function processTranscribe(job) {
     };
 
     // The STT request payload (base64 = 4/3 of raw size) is hard-capped at
-    // 10 MiB by Google — past ~5 minutes of WAV the audio must go via GCS
+    // 10 MiB AND inline audio at 60s duration — longer audio must go via GCS
     // (when GCS_BUCKET is set) or be split into inline-sized chunks.
     const toSeconds = (t) =>
       t == null

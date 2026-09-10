@@ -21,7 +21,7 @@ export const env = {
   googleCredentialsPath: process.env.GOOGLE_APPLICATION_CREDENTIALS,
   googleCredentialsJson: process.env.GOOGLE_CREDENTIALS_JSON,
   // Cloud Storage bucket for audio too big to inline in the STT request
-  // (Google rejects request payloads over 10 MiB — anything past ~5 min).
+  // (Google rejects inline requests over 10 MiB or 60s of audio).
   gcsBucket: process.env.GCS_BUCKET,
 
   zaiApiKey: process.env.ZAI_API_KEY,
