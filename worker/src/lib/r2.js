@@ -31,6 +31,11 @@ export function r2Key(bucket, path) {
   return `${bucket}/${path}`;
 }
 
+// Request-level timeout — without it a stalled R2 connection hangs the
+// awaiting promise (and a worker slot) forever. Generous: source videos are
+// large, but never legitimately minutes-silent.
+const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
 export async function upload(key, body, contentType) {
   await client.send(
     new PutObjectCommand({
@@ -38,17 +43,24 @@ export async function upload(key, body, contentType) {
       Key: key,
       Body: body,
       ContentType: contentType,
-    })
+    }),
+    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
   );
 }
 
 export async function download(key) {
-  const res = await client.send(new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }));
+  const res = await client.send(
+    new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }),
+    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+  );
   return res.Body; // Readable stream
 }
 
 export async function downloadBuffer(key) {
-  const res = await client.send(new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }));
+  const res = await client.send(
+    new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }),
+    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+  );
   const chunks = [];
   for await (const chunk of res.Body) chunks.push(chunk);
   return Buffer.concat(chunks);

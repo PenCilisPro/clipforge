@@ -9,6 +9,7 @@ import { processAnalyze } from "./pipelines/analyze.js";
 import { processRender } from "./pipelines/render.js";
 import { processFinalize } from "./pipelines/finalize.js";
 import { processPublish } from "./publish/index.js";
+import { startRecovery } from "./lib/recovery.js";
 
 warnMissing();
 
@@ -59,6 +60,7 @@ for (const worker of [pipelineWorker, publishingWorker]) {
 }
 
 await ensureTmpDir();
+startRecovery();
 
 console.log(
   `[worker] ClipForge worker ready — pipeline concurrency ${env.concurrency}, max ${env.maxClips} clips/video`

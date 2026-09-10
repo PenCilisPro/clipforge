@@ -15,9 +15,13 @@ COPY worker/package*.json /worker/
 RUN cd /worker && npm install --omit=dev && apk del python3 make g++
 
 COPY backend/src ./src
+COPY backend/start.sh ./start.sh
 COPY worker/src /worker/src
 
 # ffmpeg-static ships a bundled binary; keep tmp space for processing
 RUN mkdir -p /tmp/clipforge
 EXPOSE 4000 6379
-CMD ["sh", "-c", "redis-server --port 6379 --save '' --appendonly no --daemonize yes && node /worker/src/index.js & exec node src/server.js"]
+# start.sh daemonizes redis, supervises the worker and execs the API.
+# (An inline `redis && node worker & exec api` CMD once left redis in the
+# foreground of the backgrounded chain, so the worker never started.)
+CMD ["sh", "start.sh"]

@@ -199,6 +199,7 @@ export async function submitRender(editJson, callbackUrl) {
       "X-Api-Key": env.shotstackApiKey,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
@@ -222,7 +223,7 @@ export async function submitRender(editJson, callbackUrl) {
  */
 export async function downloadRenderedClip(url, filePath) {
   const trusted = assertTrustedRenderUrl(url);
-  const res = await fetch(trusted, { redirect: "follow" });
+  const res = await fetch(trusted, { redirect: "follow", signal: AbortSignal.timeout(10 * 60 * 1000) });
   if (!res.ok || !res.body) throw new Error(`Failed to download rendered clip (${res.status})`);
   const { writeFile } = await import("node:fs/promises");
   const { Readable } = await import("node:stream");
