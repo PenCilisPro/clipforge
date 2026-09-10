@@ -1,4 +1,5 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { download, downloadBuffer, listByPrefix } from "./r2.js";
 
