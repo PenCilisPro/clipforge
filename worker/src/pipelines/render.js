@@ -197,7 +197,11 @@ export async function processRender(job) {
 
     await supabaseAdmin
       .from("clips")
-      .update({ shotstack_render_id: renderId, status: "rendering" })
+      .update({
+        shotstack_render_id: renderId,
+        status: "rendering",
+        render_submitted_at: new Date().toISOString(),
+      })
       .eq("id", clipId);
 
     await cleanup(localSource, localRawClip, localThumb);

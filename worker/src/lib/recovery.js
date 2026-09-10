@@ -76,14 +76,21 @@ async function reenqueueStrandedRenders(maxAgeMs) {
 
 async function failLostWebhookRenders() {
   const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  // Judge from when the render was submitted (render_submitted_at), not clip
+  // creation — a clip can sit queued for hours before its render starts.
+  // Legacy rows without a submission timestamp fall back to created_at.
   const { data: clips, error } = await supabaseAdmin
     .from("clips")
     .select("id, project_id")
     .eq("status", "rendering")
     .not("shotstack_render_id", "is", null)
     .is("storage_path", null)
-    .lt("created_at", cutoff);
-  if (error || !clips?.length) return;
+    .or(`render_submitted_at.lt.${cutoff},and(render_submitted_at.is.null,created_at.lt.${cutoff})`);
+  if (error) {
+    console.error("[recovery] webhook-timeout query failed:", error.message);
+    return;
+  }
+  if (!clips?.length) return;
 
   const message =
     "Render timed out — the Shotstack webhook never arrived. Use re-render on this clip to try again.";
