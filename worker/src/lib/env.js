@@ -1,8 +1,10 @@
 import "dotenv/config";
 
 export const env = {
-  supabaseUrl: process.env.SUPABASE_URL,
-  supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
+  // Firebase (auth + Firestore). FIREBASE_SERVICE_ACCOUNT accepts the raw
+  // service-account JSON, a base64 encoding of it, or a path to the file.
+  firebaseProjectId: process.env.FIREBASE_PROJECT_ID,
+  firebaseServiceAccount: process.env.FIREBASE_SERVICE_ACCOUNT,
 
   // Cloudflare R2 (file storage; replaces Supabase Storage)
   r2AccountId: process.env.R2_ACCOUNT_ID,
@@ -47,8 +49,8 @@ export const env = {
 
 export function warnMissing() {
   const checks = {
-    SUPABASE_URL: env.supabaseUrl,
-    SUPABASE_SERVICE_KEY: env.supabaseServiceKey,
+    FIREBASE_PROJECT_ID: env.firebaseProjectId,
+    FIREBASE_SERVICE_ACCOUNT: env.firebaseServiceAccount,
     R2_ACCOUNT_ID: env.r2AccountId,
     R2_ACCESS_KEY_ID: env.r2AccessKeyId,
     R2_SECRET_ACCESS_KEY: env.r2SecretAccessKey,

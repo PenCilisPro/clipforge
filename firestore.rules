@@ -1,0 +1,95 @@
+rules_version = '2';
+
+// ClipForge Firestore security rules (replace Supabase RLS).
+// The Express backend and worker use the Firebase Admin SDK, which bypasses
+// these rules entirely — they only govern direct browser reads/writes.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn() && resource == null
+        ? request.resource.data.user_id == request.auth.uid
+        : resource.data.user_id == request.auth.uid;
+    }
+
+    function ownerOrAdmin() {
+      return signedIn() &&
+        (resource == null
+          ? request.resource.data.user_id == request.auth.uid
+          : resource.data.user_id == request.auth.uid ||
+            request.auth.token.admin == true);
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    // One doc per user, keyed by uid.
+    match /profiles/{uid} {
+      allow get, list: if signedIn() && (request.auth.uid == uid || request.auth.token.admin == true);
+      allow create, update: if request.auth.uid == uid || request.auth.token.admin == true;
+      allow delete: if false;
+    }
+
+    match /projects/{id} {
+      allow read: if ownerOrAdmin();
+      allow create: if isOwner();
+      allow update, delete: if ownerOrAdmin();
+    }
+
+    match /clips/{id} {
+      allow read: if ownerOrAdmin();
+      allow create: if isOwner();
+      allow update, delete: if ownerOrAdmin();
+    }
+
+    // Pipeline jobs are written by the worker (admin SDK); browsers read only.
+    match /jobs/{id} {
+      allow read: if ownerOrAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /scheduled_posts/{id} {
+      allow read: if ownerOrAdmin();
+      allow create: if isOwner();
+      allow update, delete: if ownerOrAdmin();
+    }
+
+    match /social_connections/{id} {
+      allow read: if ownerOrAdmin();
+      // Tokens are encrypted by the backend via OAuth callbacks — the browser
+      // never writes connections directly. Keep writes admin-only.
+      allow write: if isAdmin();
+    }
+
+    match /feedback/{id} {
+      allow read: if ownerOrAdmin() || isAdmin();
+      allow create: if isOwner();
+      allow update, delete: if isAdmin();
+    }
+
+    match /upgrade_requests/{id} {
+      allow read: if isAdmin();
+      allow create: if isOwner();
+      allow update, delete: if isAdmin();
+    }
+
+    // Public catalog / branding, admin-managed.
+    match /pricing_plans/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /app_branding/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

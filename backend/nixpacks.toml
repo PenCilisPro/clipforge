@@ -1,5 +1,0 @@
-[phases.setup]
-nixPkgs = ["...", "redis"]
-
-[start]
-cmd = "redis-server --port 6379 --save '' --appendonly no --daemonize yes && node src/server.js"

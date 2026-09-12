@@ -15,8 +15,10 @@ export const env = {
   backendUrl: required("BACKEND_URL", "http://localhost:4000"),
   frontendUrl: required("FRONTEND_URL", "http://localhost:3000"),
 
-  supabaseUrl: required("SUPABASE_URL"),
-  supabaseServiceKey: required("SUPABASE_SERVICE_KEY"),
+  // Firebase (auth + Firestore). FIREBASE_SERVICE_ACCOUNT accepts the raw
+  // service-account JSON, a base64 encoding of it, or a path to the file.
+  firebaseProjectId: required("FIREBASE_PROJECT_ID"),
+  firebaseServiceAccount: required("FIREBASE_SERVICE_ACCOUNT"),
 
   // Cloudflare R2 (file storage; replaces Supabase Storage)
   r2AccountId: required("R2_ACCOUNT_ID"),
@@ -66,8 +68,8 @@ export const env = {
 
 export function assertCriticalEnv() {
   for (const key of [
-    "SUPABASE_URL",
-    "SUPABASE_SERVICE_KEY",
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_SERVICE_ACCOUNT",
     "REDIS_URL",
     "R2_ACCOUNT_ID",
     "R2_ACCESS_KEY_ID",

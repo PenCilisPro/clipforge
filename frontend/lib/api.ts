@@ -4,23 +4,15 @@ export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 /**
- * Fetch the Express backend with the caller's Supabase access token attached.
+ * Fetch the Express backend with the caller's Firebase ID token attached.
+ * getIdToken() refreshes automatically, so no manual refresh dance is needed.
  */
 export async function apiFetch<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
   const supabase = createClient();
-  let session = (await supabase.auth.getSession()).data.session;
-
-  // Background tabs can miss supabase-js's scheduled token refresh, leaving a
-  // stale access token in the cookie — the backend then 401s with
-  // "Invalid or expired token". Refresh explicitly when expired or close to it.
-  if (session && session.expires_at && session.expires_at * 1000 < Date.now() + 30_000) {
-    const { data, error } = await supabase.auth.refreshSession();
-    if (!error && data.session) session = data.session;
-  }
-
+  const session = (await supabase.auth.getSession()).data.session;
   if (!session) throw new Error("Not signed in");
 
   const res = await fetch(`${API_URL}${path}`, {

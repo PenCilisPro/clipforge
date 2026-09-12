@@ -1,8 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
-import { env } from "./env.js";
+import { createClient } from "./firestore.js";
 
-export const supabaseAdmin = createClient(
-  env.supabaseUrl ?? "http://localhost",
-  env.supabaseServiceKey ?? "missing",
-  { auth: { persistSession: false } }
-);
+/**
+ * Supabase-compatible data client, now backed by Cloud Firestore.
+ * Same builder API (from/select/eq/insert/update/upsert/delete/rpc) so the
+ * rest of the worker is unchanged. Runs with admin privileges.
+ */
+export const supabaseAdmin = createClient();

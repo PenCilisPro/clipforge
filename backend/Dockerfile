@@ -1,4 +1,4 @@
-# Node 22: supabase-js realtime needs native WebSocket (Node 20 crashes)
+# Node 22 (was required for supabase-js realtime; keep for native fetch/WebSocket parity)
 FROM node:22-alpine
 # redis-server runs alongside the API (free-plan pattern); python3/make/g++
 # are build deps for the worker's gRPC native modules and are removed after.

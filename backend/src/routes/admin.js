@@ -246,7 +246,7 @@ router.put("/api/admin/faq", async (req, res, next) => {
       key: "faq_items",
       value: JSON.stringify(faqs),
       updated_at: new Date().toISOString(),
-    });
+    }, { onConflict: "key" });
     if (error) throw error;
 
     res.json({ ok: true });
@@ -307,7 +307,7 @@ router.post("/api/admin/branding", brandingParser, async (req, res, next) => {
       .upsert([
         { key: "logo_url", value: url, updated_at: now },
         { key: "favicon_url", value: url, updated_at: now },
-      ]);
+      ], { onConflict: "key" });
     if (upsertError) throw upsertError;
 
     res.json({ logoUrl: url, faviconUrl: url });
