@@ -1,10 +1,11 @@
 "use client";
 
-import { getApp, getApps, initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import {
   GoogleAuthProvider,
   browserLocalPersistence,
   getAuth,
+  type Auth,
   onAuthStateChanged,
   setPersistence,
   signInWithPopup,
@@ -25,6 +26,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  type Firestore,
 } from "firebase/firestore";
 
 /**
@@ -40,9 +42,32 @@ export const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "",
 };
 
-export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-export const firestore = getFirestore(app);
-setPersistence(auth, browserLocalPersistence).catch(() => {});
+export const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+
+/**
+ * Lazy singletons. initializeApp with a blank config is safe, but getAuth
+ * throws auth/invalid-api-key when the key is missing — and this module is
+ * imported by pages that Next prerenders at build time (e.g. /terms), where
+ * env vars may not exist yet. Deferring getAuth/getFirestore to first use
+ * keeps the build alive; the throw surfaces only if the app is actually used
+ * without configuration.
+ */
+function lazySingleton<T extends object>(factory: () => T): T {
+  let instance: T | undefined;
+  return new Proxy({} as T, {
+    get(_target, prop) {
+      instance ??= factory();
+      const value = Reflect.get(instance, prop, instance);
+      return typeof value === "function" ? value.bind(instance) : value;
+    },
+  });
+}
+
+export const auth: Auth = lazySingleton(() => {
+  const a = getAuth(app);
+  setPersistence(a, browserLocalPersistence).catch(() => {});
+  return a;
+});
+export const firestore: Firestore = lazySingleton(() => getFirestore(app));
 
 export { onAuthStateChanged };
