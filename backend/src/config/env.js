@@ -13,7 +13,17 @@ function required(name, fallback = undefined) {
 export const env = {
   port: Number(process.env.PORT ?? 4000),
   backendUrl: required("BACKEND_URL", "http://localhost:4000"),
-  frontendUrl: required("FRONTEND_URL", "http://localhost:3000"),
+  // FRONTEND_URL may list several allowed origins (comma-separated). A
+  // trailing slash on the configured value silently broke CORS matching, so
+  // every entry is trimmed and slash-stripped.
+  frontendUrls: (required("FRONTEND_URL", "http://localhost:3000") ?? "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+  frontendUrl: (required("FRONTEND_URL", "http://localhost:3000") ?? "")
+    .split(",")[0]
+    .trim()
+    .replace(/\/+$/, ""),
 
   // Firebase (auth + Firestore). FIREBASE_SERVICE_ACCOUNT accepts the raw
   // service-account JSON, a base64 encoding of it, or a path to the file.
