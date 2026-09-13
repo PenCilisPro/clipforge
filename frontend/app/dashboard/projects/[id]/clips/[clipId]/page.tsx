@@ -40,7 +40,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { cn, safeUploadName } from "@/lib/utils";
+import { cn, safeUploadName, uuid } from "@/lib/utils";
 
 const AI_CREDIT_COST = 10;
 
@@ -240,7 +240,7 @@ export default function ClipEditPage() {
     const start = last ? last.end + 0.2 : 0;
     setCues((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), start, end: start + 1.5, text: "New caption" },
+      { id: uuid(), start, end: start + 1.5, text: "New caption" },
     ]);
     setResetSrt(false);
   }
@@ -444,7 +444,7 @@ export default function ClipEditPage() {
       else if (c.start >= boundary) {
         part2.push({
           ...c,
-          id: crypto.randomUUID(),
+          id: uuid(),
           start: Number((c.start - boundary).toFixed(1)),
           end: Number((c.end - boundary).toFixed(1)),
         });
@@ -452,7 +452,7 @@ export default function ClipEditPage() {
         // Cue spans the split — keep the piece on each side if it's readable.
         if (boundary - c.start >= 0.3) part1.push({ ...c, end: boundary });
         if (c.end - boundary >= 0.3) {
-          part2.push({ ...c, id: crypto.randomUUID(), start: 0, end: Number((c.end - boundary).toFixed(1)) });
+          part2.push({ ...c, id: uuid(), start: 0, end: Number((c.end - boundary).toFixed(1)) });
         }
       }
     }

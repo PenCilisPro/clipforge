@@ -5,6 +5,7 @@
  */
 import type { SrtCue } from "@/lib/srt-client";
 import type { TranscriptWord } from "@/lib/types";
+import { uuid } from "@/lib/utils";
 
 /** The pipeline re-trims with a 3 s floor — the editor enforces the same. */
 export const MIN_CLIP_SECONDS = 3;
@@ -58,7 +59,7 @@ export function cuesFromTranscript(
   let current: { start: number; end: number; text: string } | null = null;
 
   const push = () => {
-    if (current && current.text.trim()) cues.push({ id: crypto.randomUUID(), ...current });
+    if (current && current.text.trim()) cues.push({ id: uuid(), ...current });
     current = null;
   };
 

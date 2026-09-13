@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { DashboardShell } from "@/components/dashboard/shell";
 
 /**
@@ -46,6 +47,19 @@ export default function DashboardLayout({
       } catch {
         profileData = null;
       }
+      if (!profileData) {
+        // Fall back to the backend (admin SDK), which reads the same profile
+        // document bypassing security rules — covers rules races and docs
+        // created server-side that the client SDK couldn't read yet.
+        try {
+          const { profile } = await apiFetch<{
+            profile: Record<string, unknown>;
+          }>("/api/me");
+          if (profile) profileData = profile;
+        } catch {
+          // backend unreachable — keep null and render the defaults
+        }
+      }
       setState({ checked: true, user, profile: profileData });
     }
 
@@ -77,8 +91,8 @@ export default function DashboardLayout({
       profile={
         profile
           ? {
-              plan: profile.plan as string,
-              creditsRemaining: Number(profile.credits_remaining),
+              plan: (profile.plan as string) || "free",
+              creditsRemaining: Number(profile.credits_remaining) || 0,
             }
           : { plan: "free", creditsRemaining: 0 }
       }

@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 import { uploadToR2, publicAssetUrl } from "@/lib/storage";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, uuid } from "@/lib/utils";
 import { FEEDBACK_CATEGORIES, categoryLabel, type FeedbackCategory } from "@/lib/feedback";
 import { Reveal } from "@/components/dashboard/reveal";
 import { StarRating } from "@/components/dashboard/star-rating";
@@ -120,7 +120,7 @@ export default function FeedbackPage() {
       });
       setHistory((prev) => [
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           message: message.trim(),
           category,
           rating,

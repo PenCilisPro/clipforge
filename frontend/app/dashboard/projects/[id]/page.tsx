@@ -15,7 +15,7 @@ import { ClipCard } from "@/components/dashboard/clip-card";
 import { PipelineTracker } from "@/components/dashboard/pipeline-tracker";
 import { createClient } from "@/lib/supabase/client";
 import type { Clip, Job, Project, TranscriptWord } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, copyToClipboard } from "@/lib/utils";
 
 interface TranscriptParagraph {
   start: number;
@@ -122,11 +122,11 @@ export default function ProjectDetailPage() {
         .map((p) => `[${formatTs(p.start)}] ${p.text}`)
         .join("\n\n") || (project?.transcript_json?.transcript ?? "");
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } else {
       toast.error("Couldn't copy — your browser blocked clipboard access");
     }
   }

@@ -51,6 +51,14 @@ const USER_SCOPED = new Set([
 
 type EqFilter = { field: string; value: unknown };
 
+// relation → the FK column linking the child back to its parent (mirrors the
+// old Supabase schema). `clips(count)` must count clips by project_id, not by
+// a derived "clip_id" column that doesn't exist.
+const RELATIONS: Record<string, string> = {
+  clips: "project_id",
+  jobs: "project_id",
+};
+
 function embedPaths(selectStr: string | undefined) {
   if (!selectStr) return [] as { relation: string; arg: string }[];
   const out: { relation: string; arg: string }[] = [];
@@ -141,8 +149,9 @@ class ClientQuery {
   private async applyEmbeds(rows: any[], uid: string): Promise<any> {
     for (const { relation, arg } of embedPaths(this.selectStr)) {
       if (arg !== "count") continue;
-      // children count via <relation>.<parent-singular>_id == row.id
-      const fk = `${relation.replace(/s$/, "")}_id`;
+      // children count via <relation>.<fk> == row.id (fk from RELATIONS,
+      // falling back to the singular-name convention)
+      const fk = RELATIONS[relation] ?? `${relation.replace(/s$/, "")}_id`;
       for (const row of rows) {
         const snap = await getDocs(
           fsQuery(
@@ -405,6 +414,7 @@ function createClient() {
     channel(name: string) {
       const listeners: { table: string; cb: () => void }[] = [];
       const unsubs: (() => void)[] = [];
+      let removed = false;
       return {
         on(
           _event: string,
@@ -415,26 +425,63 @@ function createClient() {
           return this;
         },
         subscribe() {
-          const user = auth.currentUser;
-          const uid = user?.uid;
-          for (const { table, cb } of listeners) {
-            if (!uid || !USER_SCOPED.has(table)) {
-              unsubs.push(onSnapshot(collection(firestore, table), () => cb()));
-              continue;
+          // Wait for Firebase auth to restore the session before building the
+          // queries. On a hard reload auth.currentUser is still null here;
+          // subscribing unscoped would hit Firestore rules and error.
+          const ready = new Promise<void>((resolve) => {
+            if (auth.currentUser) return resolve();
+            const t = setTimeout(resolve, 3000);
+            const unsub = onAuthStateChanged(auth, (u) => {
+              if (u) {
+                clearTimeout(t);
+                unsub();
+                resolve();
+              }
+            });
+          });
+          ready.then(() => {
+            if (removed) return;
+            const user = auth.currentUser;
+            const uid = user?.uid;
+            for (const { table, cb } of listeners) {
+              const q = !uid || !USER_SCOPED.has(table)
+                ? collection(firestore, table)
+                : fsQuery(collection(firestore, table), where("user_id", "==", uid));
+              // Always pass an error callback: without one, a permission-
+              // denied or network error escalates into an uncaught
+              // "INTERNAL ASSERTION FAILED: Unexpected state" that kills
+              // every Firestore listener on the page.
+              unsubs.push(
+                onSnapshot(
+                  q,
+                  () => cb(),
+                  (err) => console.warn(`[realtime] ${table} listener error:`, err.message)
+                )
+              );
             }
-            unsubs.push(
-              onSnapshot(
-                fsQuery(collection(firestore, table), where("user_id", "==", uid)),
-                () => cb()
-              )
-            );
-          }
+          });
           return this;
         },
         remove() {
-          unsubs.forEach((u) => u());
-          unsubs.length = 0;
-          return Promise.resolve("ok");
+          removed = true;
+          const pending = unsubs.splice(0, unsubs.length);
+          if (pending.length === 0) return Promise.resolve("ok");
+          // Unsubscribing before a listener receives its first snapshot makes
+          // the Firestore SDK throw "INTERNAL ASSERTION FAILED: Unexpected
+          // state" (react strict-mode double-mounts hit this on every page).
+          // Wait one macrotask so the initial snapshot/error lands first.
+          return new Promise<string>((resolve) => {
+            setTimeout(() => {
+              for (const u of pending) {
+                try {
+                  u();
+                } catch {
+                  // already torn down — nothing to do
+                }
+              }
+              resolve("ok");
+            }, 50);
+          });
         },
       };
     },

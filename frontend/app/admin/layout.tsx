@@ -103,8 +103,8 @@ export default function AdminLayout({
       profile={
         profile
           ? {
-              plan: profile.plan as string,
-              creditsRemaining: Number(profile.credits_remaining),
+              plan: (profile.plan as string) || "free",
+              creditsRemaining: Number(profile.credits_remaining) || 0,
             }
           : { plan: "free", creditsRemaining: 0 }
       }

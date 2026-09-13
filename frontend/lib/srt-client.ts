@@ -1,6 +1,7 @@
 /**
  * Client-side SRT parsing/formatting for the clip editor.
  */
+import { uuid } from "@/lib/utils";
 
 export interface SrtCue {
   id: string;
@@ -45,7 +46,7 @@ export function parseSrt(srt: string): SrtCue[] {
       .join(" ")
       .trim();
     if (!text) continue;
-    cues.push({ id: crypto.randomUUID(), start, end, text });
+    cues.push({ id: uuid(), start, end, text });
   }
   return cues.sort((a, b) => a.start - b.start);
 }
