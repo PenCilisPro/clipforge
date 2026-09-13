@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Filter } from "firebase-admin/firestore";
 import { db } from "./firebase.js";
 
 /**
@@ -337,7 +338,23 @@ class FirestoreQuery {
   async _run() {
     // Mutations short-circuit the read path.
     if (this._mutation) {
-      const result = await this._runMutation();
+      let result = await this._runMutation();
+      // Honor a trailing .single() on a mutation chain (supabase-js returns
+      // the affected row objects).
+      if (this.singleMode) {
+        if (Array.isArray(result.data)) {
+          if (result.data.length === 0) {
+            result = {
+              data: null,
+              error: err("PGRST116", "The result contains 0 rows"),
+              status: 406,
+              statusText: "Not Acceptable",
+            };
+          } else {
+            result = { ...result, data: result.data[0] };
+          }
+        }
+      }
       // Support the `.insert(...).select("id").single()` chain some routes
       // use: treat post-mutation selects as no-ops on the returned row(s).
       const chainable = {
