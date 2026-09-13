@@ -1,6 +1,7 @@
 import { getAuth } from "firebase-admin/auth";
 import { db } from "../lib/firebase.js";
 import { env } from "../config/env.js";
+import { PAID_PLANS } from "../lib/tiers.js";
 
 /**
  * Verifies the Firebase ID token from the Authorization header, ensures a
@@ -49,6 +50,11 @@ export async function requireAuth(req, res, next) {
       await getAuth().setCustomUserClaims(uid, { admin: true });
     } else if (!isAdmin && decoded.admin === true) {
       await getAuth().setCustomUserClaims(uid, { admin: false });
+    }
+
+    // Admins always carry a Pro subscription.
+    if (isAdmin && !PAID_PLANS.includes(snap.data()?.plan ?? "free")) {
+      await ref.set({ plan: "pro" }, { merge: true });
     }
   } catch (e) {
     console.error("[auth] profile sync failed:", e.message);

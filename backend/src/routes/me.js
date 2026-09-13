@@ -17,7 +17,9 @@ router.get("/api/me", requireAuth, async (req, res, next) => {
       .single();
     if (error) throw error;
     const isAdmin = env.adminEmails.includes((data.email ?? "").toLowerCase());
-    res.json({ profile: { ...data, is_admin: isAdmin } });
+    // Admins are always on Pro, even if the profile sync hasn't landed yet.
+    const profile = isAdmin && data.plan !== "pro" ? { ...data, plan: "pro" } : data;
+    res.json({ profile: { ...profile, is_admin: isAdmin } });
   } catch (err) {
     next(err);
   }
