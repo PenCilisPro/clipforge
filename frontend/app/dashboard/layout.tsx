@@ -33,11 +33,19 @@ export default function DashboardLayout({
         router.replace("/login");
         return;
       }
-      const { data: profileData } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", user.id)
-        .single();
+      // A rejected profile read (e.g. Firestore rules race on a brand-new
+      // user) must not leave the layout rendering null forever.
+      let profileData: Record<string, unknown> | null = null;
+      try {
+        const { data } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", user.id)
+          .single();
+        profileData = data;
+      } catch {
+        profileData = null;
+      }
       setState({ checked: true, user, profile: profileData });
     }
 

@@ -72,7 +72,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
         toast.success("Account created!", {
-          description: "Check your inbox to confirm your email, then log in.",
+          description: "You can now log in with your email and password.",
         });
         router.push("/login");
       } else {
@@ -98,9 +98,12 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       const supabase = createClient();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: `${window.location.origin}/auth/callback` },
       });
       if (error) throw error;
+      // signInWithPopup resolves once Firebase has signed the user in;
+      // nothing else watches auth state on this page, so navigate now.
+      router.push("/dashboard/new");
+      router.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Google sign-in failed");
       setOauthLoading(false);
