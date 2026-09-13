@@ -55,6 +55,12 @@ export const app: FirebaseApp = getApps().length ? getApp() : initializeApp(fire
 function lazySingleton<T extends object>(factory: () => T): T {
   let instance: T | undefined;
   return new Proxy({} as T, {
+    // Firestore internals validate args with `instanceof` (e.g. collection()),
+    // so the proxy must report the real instance's prototype once created.
+    getPrototypeOf(_target) {
+      instance ??= factory();
+      return Object.getPrototypeOf(instance);
+    },
     get(_target, prop) {
       instance ??= factory();
       const value = Reflect.get(instance, prop, instance);
