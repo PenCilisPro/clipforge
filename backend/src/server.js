@@ -27,11 +27,17 @@ assertCriticalEnv();
 
 const app = express();
 
+// Northflank assigns *.code.run preview domains to services; the exact
+// frontend host can change when a service is recreated, and the CORS check
+// must not depend on FRONTEND_URL being perfectly in sync with it.
+const codeRunOrigin = /^https:\/\/[a-z0-9-]+\.code\.run$/;
+
 app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
   cors({
-    origin: env.frontendUrls,
+    origin: (origin, cb) =>
+      cb(null, !origin || env.frontendUrls.includes(origin) || codeRunOrigin.test(origin)),
     credentials: true,
   })
 );
@@ -69,4 +75,5 @@ app.use(errorHandler);
 
 app.listen(env.port, () => {
   console.log(`[clipforge-api] listening on :${env.port}`);
+  console.log(`[clipforge-api] CORS origins: ${env.frontendUrls.join(", ")} + *.code.run`);
 });
