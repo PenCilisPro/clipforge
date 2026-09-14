@@ -19,50 +19,61 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     const supabase = createClient();
+    let cancelled = false;
+
+    // Primary path: the backend's admin-SDK read. One round trip returns
+    // projects AND their clip counts, and it doesn't share a transport with
+    // the Firestore client on this page.
+    async function loadViaBackend(): Promise<Project[]> {
+      const { projects } = await apiFetch<{ projects: Project[] }>(
+        "/api/projects"
+      );
+      return projects ?? [];
+    }
+
+    // Fallback path: the Firestore shim. Its transport intermittently dies
+    // with "INTERNAL ASSERTION FAILED: Unexpected state", and embed counts
+    // cost one query per project, so it's slow — but it works when the
+    // backend is unreachable. Race it with a timeout so a hang can't leave
+    // the skeletons up forever.
+    async function loadViaFirestore(): Promise<Project[]> {
+      const result = await Promise.race([
+        supabase
+          .from("projects")
+          .select("*, clips(count)")
+          .order("created_at", { ascending: false }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+      ]);
+      if (result) {
+        const { data, error } = result;
+        if (!error && data) return data as Project[];
+      }
+      throw new Error("Firestore project read failed");
+    }
 
     async function load() {
-      // The direct Firestore read dies with "INTERNAL ASSERTION FAILED:
-      // Unexpected state" when the WebChannel transport breaks mid-query,
-      // and the rejection escapes this function as an unhandled rejection —
-      // leaving the skeletons up forever. Race it with a timeout and fall
-      // back to the backend (admin SDK, own connection) on failure, hang,
-      // or empty result.
       try {
-        const result = await Promise.race([
-          supabase
-            .from("projects")
-            .select("*, clips(count)")
-            .order("created_at", { ascending: false }),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
-        ]);
-        if (result) {
-          const { data, error } = result;
-          if (!error && (data?.length ?? 0) > 0) {
-            setProjects(data as Project[]);
-            return;
-          }
+        const projects = await loadViaBackend();
+        if (!cancelled) setProjects(projects);
+      } catch (backendErr) {
+        console.warn("Backend project read failed, using Firestore:", backendErr);
+        try {
+          const projects = await loadViaFirestore();
+          if (!cancelled) setProjects(projects);
+        } catch (e) {
+          console.error("Failed to load projects:", e);
+          if (!cancelled) setProjects((prev) => (prev === null ? [] : prev));
         }
-      } catch (e) {
-        console.warn("Firestore project read failed, using backend:", e);
-      }
-      try {
-        const { projects } = await apiFetch<{ projects: Project[] }>(
-          "/api/projects"
-        );
-        setProjects(projects ?? []);
-      } catch (e) {
-        console.error("Failed to load projects:", e);
-        setProjects((prev) => (prev === null ? [] : prev));
       }
     }
 
-    // The query needs the Firebase session; if it hasn't restored yet the
-    // shim would query unscoped and get denied. Load once auth is ready.
+    // The query needs the Firebase session (apiFetch attaches the ID token);
+    // load once auth is ready. Don't also call load() unconditionally —
+    // that duplicated every request and the pre-auth call stalled on the
+    // shim's 3s auth wait.
     const unsub = onAuthStateChanged(auth, (user) => {
       if (user) load();
     });
-
-    load();
 
     const channel = supabase
       .channel("projects-list")
