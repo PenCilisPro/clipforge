@@ -69,6 +69,23 @@ function embedPaths(selectStr: string | undefined) {
   return out;
 }
 
+// On a hard reload auth.currentUser is still null until Firebase restores
+// the session from storage. Queries issued before that would run unscoped
+// (uid === "") and be denied by security rules, so wait briefly first.
+async function waitAuth(timeoutMs: number) {
+  if (auth.currentUser) return auth.currentUser;
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(null), timeoutMs);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u) {
+        clearTimeout(t);
+        unsub();
+        resolve(u);
+      }
+    });
+  });
+}
+
 class ClientQuery {
   table: string;
   filters: EqFilter[] = [];
@@ -168,7 +185,7 @@ class ClientQuery {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async _run(): Promise<any> {
-    const user = auth.currentUser;
+    const user = (await waitAuth(3000)) as typeof auth.currentUser;
     const uid = user?.uid ?? "";
 
     if (this.mutation) return this._runMutation(uid);
