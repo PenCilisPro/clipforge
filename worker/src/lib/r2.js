@@ -16,6 +16,8 @@ import { env } from "./env.js";
  */
 const client = new S3Client({
   region: "auto",
+  // Path-style required: R2's TLS cert doesn't cover <bucket>.<account>.r2.cloudflarestorage.com
+  forcePathStyle: true,
   endpoint: env.r2AccountId
     ? `https://${env.r2AccountId}.r2.cloudflarestorage.com`
     : undefined,

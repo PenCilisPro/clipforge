@@ -16,6 +16,10 @@ import { env } from "../config/env.js";
  */
 const client = new S3Client({
   region: "auto",
+  // Path-style is required: virtual-hosted style puts the bucket into the
+  // hostname (<bucket>.<account>.r2.cloudflarestorage.com), which R2's TLS
+  // certificate does not cover — browsers fail with ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
+  forcePathStyle: true,
   endpoint: env.r2AccountId
     ? `https://${env.r2AccountId}.r2.cloudflarestorage.com`
     : undefined,
