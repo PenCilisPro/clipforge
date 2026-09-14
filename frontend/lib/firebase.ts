@@ -18,7 +18,7 @@ import {
   doc,
   getDoc,
   getDocs,
-  getFirestore,
+  initializeFirestore,
   limit as fsLimit,
   onSnapshot,
   orderBy as fsOrderBy,
@@ -74,6 +74,14 @@ export const auth: Auth = lazySingleton(() => {
   setPersistence(a, browserLocalPersistence).catch(() => {});
   return a;
 });
-export const firestore: Firestore = lazySingleton(() => getFirestore(app));
+// Force long-polling instead of the WebChannel streaming transport. The
+// streaming transport was repeatedly dying with "INTERNAL ASSERTION FAILED:
+// Unexpected state" (a WebChannel push/frame arriving in an unexpected
+// state), which killed every Firestore listener on the page — project
+// queries returned nothing even though the docs existed. Long polling is
+// immune to proxies/networks that mangle streaming connections.
+export const firestore: Firestore = lazySingleton(() =>
+  initializeFirestore(app, { experimentalForceLongPolling: true })
+);
 
 export { onAuthStateChanged };
