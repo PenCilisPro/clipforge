@@ -35,6 +35,9 @@ export function r2Key(bucket, path) {
   return `${bucket}/${path}`;
 }
 
+// R2_ACCOUNT_ID must be the Cloudflare account hash (32 hex chars), not an
+// access-key token — presigned upload URLs are built from it, and a wrong
+// value makes browsers fail with ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
 export async function upload(key, body, contentType) {
   await client.send(
     new PutObjectCommand({
