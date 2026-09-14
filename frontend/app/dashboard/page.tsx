@@ -6,6 +6,7 @@ import { Plus } from "lucide-react";
 import { onAuthStateChanged } from "firebase/auth";
 
 import { auth } from "@/lib/firebase";
+import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProjectCard } from "@/components/dashboard/project-card";
@@ -20,18 +21,39 @@ export default function ProjectsPage() {
     const supabase = createClient();
 
     async function load() {
-      const { data, error } = await supabase
-        .from("projects")
-        .select("*, clips(count)")
-        .order("created_at", { ascending: false });
-      if (error) {
-        // Don't leave the skeletons up forever — show the empty state and
-        // let the auth listener below retry once the session is restored.
-        console.error("Failed to load projects:", error);
-        setProjects((prev) => (prev === null ? [] : prev));
-        return;
+      // The direct Firestore read dies with "INTERNAL ASSERTION FAILED:
+      // Unexpected state" when the WebChannel transport breaks mid-query,
+      // and the rejection escapes this function as an unhandled rejection —
+      // leaving the skeletons up forever. Race it with a timeout and fall
+      // back to the backend (admin SDK, own connection) on failure, hang,
+      // or empty result.
+      try {
+        const result = await Promise.race([
+          supabase
+            .from("projects")
+            .select("*, clips(count)")
+            .order("created_at", { ascending: false }),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+        ]);
+        if (result) {
+          const { data, error } = result;
+          if (!error && (data?.length ?? 0) > 0) {
+            setProjects(data as Project[]);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("Firestore project read failed, using backend:", e);
       }
-      setProjects((data as Project[]) ?? []);
+      try {
+        const { projects } = await apiFetch<{ projects: Project[] }>(
+          "/api/projects"
+        );
+        setProjects(projects ?? []);
+      } catch (e) {
+        console.error("Failed to load projects:", e);
+        setProjects((prev) => (prev === null ? [] : prev));
+      }
     }
 
     // The query needs the Firebase session; if it hasn't restored yet the

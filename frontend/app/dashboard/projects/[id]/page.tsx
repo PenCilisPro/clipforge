@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowLeft, Check, Copy, Download, FileText, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { API_URL } from "@/lib/api";
+import { apiFetch, API_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -135,30 +135,67 @@ export default function ProjectDetailPage() {
     const supabase = createClient();
 
     async function load() {
-      const { data: projectData } = await supabase
-        .from("projects")
-        .select("*")
-        .eq("id", projectId)
-        .maybeSingle();
-      if (!projectData) {
+      // The Firestore client read can reject with "INTERNAL ASSERTION
+      // FAILED: Unexpected state" when the WebChannel transport breaks.
+      // Fall back to the backend (admin SDK) so the page still loads.
+      let gotProject = false;
+      try {
+        const projectData = await Promise.race([
+          supabase
+            .from("projects")
+            .select("*")
+            .eq("id", projectId)
+            .maybeSingle(),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), 8000)
+          ),
+        ]);
+        if (projectData) {
+          setProject(projectData as Project);
+          gotProject = true;
+        }
+      } catch (e) {
+        console.warn("Firestore project read failed, using backend:", e);
+      }
+      if (!gotProject) {
+        try {
+          const { project } = await apiFetch<{
+            project: Project & { clips?: Clip[]; jobs?: Job[] };
+          }>(`/api/projects/${projectId}`);
+          if (project) {
+            setProject(project);
+            setClips(project.clips ?? []);
+            setJobs(project.jobs ?? []);
+            gotProject = true;
+          }
+        } catch (e) {
+          console.warn("Backend project fetch failed:", e);
+        }
+      }
+      if (!gotProject) {
         setNotFound(true);
         return;
       }
-      setProject(projectData as Project);
-
-      const { data: clipsData } = await supabase
-        .from("clips")
-        .select("*")
-        .eq("project_id", projectId)
-        .order("start_time");
-      setClips((clipsData as Clip[]) ?? []);
-
-      const { data: jobsData } = await supabase
-        .from("jobs")
-        .select("*")
-        .eq("project_id", projectId)
-        .order("created_at", { ascending: true });
-      setJobs((jobsData as Job[]) ?? []);
+      try {
+        const { data: clipsData } = await supabase
+          .from("clips")
+          .select("*")
+          .eq("project_id", projectId)
+          .order("start_time");
+        setClips((clipsData as Clip[]) ?? []);
+      } catch (e) {
+        console.warn("Firestore clips read failed:", e);
+      }
+      try {
+        const { data: jobsData } = await supabase
+          .from("jobs")
+          .select("*")
+          .eq("project_id", projectId)
+          .order("created_at", { ascending: true });
+        setJobs((jobsData as Job[]) ?? []);
+      } catch (e) {
+        console.warn("Firestore jobs read failed:", e);
+      }
     }
 
     load();
