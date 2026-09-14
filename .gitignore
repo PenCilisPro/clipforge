@@ -34,3 +34,4 @@ temp/
 
 .vercel
 .env*
+.vercel-env-prod
