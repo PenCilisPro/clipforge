@@ -84,7 +84,9 @@ function parseCondition(cond, foreignTable) {
 }
 
 function toFilter(field, op, value, foreignTable) {
-  const name = foreignTable ? `${foreignTable}.${field}` : field;
+  // Rows live as documents whose id IS the supabase-style `id` column; there
+  // is no stored `id` field, so map id filters to the document ID.
+  const name = field === "id" ? "__name__" : foreignTable ? `${foreignTable}.${field}` : field;
   switch (op) {
     case "eq":
     case "is":

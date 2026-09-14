@@ -15,6 +15,7 @@ import {
 } from "firebase/auth";
 import {
   collection,
+  documentId,
   doc,
   getDoc,
   getDocs,
@@ -153,7 +154,13 @@ class ClientQuery {
   private buildQuery(uid: string) {
     const constraints: unknown[] = [];
     for (const f of this.scopedFilters(uid)) {
-      constraints.push(where(f.field, "==", f.value));
+      // Rows are documents whose id IS the `id` column — no stored field, so
+      // map id filters to the document ID.
+      if (f.field === "id") {
+        constraints.push(where(documentId(), "==", f.value));
+      } else {
+        constraints.push(where(f.field, "==", f.value));
+      }
     }
     for (const o of this.orders) {
       constraints.push(fsOrderBy(o.field, o.ascending ? "asc" : "desc"));

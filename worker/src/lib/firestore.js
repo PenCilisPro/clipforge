@@ -78,6 +78,9 @@ function parseCondition(cond) {
 }
 
 function toFilter(field, op, value) {
+  // Rows live as documents whose id IS the supabase-style `id` column; there
+  // is no stored `id` field, so map id filters to the document ID.
+  if (field === "id") field = "__name__";
   switch (op) {
     case "eq":
     case "is":
