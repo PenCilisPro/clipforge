@@ -138,6 +138,38 @@ export default function ProjectDetailPage() {
     // Mirrors project.status for the poll loop below (avoids reading state
     // inside an updater, which Strict Mode double-invokes).
     const statusRef = { current: project?.status };
+    // Set once load() knows whether the backend is reachable. When it is,
+    // Firestore is left completely idle (no reads, no realtime listeners) —
+    // touching the Firestore client after its transport wedges is what
+    // spams "INTERNAL ASSERTION FAILED: Unexpected state".
+    const backendOkRef = { current: false };
+    let channel: ReturnType<ReturnType<typeof createClient>["channel"]> | null = null;
+
+    // Realtime listeners are the fallback for when the backend is unreachable
+    // (the poll loop above covers updates otherwise). The Firestore listener
+    // transport is the source of the "INTERNAL ASSERTION FAILED" spam, so
+    // only spin it up when it's actually needed, and never re-subscribe.
+    const maybeSubscribeRealtime = () => {
+      if (backendOkRef.current || channel) return;
+      channel = supabase
+        .channel(`project-${projectId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "jobs", filter: `project_id=eq.${projectId}` },
+          () => load()
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "clips", filter: `project_id=eq.${projectId}` },
+          () => load()
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "projects", filter: `id=eq.${projectId}` },
+          () => load()
+        )
+        .subscribe();
+    };
 
     async function load() {
       // Primary path: one backend round trip returns the project, its clips
@@ -156,10 +188,12 @@ export default function ProjectDetailPage() {
           setClips(project.clips ?? []);
           setJobs(project.jobs ?? []);
           gotProject = true;
+          backendOkRef.current = true;
         }
       } catch (backendErr) {
         console.warn("Backend project fetch failed, using Firestore:", backendErr);
       }
+      maybeSubscribeRealtime();
 
       // Fallback path: the Firestore shim (works when the backend is
       // unreachable). Raced with a timeout so a hang can't leave skeletons up.
@@ -184,29 +218,35 @@ export default function ProjectDetailPage() {
           console.warn("Firestore project read failed:", e);
         }
       }
+      // The backend response already carries clips and jobs. Skip the
+      // Firestore shim reads here — once the Firestore client transport has
+      // wedged ("INTERNAL ASSERTION FAILED: Unexpected state"), every read
+      // re-throws the assertion and floods the console for zero benefit.
       if (!gotProject) {
         setNotFound(true);
         return;
       }
-      try {
-        const { data: clipsData } = await supabase
-          .from("clips")
-          .select("*")
-          .eq("project_id", projectId)
-          .order("start_time");
-        setClips((clipsData as Clip[]) ?? []);
-      } catch (e) {
-        console.warn("Firestore clips read failed:", e);
-      }
-      try {
-        const { data: jobsData } = await supabase
-          .from("jobs")
-          .select("*")
-          .eq("project_id", projectId)
-          .order("created_at", { ascending: true });
-        setJobs((jobsData as Job[]) ?? []);
-      } catch (e) {
-        console.warn("Firestore jobs read failed:", e);
+      if (!backendOkRef.current) {
+        try {
+          const { data: clipsData } = await supabase
+            .from("clips")
+            .select("*")
+            .eq("project_id", projectId)
+            .order("start_time");
+          setClips((clipsData as Clip[]) ?? []);
+        } catch (e) {
+          console.warn("Firestore clips read failed:", e);
+        }
+        try {
+          const { data: jobsData } = await supabase
+            .from("jobs")
+            .select("*")
+            .eq("project_id", projectId)
+            .order("created_at", { ascending: true });
+          setJobs((jobsData as Job[]) ?? []);
+        } catch (e) {
+          console.warn("Firestore jobs read failed:", e);
+        }
       }
     }
 
@@ -238,29 +278,10 @@ export default function ProjectDetailPage() {
         });
     }, 5000);
 
-    const channel = supabase
-      .channel(`project-${projectId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "jobs", filter: `project_id=eq.${projectId}` },
-        () => load()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "clips", filter: `project_id=eq.${projectId}` },
-        () => load()
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "projects", filter: `id=eq.${projectId}` },
-        () => load()
-      )
-      .subscribe();
-
     return () => {
       unsub();
       if (pollTimer) clearInterval(pollTimer);
-      supabase.removeChannel(channel);
+      if (channel) supabase.removeChannel(channel);
     };
   }, [projectId]);
 
