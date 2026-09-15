@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { onAuthStateChanged } from "firebase/auth";
 import { ArrowLeft, Check, Copy, Download, FileText, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch, API_URL } from "@/lib/api";
+import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -133,43 +135,53 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     const supabase = createClient();
+    // Mirrors project.status for the poll loop below (avoids reading state
+    // inside an updater, which Strict Mode double-invokes).
+    const statusRef = { current: project?.status };
 
     async function load() {
-      // The Firestore client read can reject with "INTERNAL ASSERTION
-      // FAILED: Unexpected state" when the WebChannel transport breaks.
-      // Fall back to the backend (admin SDK) so the page still loads.
+      // Primary path: one backend round trip returns the project, its clips
+      // AND its jobs. This doesn't share a transport with the Firestore
+      // client, which keeps dying with "INTERNAL ASSERTION FAILED:
+      // Unexpected state" — and that dead transport is exactly what left
+      // the page frozen on "processing" with live jobs running behind it.
       let gotProject = false;
       try {
-        const projectData = await Promise.race([
-          supabase
-            .from("projects")
-            .select("*")
-            .eq("id", projectId)
-            .maybeSingle(),
-          new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), 8000)
-          ),
-        ]);
-        if (projectData) {
-          setProject(projectData as Project);
+        const { project } = await apiFetch<{
+          project: Project & { clips?: Clip[]; jobs?: Job[] };
+        }>(`/api/projects/${projectId}`);
+        if (project) {
+          statusRef.current = project.status;
+          setProject(project);
+          setClips(project.clips ?? []);
+          setJobs(project.jobs ?? []);
           gotProject = true;
         }
-      } catch (e) {
-        console.warn("Firestore project read failed, using backend:", e);
+      } catch (backendErr) {
+        console.warn("Backend project fetch failed, using Firestore:", backendErr);
       }
+
+      // Fallback path: the Firestore shim (works when the backend is
+      // unreachable). Raced with a timeout so a hang can't leave skeletons up.
       if (!gotProject) {
         try {
-          const { project } = await apiFetch<{
-            project: Project & { clips?: Clip[]; jobs?: Job[] };
-          }>(`/api/projects/${projectId}`);
-          if (project) {
-            setProject(project);
-            setClips(project.clips ?? []);
-            setJobs(project.jobs ?? []);
+          const projectData = await Promise.race([
+            supabase
+              .from("projects")
+              .select("*")
+              .eq("id", projectId)
+              .maybeSingle(),
+            new Promise<null>((resolve) =>
+              setTimeout(() => resolve(null), 8000)
+            ),
+          ]);
+          if (projectData) {
+            statusRef.current = (projectData as Project).status;
+            setProject(projectData as Project);
             gotProject = true;
           }
         } catch (e) {
-          console.warn("Backend project fetch failed:", e);
+          console.warn("Firestore project read failed:", e);
         }
       }
       if (!gotProject) {
@@ -198,7 +210,33 @@ export default function ProjectDetailPage() {
       }
     }
 
-    load();
+    // The backend fetch needs the Firebase session (apiFetch attaches the ID
+    // token). onAuthStateChanged fires immediately with the restored session
+    // on client-side navigation, so this one hook covers both paths.
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) load();
+    });
+
+    // While the pipeline is running, poll the backend for progress. The
+    // Firestore realtime channel below is supposed to cover this, but its
+    // transport dies too often to be trusted — without polling the UI sits
+    // on "processing" forever even after clips finish rendering.
+    const pollTimer = setInterval(() => {
+      if (statusRef.current !== "pending" && statusRef.current !== "processing") return;
+      apiFetch<{ project: Project & { clips?: Clip[]; jobs?: Job[] } }>(
+        `/api/projects/${projectId}`
+      )
+        .then(({ project: fresh }) => {
+          if (!fresh) return;
+          statusRef.current = fresh.status;
+          setProject(fresh);
+          setClips(fresh.clips ?? []);
+          setJobs(fresh.jobs ?? []);
+        })
+        .catch(() => {
+          // backend hiccup — the next tick retries
+        });
+    }, 5000);
 
     const channel = supabase
       .channel(`project-${projectId}`)
@@ -220,6 +258,8 @@ export default function ProjectDetailPage() {
       .subscribe();
 
     return () => {
+      unsub();
+      if (pollTimer) clearInterval(pollTimer);
       supabase.removeChannel(channel);
     };
   }, [projectId]);
