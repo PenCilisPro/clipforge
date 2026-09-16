@@ -15,7 +15,7 @@ import { getRender } from "./shotstack.js";
  *   1. on worker startup — re-enqueues render jobs for clips that never
  *      reached Shotstack (no shotstack_render_id) and aren't already waiting
  *      in the queue;
- *   2. every 10 minutes — re-enqueues clips stuck that way for over 30
+ *   2. every minute — re-enqueues clips stuck that way for over 30
  *      minutes (covers a hung/dead worker tick), and fails clips whose
  *      Shotstack render was submitted but whose webhook never arrived within
  *      2 hours, so the UI stops showing an endless spinner.
@@ -93,7 +93,15 @@ async function reenqueueStrandedRenders(maxAgeMs) {
  * row stays "queued"/"active" in Firestore, so the project spins at
  * "Processing" forever. Stranded render-stage clips are covered by
  * reenqueueStrandedRenders; this covers the pre-render stages.
+ *
+ * The age floor is deliberately short (90s): we only re-enqueue jobs that are
+ * NOT live in BullMQ (checked below), so a young threshold is safe — a job
+ * that's still queued in Redis is skipped, and a lost job gets picked up
+ * within a minute or two instead of leaving the project at "pending" for 10+
+ * minutes.
  */
+const PIPELINE_STRANDED_AFTER_MS = 90 * 1000;
+
 async function resumeStrandedPipelines() {
   // Single-field "in" query (no composite index needed); filter the rest in JS.
   const { data: jobRows, error } = await supabaseAdmin
@@ -108,7 +116,7 @@ async function resumeStrandedPipelines() {
     (j) =>
       ["queued", "active"].includes(j.status) &&
       j.created_at &&
-      Date.now() - new Date(j.created_at).getTime() > 10 * 60 * 1000
+      Date.now() - new Date(j.created_at).getTime() > PIPELINE_STRANDED_AFTER_MS
   );
   if (!stranded.length) return;
 

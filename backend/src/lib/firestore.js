@@ -283,7 +283,23 @@ class FirestoreQuery {
   async _applyEmbeds(rows) {
     const { embeds } = parseSelect(this.selectStr);
     for (const { relation, arg } of embeds) {
-      const rel = RELATIONS[relation];
+      try {
+        await this._applyEmbed(relation, arg, rows);
+      } catch (e) {
+        // An embed is auxiliary data — a failure here (bad sort key, transient
+        // Firestore error, …) must not 500 the whole request. Log it and
+        // degrade to an empty relation so callers still get the parent rows.
+        console.error(`[firestore-shim] embed "${relation}" failed, degrading to empty:`, e.message);
+        for (const row of rows) {
+          row[relation] = arg === "count" ? [{ count: 0 }] : [];
+        }
+      }
+    }
+    return rows;
+  }
+
+  async _applyEmbed(relation, arg, rows) {
+    const rel = RELATIONS[relation];
       const fk = `${relation.replace(/s$/, "")}_id`;
       const isFkEmbed = rows.some((r) => r[fk] != null);
       if (rel?.childOf && !isFkEmbed) {
@@ -348,8 +364,6 @@ class FirestoreQuery {
           }
         }
       }
-    }
-    return rows;
   }
 
   async _run() {
