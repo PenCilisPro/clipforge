@@ -35,3 +35,6 @@ temp/
 .vercel
 .env*
 .vercel-env-prod
+
+# accidental Windows temp-dump test videos at repo root
+UserstaratAppDataLocalTemp*.mp4
