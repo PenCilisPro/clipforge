@@ -55,11 +55,13 @@ export default function ProjectsPage() {
       try {
         const projects = await loadViaBackend();
         if (!cancelled) setProjects(projects);
+        dropRealtime();
       } catch (backendErr) {
         console.warn("Backend project read failed, using Firestore:", backendErr);
         try {
           const projects = await loadViaFirestore();
           if (!cancelled) setProjects(projects);
+          ensureRealtime();
         } catch (e) {
           console.error("Failed to load projects:", e);
           if (!cancelled) setProjects((prev) => (prev === null ? [] : prev));
@@ -75,18 +77,34 @@ export default function ProjectsPage() {
       if (user) load();
     });
 
-    const channel = supabase
-      .channel("projects-list")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "projects" },
-        () => load()
-      )
-      .subscribe();
+    // Realtime refresh is a fallback-only affordance: while the backend is
+    // healthy it's the source of truth and the page reloads on demand, so
+    // keeping a Firestore onSnapshot channel open just wedges the flaky
+    // client transport ("INTERNAL ASSERTION FAILED") and re-triggers load()
+    // in a loop. Subscribe only after a backend failure, drop it on recovery.
+    let channel: ReturnType<typeof supabase.channel> | undefined;
+    function ensureRealtime() {
+      if (channel) return;
+      channel = supabase
+        .channel("projects-list")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "projects" },
+          () => load()
+        )
+        .subscribe();
+    }
+    function dropRealtime() {
+      if (channel) {
+        supabase.removeChannel(channel);
+        channel = undefined;
+      }
+    }
 
     return () => {
+      cancelled = true;
       unsub();
-      supabase.removeChannel(channel);
+      dropRealtime();
     };
   }, []);
 

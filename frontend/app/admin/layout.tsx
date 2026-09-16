@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { auth, firestore } from "@/lib/firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { auth } from "@/lib/firebase";
+import { apiFetch } from "@/lib/api";
 import { onAuthStateChanged } from "firebase/auth";
 import { isAdminEmail } from "@/lib/admin";
 import { DashboardShell } from "@/components/dashboard/shell";
@@ -56,8 +56,14 @@ export default function AdminLayout({
       }
       let profileData: Record<string, unknown> | null = null;
       try {
-        const snap = await getDoc(doc(firestore, "profiles", user.uid));
-        profileData = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+        // Profile comes from the backend (/api/me) rather than a direct
+        // Firestore read — one less client-SDK touchpoint that can throw the
+        // IndexedDB "INTERNAL ASSERTION FAILED" errors, and it also picks up
+        // the backend's credit refill + admin plan coercion.
+        const res = await apiFetch<{
+          profile: Record<string, unknown> | null;
+        }>("/api/me");
+        profileData = res.profile ?? null;
       } catch {
         profileData = null;
       }

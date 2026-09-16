@@ -20,6 +20,7 @@ import {
   getDocs,
   initializeFirestore,
   limit as fsLimit,
+  memoryLocalCache,
   onSnapshot,
   orderBy as fsOrderBy,
   query as fsQuery,
@@ -81,8 +82,17 @@ export const auth: Auth = lazySingleton(() => {
 // SDK's grpc-web long-poll path (firebase-js-sdk#6907, #7731), which killed
 // every Firestore listener on the page. Auto-detect keeps the streaming
 // transport when possible while retaining the proxy workaround.
+//
+// The local cache is memory-only: the IndexedDB persistence layer is where
+// the "INTERNAL ASSERTION FAILED: Unexpected state" (ID: s540/a54d)
+// assertions live (corrupted cache schema, multi-tab races), and this app
+// only touches Firestore as a backend-down fallback — there is no offline
+// requirement worth trading away that reliability.
 export const firestore: Firestore = lazySingleton(() =>
-  initializeFirestore(app, { experimentalAutoDetectLongPolling: true })
+  initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true,
+    localCache: memoryLocalCache(),
+  })
 );
 
 export { onAuthStateChanged };
