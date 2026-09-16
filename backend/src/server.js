@@ -32,12 +32,17 @@ const app = express();
 // must not depend on FRONTEND_URL being perfectly in sync with it.
 const codeRunOrigin = /^https:\/\/[a-z0-9-]+\.code\.run$/;
 
+// Vercel serves the frontend on per-deployment and branch aliases
+// (e.g. clipforge-frontend-dv9whg4kh-<team>.vercel.app) that cannot be
+// enumerated in FRONTEND_URL, so allow any *.vercel.app host the same way.
+const vercelAppOrigin = /^https:\/\/[a-z0-9-]+\.vercel\.app$/;
+
 app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
   cors({
     origin: (origin, cb) =>
-      cb(null, !origin || env.frontendUrls.includes(origin) || codeRunOrigin.test(origin)),
+      cb(null, !origin || env.frontendUrls.includes(origin) || codeRunOrigin.test(origin) || vercelAppOrigin.test(origin)),
     credentials: true,
   })
 );
@@ -75,5 +80,5 @@ app.use(errorHandler);
 
 app.listen(env.port, () => {
   console.log(`[clipforge-api] listening on :${env.port}`);
-  console.log(`[clipforge-api] CORS origins: ${env.frontendUrls.join(", ")} + *.code.run`);
+  console.log(`[clipforge-api] CORS origins: ${env.frontendUrls.join(", ")} + *.code.run + *.vercel.app`);
 });
