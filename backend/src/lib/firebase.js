@@ -45,4 +45,15 @@ export function db() {
   return _db;
 }
 
+// Initialize eagerly at import. requireAuth calls getAuth().verifyIdToken
+// before any Firestore query, so lazy-only init left the default app
+// undefined until some unrelated db() caller happened to run first — on a
+// freshly deployed container with no traffic yet, EVERY authenticated
+// request failed with app/no-app until then.
+try {
+  initAdmin();
+} catch (e) {
+  console.error("[firebase] admin init failed — auth will reject all tokens:", e.message);
+}
+
 export { Filter, FieldValue };
