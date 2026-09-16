@@ -308,13 +308,20 @@ class FirestoreQuery {
           }
         }
         const childSortKey = relation === "clips" ? "start_time" : "created_at";
+        // start_time is numeric on clip rows, created_at is an ISO string —
+        // compare each pair by its actual type instead of localeCompare,
+        // which throws on numbers.
+        const cmpChildren = (a, b) => {
+          const av = a[childSortKey];
+          const bv = b[childSortKey];
+          if (typeof av === "number" && typeof bv === "number") return av - bv;
+          return String(av ?? "").localeCompare(String(bv ?? ""));
+        };
         for (const row of rows) {
           if (arg === "count") {
             row[relation] = [{ count: counts.get(row.id) ?? 0 }];
           } else {
-            row[relation] = (children.get(row.id) ?? []).sort(
-              (a, b) => (a[childSortKey] ?? "").localeCompare(b[childSortKey] ?? "")
-            );
+            row[relation] = (children.get(row.id) ?? []).sort(cmpChildren);
           }
         }
       } else {
