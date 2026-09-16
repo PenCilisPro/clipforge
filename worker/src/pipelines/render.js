@@ -53,6 +53,8 @@ export async function processRender(job) {
     await setClipStatus(clipId, { status: "rendering" });
     await setProjectStatus(projectId, "processing");
     await ensureTmpDir();
+    const log = (msg) => console.log(`[render ${clipId}] ${msg}`);
+    log(`started — source ${project.original_video_path}, clip ${start}s–${start + duration}s`);
 
     // Already finished by the webhook path? Nothing to do.
     if (clip.storage_path) {
@@ -66,6 +68,7 @@ export async function processRender(job) {
     // before ffmpeg even starts. Split uploads are reassembled on the fly.
     const localSource = tmpPath(`source-${projectId}.mp4`);
     await fetchSourceVideo(project, localSource);
+    log("source video downloaded");
 
     const start = Number(clip.start_time);
     const duration = Math.max(3, Number(clip.end_time) - start);
@@ -76,6 +79,7 @@ export async function processRender(job) {
 
     const localThumb = tmpPath(`thumb-${clipId}.jpg`);
     await generateThumbnail(localRawClip, localThumb, Math.min(1, duration / 2));
+    log("trim + thumbnail done");
 
     // 3. Captions — manual edits from the clip editor win; otherwise
     // regenerate from word-level timestamps, shifted to clip-local time.
@@ -143,6 +147,7 @@ export async function processRender(job) {
     await r2UploadFile(r2Key("clips", rawPath), localRawClip, "video/mp4");
     await r2UploadFile(r2Key("assets", thumbPath), localThumb, "image/jpeg");
     await r2Upload(r2Key("clips", srtPath), Buffer.from(srtText, "utf8"), "application/x-subrip");
+    log("uploads done");
 
     await supabaseAdmin
       .from("clips")
@@ -194,7 +199,7 @@ export async function processRender(job) {
     }`;
 
     const renderId = await submitRender(editJson, webhookUrl);
-    job.log(`Shotstack render ${renderId} submitted (callback ${webhookUrl.split("?")[0]})`);
+    log(`Shotstack render ${renderId} submitted`);
 
     await supabaseAdmin
       .from("clips")

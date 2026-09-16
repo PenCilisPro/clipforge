@@ -26,13 +26,33 @@ const STAGES = {
   finalize: processFinalize,
 };
 
+// Hard ceiling per pipeline job. Without it a silently hung stage (network
+// stall, zombie child process) pins a concurrency slot forever and the whole
+// queue deadlocks — recovery.js skips clips that BullMQ still considers live.
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS) || 40 * 60 * 1000;
+
+function withTimeout(stage) {
+  return async (job) => {
+    return Promise.race([
+      stage(job),
+      new Promise((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`${job.name} (${job.id}) timed out after ${Math.round(JOB_TIMEOUT_MS / 60000)} min`)),
+          JOB_TIMEOUT_MS
+        );
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
+  };
+}
+
 const pipelineWorker = new Worker(
   "clipforge-pipeline",
   async (job) => {
     const stage = STAGES[job.name];
     if (!stage) throw new Error(`Unknown pipeline stage: ${job.name}`);
     console.log(`[worker] ▶ ${job.name} (${job.id})`);
-    const result = await stage(job);
+    const result = await withTimeout(stage)(job);
     console.log(`[worker] ✓ ${job.name} (${job.id})`);
     return result;
   },

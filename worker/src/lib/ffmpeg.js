@@ -22,21 +22,40 @@ export function tmpPath(name) {
   return path.join(TMP_DIR, `${crypto.randomUUID()}-${name}`);
 }
 
+// ffmpeg must never hold a worker slot forever — a hung or thrashing encode
+// would otherwise deadlock the whole pipeline (this shipped once: every clip
+// sat in "rendering" for days with no error recorded anywhere).
+const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 15 * 60 * 1000;
+
 /** Run a raw ffmpeg command (spawn) and reject on non-zero exit. */
 export function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(FFMPEG_PATH, ["-hide_banner", "-loglevel", "error", "-y", ...args]);
+    // -nostdin + ignored stdin: with a piped stdin ffmpeg can stall waiting
+    // for interactive commands that never come.
+    const proc = spawn(
+      FFMPEG_PATH,
+      ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", ...args],
+      { stdio: ["ignore", "ignore", "pipe"] }
+    );
     let stderr = "";
     proc.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    proc.on("close", (code, signal) =>
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60000)} min: ${stderr.slice(-400)}`));
+    }, FFMPEG_TIMEOUT_MS);
+    proc.on("close", (code, signal) => {
+      clearTimeout(timer);
       code === 0
         ? resolve()
         : code === null
           ? // Null exit code = killed by a signal (OOM on small containers).
             reject(new Error(`ffmpeg was killed by signal ${signal} (likely out of memory)`))
           : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`))
-    );
-    proc.on("error", reject);
+    });
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
