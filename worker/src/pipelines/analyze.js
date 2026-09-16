@@ -100,6 +100,12 @@ export async function processAnalyze(job) {
           reason: suggestion.reason,
           hashtags: suggestion.hashtags,
           status: "queued",
+          // Firestore can't query absent fields with == null (Postgres NULL
+          // semantics did), so recovery.js's stranded-clip query needs these
+          // to exist as explicit nulls on every clip row.
+          storage_path: null,
+          shotstack_render_id: null,
+          render_submitted_at: null,
           ...captionDefaults,
         })
         .select("id")

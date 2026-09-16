@@ -54,7 +54,7 @@ export async function processRender(job) {
     await setProjectStatus(projectId, "processing");
     await ensureTmpDir();
     const log = (msg) => console.log(`[render ${clipId}] ${msg}`);
-    log(`started — source ${project.original_video_path}, clip ${start}s–${start + duration}s`);
+    log(`started — source ${project.original_video_path}`);
 
     // Already finished by the webhook path? Nothing to do.
     if (clip.storage_path) {
