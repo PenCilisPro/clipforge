@@ -3,6 +3,17 @@ import { createClient } from "@/lib/supabase/client";
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
+/** Error carrying the HTTP status, so callers can react to e.g. a real 404
+ *  instead of treating every failure the same. */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 /**
  * Fetch the Express backend with the caller's Firebase ID token attached.
  * getIdToken() refreshes automatically, so no manual refresh dance is needed.
@@ -52,7 +63,7 @@ export async function apiFetch<T = unknown>(
     } catch {
       // ignore body parse failures
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
 
   return res.json() as Promise<T>;

@@ -7,7 +7,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { ArrowLeft, Check, Copy, Download, FileText, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { apiFetch, API_URL } from "@/lib/api";
+import { apiFetch, API_URL, ApiError } from "@/lib/api";
 import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -69,6 +69,8 @@ export default function ProjectDetailPage() {
   const [clips, setClips] = useState<Clip[] | null>(null);
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [downloadingFormat, setDownloadingFormat] = useState<TranscriptFormat | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -178,6 +180,7 @@ export default function ProjectDetailPage() {
       // Unexpected state" — and that dead transport is exactly what left
       // the page frozen on "processing" with live jobs running behind it.
       let gotProject = false;
+      let backendErr: unknown = null;
       try {
         const { project } = await apiFetch<{
           project: Project & { clips?: Clip[]; jobs?: Job[] };
@@ -190,14 +193,21 @@ export default function ProjectDetailPage() {
           gotProject = true;
           backendOkRef.current = true;
         }
-      } catch (backendErr) {
-        console.warn("Backend project fetch failed, using Firestore:", backendErr);
+      } catch (err) {
+        backendErr = err;
+        console.warn("Backend project fetch failed, using Firestore:", err);
       }
       maybeSubscribeRealtime();
 
-      // Fallback path: the Firestore shim (works when the backend is
-      // unreachable). Raced with a timeout so a hang can't leave skeletons up.
+      // A 404 from the backend is the only trustworthy "this project isn't
+      // here" signal. Anything else (500, network blip after the tab was
+      // suspended) is transient — fall through to Firestore and, if that is
+      // also wedged, show a retry screen instead of "Project not found".
       if (!gotProject) {
+        if (backendErr instanceof ApiError && backendErr.status === 404) {
+          setNotFound(true);
+          return;
+        }
         try {
           const projectData = await Promise.race([
             supabase
@@ -222,8 +232,10 @@ export default function ProjectDetailPage() {
       // Firestore shim reads here — once the Firestore client transport has
       // wedged ("INTERNAL ASSERTION FAILED: Unexpected state"), every read
       // re-throws the assertion and floods the console for zero benefit.
+      // Both the backend and the wedged Firestore client failed. That's a
+      // transient outage, not a missing project — surface a retry screen.
       if (!gotProject) {
-        setNotFound(true);
+        setLoadFailed(true);
         return;
       }
       if (!backendOkRef.current) {
@@ -283,7 +295,32 @@ export default function ProjectDetailPage() {
       if (pollTimer) clearInterval(pollTimer);
       if (channel) supabase.removeChannel(channel);
     };
-  }, [projectId]);
+  }, [projectId, reloadKey]);
+
+  if (loadFailed) {
+    return (
+      <div className="mx-auto max-w-3xl py-16 text-center">
+        <p className="text-lg font-semibold">Lost connection while loading this project</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The server was unreachable for a moment — your project is safe.
+        </p>
+        <Button
+          className="mt-4"
+          onClick={() => {
+            setLoadFailed(false);
+            setReloadKey((k) => k + 1);
+          }}
+        >
+          Try again
+        </Button>
+        <div className="mt-3">
+          <Button asChild variant="outline">
+            <Link href="/dashboard">Back to projects</Link>
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (notFound) {
     return (
