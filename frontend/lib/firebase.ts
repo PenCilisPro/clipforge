@@ -74,14 +74,15 @@ export const auth: Auth = lazySingleton(() => {
   setPersistence(a, browserLocalPersistence).catch(() => {});
   return a;
 });
-// Force long-polling instead of the WebChannel streaming transport. The
-// streaming transport was repeatedly dying with "INTERNAL ASSERTION FAILED:
-// Unexpected state" (a WebChannel push/frame arriving in an unexpected
-// state), which killed every Firestore listener on the page — project
-// queries returned nothing even though the docs existed. Long polling is
-// immune to proxies/networks that mangle streaming connections.
+// Transport: prefer streaming, but fall back to long polling when the
+// network can't sustain it (proxies that kill WebChannel streams). Hard
+// forcing long polling via experimentalForceLongPolling caused recurring
+// "INTERNAL ASSERTION FAILED: Unexpected state" (ID: a54d) crashes in the
+// SDK's grpc-web long-poll path (firebase-js-sdk#6907, #7731), which killed
+// every Firestore listener on the page. Auto-detect keeps the streaming
+// transport when possible while retaining the proxy workaround.
 export const firestore: Firestore = lazySingleton(() =>
-  initializeFirestore(app, { experimentalForceLongPolling: true })
+  initializeFirestore(app, { experimentalAutoDetectLongPolling: true })
 );
 
 export { onAuthStateChanged };
