@@ -21,6 +21,7 @@ import {
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { CookieConsent } from "@/components/cookie-consent";
+import { FirestoreCrashGuard } from "@/components/firestore-crash-guard";
 
 // Caption fonts — bundled so the editor/dialog previews render exactly like
 // the final Shotstack captions.
@@ -63,6 +64,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          <FirestoreCrashGuard />
           {children}
           <CookieConsent />
           <Toaster richColors position="top-right" />
