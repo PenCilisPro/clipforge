@@ -38,7 +38,7 @@ security rules ([`firestore.rules`](firestore.rules)) replacing RLS.
 2. **transcribe** — FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (`enableWordTimeOffsets`) → word-level transcript saved + credits deducted
 3. **analyze** — z.ai (Zhipu GLM, OpenAI-compatible API) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` doc per suggestion
 4. **render** (per clip) — FFmpeg trims the segment + thumbnail → raw clip/SRT uploaded to R2 → Shotstack Edit JSON (1080×1920 `fit: crop`, caption track with `#FF5D1C` word highlight) → submitted with a webhook callback (`SHOTSTACK_WEBHOOK_URL` is required — the worker never polls)
-5. **finalize** — Shotstack calls the backend's secret-verified webhook → finished MP4 is re-uploaded from Shotstack's CDN into R2 for permanent ownership → clip `status=ready`
+5. **finalize** — Shotstack calls the backend's secret-verified webhook → finished MP4 is re-uploaded from Shotstack's CDN into R2 for permanent ownership → clip `status=ready`. The MP4 is also mirrored into **Cloudflare Stream** (optional) so the clip editor plays from Cloudflare's CDN; without Stream the editor falls back to R2 presigned playback.
 
 Scheduling: "Schedule" creates a `scheduled_posts` doc + a delayed BullMQ job; when it fires the worker uploads the clip via YouTube Data API / Meta Graph API / TikTok Content Posting API and marks the post `published` or `failed`.
 
@@ -136,6 +136,7 @@ Environment variables: create a **Secret Group** in the project with the vars fr
 - Social OAuth redirect URIs (in Meta / Google Cloud / TikTok developer consoles):
   `https://<clipforge-api-domain>/api/social/<platform>/callback`
 - Firebase Auth → Settings → Authorized domains: add the `clipforge-web` domain
+- Cloudflare Stream (optional, clip playback delivery): worker + backend envs `CLOUDFLARE_ACCOUNT_ID` (or reuse `R2_ACCOUNT_ID`), `CLOUDFLARE_STREAM_API_TOKEN` (API token with Stream:Edit). Optional signed playback: `CLOUDFLARE_STREAM_SIGNING_KEY` + `CLOUDFLARE_STREAM_SIGNING_TOKEN` (Stream → Settings → Signed URLs) on both services — when unset, mirrored clips use unguessable-UID unsigned playback URLs
 - Shotstack webhook (**required** for render completion): worker env `SHOTSTACK_WEBHOOK_URL`
   = `https://<clipforge-api-domain>/webhooks/shotstack`, with `SHOTSTACK_WEBHOOK_SECRET`
   matching the backend's value

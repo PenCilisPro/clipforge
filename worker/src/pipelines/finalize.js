@@ -3,6 +3,7 @@ import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
 import { ensureTmpDir, tmpPath, cleanup } from "../lib/ffmpeg.js";
 import { downloadRenderedClip } from "../lib/shotstack.js";
+import { streamConfigured, uploadToStream, deleteStreamVideo } from "../lib/stream.js";
 
 /**
  * Idempotent finalization: download the finished render from Shotstack's CDN
@@ -35,13 +36,44 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
 
   const storagePath = `${clip.user_id}/${clipId}.mp4`;
   await r2UploadFile(`clips/${storagePath}`, localFinal, "video/mp4");
-  await cleanup(localFinal);
 
-  const { error: updateError } = await supabaseAdmin
-    .from("clips")
-    .update({ storage_path: storagePath, status: "ready", error_message: null })
-    .eq("id", clipId);
-  if (updateError) throw updateError;
+  // Mirror the finished MP4 into Cloudflare Stream for playback delivery
+  // (adaptive HLS + CDN MP4 in the clip editor). R2 stays the source of
+  // truth — if Stream isn't configured or the upload fails, the editor
+  // transparently falls back to R2 presigned playback. Stale mirrors from a
+  // previous render of this clip are deleted before the new upload.
+  let streamUid = null;
+  if (streamConfigured()) {
+    const { data: prev } = await supabaseAdmin
+      .from("clips")
+      .select("stream_uid")
+      .eq("id", clipId)
+      .single();
+    if (prev?.stream_uid) {
+      try {
+        await deleteStreamVideo(prev.stream_uid);
+      } catch {
+        // Best-effort — the new mirror replaces it as playback source anyway.
+      }
+    }
+    try {
+      const { uid } = await uploadToStream(localFinal, { name: `clipforge-${clipId}` });
+      streamUid = uid;
+    } catch (err) {
+      console.warn(`[finalize] Stream mirror failed for clip ${clipId}: ${err.message}`);
+    }
+  }
+
+  await supabaseAdmin.from("clips").update({
+    storage_path: storagePath,
+    status: "ready",
+    error_message: null,
+    // stream_uid=null marks "no mirror yet"; the backend lazily flips
+    // stream_ready once Stream finishes processing (or just plays from R2).
+    stream_uid: streamUid,
+    stream_ready: false,
+  }).eq("id", clipId);
+  await cleanup(localFinal);
 
   // The raw intermediate clip (`raw/<clipId>.mp4`) only exists so Shotstack
   // can fetch it during submission — the render is done now, and re-renders

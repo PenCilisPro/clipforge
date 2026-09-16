@@ -37,6 +37,13 @@ export const env = {
   r2Bucket: required("R2_BUCKET"),
   r2PublicBaseUrl: required("R2_PUBLIC_BASE_URL"),
 
+  // Cloudflare Stream (playback delivery; worker mirrors finalized clips from
+  // R2 into Stream). Optional — playback falls back to R2 presigned URLs.
+  cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? process.env.R2_ACCOUNT_ID,
+  streamApiToken: process.env.CLOUDFLARE_STREAM_API_TOKEN,
+  streamSigningKey: process.env.CLOUDFLARE_STREAM_SIGNING_KEY,
+  streamSigningToken: process.env.CLOUDFLARE_STREAM_SIGNING_TOKEN,
+
   redisUrl: required("REDIS_URL", "redis://127.0.0.1:6379"),
   appSecret: required("APP_SECRET", "dev-insecure-secret"),
   shotstackWebhookSecret: required("SHOTSTACK_WEBHOOK_SECRET", "dev-insecure-hook"),

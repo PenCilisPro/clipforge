@@ -11,6 +11,15 @@ export const env = {
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   r2Bucket: process.env.R2_BUCKET,
+
+  // Cloudflare Stream (playback delivery; finalized clips are mirrored from
+  // R2 into Stream). CLOUDFLARE_STREAM_API_TOKEN needs Stream:Edit. The
+  // signing key/token pair enables signed playback URLs; when absent,
+  // uploads are requireSignedURLs=false (UID URLs stay unguessable).
+  cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? process.env.R2_ACCOUNT_ID,
+  streamApiToken: process.env.CLOUDFLARE_STREAM_API_TOKEN,
+  streamSigningKey: process.env.CLOUDFLARE_STREAM_SIGNING_KEY,
+  streamSigningToken: process.env.CLOUDFLARE_STREAM_SIGNING_TOKEN,
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
   // Default 1: each render decodes the source with ffmpeg (~400MB+ RSS for
   // 4K) inside a container that also runs the API and redis — two concurrent

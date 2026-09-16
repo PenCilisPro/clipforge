@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { r2Key, presignGet, exists as r2Exists } from "../lib/r2.js";
+import { streamConfigured, streamPlaybackUrl } from "../lib/stream.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { ensureMonthlyCredits } from "../lib/credits.js";
@@ -77,12 +78,25 @@ const editSchema = z.object({
   end_time: z.coerce.number().finite().min(3).max(43_200).optional(),
 });
 
+/** R2 presigned URLs for video/SRT/thumbnail (fallback playback path). */
+function signPlaybackJobs(clip, userId) {
+  return [
+    presignGet(r2Key("clips", clip.storage_path ?? clip.raw_clip_path), 60 * 60),
+    clip.srt_path ? presignGet(r2Key("clips", clip.srt_path), 60 * 60) : null,
+    clip.thumbnail_path && clip.user_id === userId
+      ? presignGet(r2Key("assets", clip.thumbnail_path), 60 * 60)
+      : null,
+  ];
+}
+
 /** Signed playback URLs for the clip editor (final render if ready, else raw trim + SRT). */
 router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
   try {
     const { data: clip, error } = await supabaseAdmin
       .from("clips")
-      .select("id, user_id, storage_path, raw_clip_path, srt_path, thumbnail_path")
+      .select(
+        "id, user_id, storage_path, raw_clip_path, srt_path, thumbnail_path, stream_uid, stream_ready, stream_playback_url"
+      )
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .single();
@@ -100,14 +114,44 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Invalid clip path" });
     }
 
-    const signJobs = [
-      presignGet(r2Key("clips", videoPath), 60 * 60),
-      clip.srt_path ? presignGet(r2Key("clips", clip.srt_path), 60 * 60) : null,
-      clip.thumbnail_path && clip.user_id === req.user.id
-        ? presignGet(r2Key("assets", clip.thumbnail_path), 60 * 60)
-        : null,
-    ];
-    const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signJobs);
+    // Preferred playback: Cloudflare Stream mirror of the finalized render
+    // (CDN HLS/MP4). The worker flips stream_uid on finalize; readiness is
+    // checked lazily here and cached on the clip doc. Until the mirror is
+    // ready — or when Stream isn't configured — fall back to R2 presigned.
+    if (clip.storage_path && streamConfigured() && clip.stream_uid) {
+      if (!clip.stream_ready) {
+        const playback = await streamPlaybackUrl(clip.stream_uid);
+        if (playback) {
+          await supabaseAdmin
+            .from("clips")
+            .update({ stream_ready: true, stream_playback_url: playback.url })
+            .eq("id", clip.id);
+          const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
+          return res.json({
+            video_url: playback.url,
+            srt_url: srtUrl,
+            thumbnail_url: thumbUrl,
+            is_final_render: true,
+          });
+        }
+      } else if (clip.stream_playback_url) {
+        // Signed mirrors need a fresh token each time (4h expiry).
+        const refreshed = clip.stream_playback_url.includes("token=")
+          ? await streamPlaybackUrl(clip.stream_uid)
+          : { url: clip.stream_playback_url };
+        if (refreshed?.url) {
+          const [, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
+          return res.json({
+            video_url: refreshed.url,
+            srt_url: srtUrl,
+            thumbnail_url: thumbUrl,
+            is_final_render: true,
+          });
+        }
+      }
+    }
+
+    const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
     if (!videoUrl) return res.status(500).json({ error: "Could not sign video URL" });
 
     res.json({
