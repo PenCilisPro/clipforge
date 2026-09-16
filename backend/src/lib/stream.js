@@ -22,13 +22,25 @@ function streamUrl(path) {
 }
 
 /**
- * Fetch a Stream video's status. Returns null when the mirror is missing or
- * Stream isn't configured — callers fall back to R2 presigned playback.
+ * A genuine Cloudflare Stream UID is exactly 32 lowercase hex chars. The UID
+ * is extracted out of the raw value (never the raw value itself) so a value
+ * read from a Firestore doc (clip rows were client-writable historically) can
+ * never shape a request URL.
  */
-export async function getStreamVideo(uid) {
+const STREAM_UID_RE = /^([0-9a-f]{32})$/;
+
+/**
+ * Fetch a Stream video's status. Returns null when the mirror is missing,
+ * the UID is not a genuine Stream UID, or Stream isn't configured — callers
+ * fall back to R2 presigned playback.
+ */
+export async function getStreamVideo(rawUid) {
   if (!streamConfigured()) return null;
+  const uidMatch = typeof rawUid === "string" ? rawUid.match(STREAM_UID_RE) : null;
+  if (!uidMatch) return null;
+  const uid = uidMatch[1];
   try {
-    const res = await fetch(streamUrl(`${encodeURIComponent(uid)}`), {
+    const res = await fetch(streamUrl(uid), {
       headers: { Authorization: `Bearer ${env.streamApiToken}` },
       signal: AbortSignal.timeout(15_000),
     });

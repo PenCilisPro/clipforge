@@ -287,26 +287,34 @@ class FirestoreQuery {
       const fk = `${relation.replace(/s$/, "")}_id`;
       const isFkEmbed = rows.some((r) => r[fk] != null);
       if (rel?.childOf && !isFkEmbed) {
-        // children via <relation>.<childOf> == parent id (or a count embed)
+        // children via <relation>.<childOf> == parent id (count or full embed)
         const parentIds = [...new Set(rows.map((r) => r.id))].filter(Boolean);
         const chunks = [];
         for (let i = 0; i < parentIds.length; i += 30) {
           chunks.push(parentIds.slice(i, i + 30));
         }
         const counts = new Map();
+        const children = new Map(); // parent id -> child rows (full embed)
         for (const chunk of chunks) {
           const q = db().collection(relation).where(rel.childOf, "in", chunk);
           const snap = await q.get();
           for (const d of snap.docs) {
             const pid = d.data()[rel.childOf];
             counts.set(pid, (counts.get(pid) ?? 0) + 1);
+            if (arg !== "count") {
+              if (!children.has(pid)) children.set(pid, []);
+              children.get(pid).push({ id: d.id, ...d.data() });
+            }
           }
         }
+        const childSortKey = relation === "clips" ? "start_time" : "created_at";
         for (const row of rows) {
           if (arg === "count") {
             row[relation] = [{ count: counts.get(row.id) ?? 0 }];
           } else {
-            row[relation] = []; // child embeds of this shape aren't used in-app
+            row[relation] = (children.get(row.id) ?? []).sort(
+              (a, b) => (a[childSortKey] ?? "").localeCompare(b[childSortKey] ?? "")
+            );
           }
         }
       } else {

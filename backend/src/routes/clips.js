@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { r2Key, presignGet, exists as r2Exists } from "../lib/r2.js";
-import { streamConfigured, streamPlaybackUrl } from "../lib/stream.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { ensureMonthlyCredits } from "../lib/credits.js";
@@ -114,42 +113,13 @@ router.get("/api/clips/:id/playback", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Invalid clip path" });
     }
 
-    // Preferred playback: Cloudflare Stream mirror of the finalized render
-    // (CDN HLS/MP4). The worker flips stream_uid on finalize; readiness is
-    // checked lazily here and cached on the clip doc. Until the mirror is
-    // ready — or when Stream isn't configured — fall back to R2 presigned.
-    if (clip.storage_path && streamConfigured() && clip.stream_uid) {
-      if (!clip.stream_ready) {
-        const playback = await streamPlaybackUrl(clip.stream_uid);
-        if (playback) {
-          await supabaseAdmin
-            .from("clips")
-            .update({ stream_ready: true, stream_playback_url: playback.url })
-            .eq("id", clip.id);
-          const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
-          return res.json({
-            video_url: playback.url,
-            srt_url: srtUrl,
-            thumbnail_url: thumbUrl,
-            is_final_render: true,
-          });
-        }
-      } else if (clip.stream_playback_url) {
-        // Signed mirrors need a fresh token each time (4h expiry).
-        const refreshed = clip.stream_playback_url.includes("token=")
-          ? await streamPlaybackUrl(clip.stream_uid)
-          : { url: clip.stream_playback_url };
-        if (refreshed?.url) {
-          const [, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
-          return res.json({
-            video_url: refreshed.url,
-            srt_url: srtUrl,
-            thumbnail_url: thumbUrl,
-            is_final_render: true,
-          });
-        }
-      }
-    }
+    // Playback is R2 presigned. The worker still mirrors finalized clips to
+    // Cloudflare Stream (stream_uid/stream_ready on the doc), but we never
+    // call the Stream API with a doc-sourced UID here: clip rows were
+    // client-writable before hardening, and a value read from Firestore must
+    // not shape a request URL. Re-enable Stream playback by storing the
+    // playback URL server-side at finalize time (worker-side cache), not by
+    // resolving it lazily from the UID.
 
     const [videoUrl, srtUrl, thumbUrl] = await Promise.all(signPlaybackJobs(clip, req.user.id));
     if (!videoUrl) return res.status(500).json({ error: "Could not sign video URL" });

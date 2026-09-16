@@ -3,7 +3,7 @@ import IORedis from "ioredis";
 
 import { env } from "./env.js";
 import { supabaseAdmin } from "./supabase.js";
-import { insertJobRow, reconcileProjectDone } from "./jobs.js";
+import { insertJobRow, setJobStatus, setProjectStatus, reconcileProjectDone } from "./jobs.js";
 import { getRender } from "./shotstack.js";
 
 /**
@@ -35,14 +35,26 @@ const RECOVERY_JOB_OPTS = {
   removeOnFail: 1000,
 };
 
-async function clipIdsWithLiveJobs() {
+async function liveQueueKeys() {
   try {
     const jobs = await queue.getJobs(["waiting", "active", "delayed", "paused"]);
-    return new Set(jobs.map((j) => j.data?.clipId).filter(Boolean));
+    const clipIds = new Set();
+    const jobRowIds = new Set();
+    for (const j of jobs) {
+      if (j.data?.clipId) clipIds.add(j.data.clipId);
+      if (j.data?.jobRowId) jobRowIds.add(j.data.jobRowId);
+    }
+    return { clipIds, jobRowIds, ok: true };
   } catch (err) {
     console.error("[recovery] could not list queue jobs:", err.message);
-    return new Set(["__none__"]); // fail closed — don't double-enqueue blindly
+    // fail closed — don't double-enqueue blindly
+    return { clipIds: new Set(["__none__"]), jobRowIds: new Set(["__none__"]), ok: false };
   }
+}
+
+async function clipIdsWithLiveJobs() {
+  const { clipIds } = await liveQueueKeys();
+  return clipIds;
 }
 
 async function reenqueueStrandedRenders(maxAgeMs) {
@@ -73,6 +85,84 @@ async function reenqueueStrandedRenders(maxAgeMs) {
     }
   }
   if (requeued > 0) console.log(`[recovery] re-enqueued ${requeued} stranded clip(s) for render`);
+}
+
+/**
+ * Re-enqueue lost pipeline stages (download/transcribe/analyze). The queue is
+ * ephemeral — a deploy or container restart wipes Redis while the public.jobs
+ * row stays "queued"/"active" in Firestore, so the project spins at
+ * "Processing" forever. Stranded render-stage clips are covered by
+ * reenqueueStrandedRenders; this covers the pre-render stages.
+ */
+async function resumeStrandedPipelines() {
+  // Single-field "in" query (no composite index needed); filter the rest in JS.
+  const { data: jobRows, error } = await supabaseAdmin
+    .from("jobs")
+    .select("id, project_id, job_type, status, created_at")
+    .in("job_type", ["download", "transcribe", "analyze"]);
+  if (error) {
+    console.error("[recovery] pipeline-jobs query failed:", error.message);
+    return;
+  }
+  const stranded = (jobRows ?? []).filter(
+    (j) =>
+      ["queued", "active"].includes(j.status) &&
+      j.created_at &&
+      Date.now() - new Date(j.created_at).getTime() > 10 * 60 * 1000
+  );
+  if (!stranded.length) return;
+
+  const live = await liveQueueKeys();
+  if (!live.ok) return;
+
+  // Only resume projects that are actually still pending/processing.
+  const projectIds = [...new Set(stranded.map((j) => j.project_id).filter(Boolean))];
+  const resumable = new Set();
+  if (projectIds.length) {
+    const { data: projects, error: projError } = await supabaseAdmin
+      .from("projects")
+      .select("id, status")
+      .in("id", projectIds);
+    if (projError) {
+      console.error("[recovery] projects query failed:", projError.message);
+      return;
+    }
+    for (const p of projects ?? []) {
+      if (p.status === "pending" || p.status === "processing") resumable.add(p.id);
+    }
+  }
+
+  let resumed = 0;
+  for (const job of stranded) {
+    if (live.jobRowIds.has(job.id)) continue; // still queued/active in BullMQ
+    if (!resumable.has(job.project_id)) continue;
+    try {
+      if (Date.now() - new Date(job.created_at).getTime() > 24 * 60 * 60 * 1000) {
+        // Too old to be safe — fail it loudly instead of looping forever.
+        await setJobStatus(
+          job.id,
+          "failed",
+          "Pipeline job was lost (server restart) and could not be resumed. Please try again."
+        );
+        await setProjectStatus(
+          job.project_id,
+          "failed",
+          "Processing was interrupted by a server restart — please create the project again."
+        );
+        console.log(`[recovery] failed stranded >24h pipeline job ${job.id}`);
+        continue;
+      }
+      await queue.add(
+        job.job_type,
+        { projectId: job.project_id, jobRowId: job.id },
+        RECOVERY_JOB_OPTS
+      );
+      resumed++;
+    } catch (err) {
+      console.error(`[recovery] failed to resume pipeline job ${job.id}:`, err.message);
+    }
+  }
+  if (resumed > 0) console.log(`[recovery] re-enqueued ${resumed} stranded pipeline job(s)`);
 }
 
 async function failLostWebhookRenders() {
@@ -164,11 +254,17 @@ export function startRecovery() {
     reenqueueStrandedRenders(10 * 60 * 1000).catch((e) =>
       console.error("[recovery] startup pass failed:", e.message)
     );
+    resumeStrandedPipelines().catch((e) =>
+      console.error("[recovery] startup pipeline-resume pass failed:", e.message)
+    );
   }, 15_000);
 
   const timer = setInterval(() => {
     reenqueueStrandedRenders(30 * 60 * 1000).catch((e) =>
       console.error("[recovery] periodic pass failed:", e.message)
+    );
+    resumeStrandedPipelines().catch((e) =>
+      console.error("[recovery] pipeline-resume pass failed:", e.message)
     );
     pollSubmittedRenders().catch((e) =>
       console.error("[recovery] render-poll pass failed:", e.message)
