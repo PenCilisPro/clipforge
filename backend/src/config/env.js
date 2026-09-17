@@ -10,6 +10,19 @@ function required(name, fallback = undefined) {
   return value;
 }
 
+function credsProjectId(json) {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json).project_id;
+  } catch {
+    try {
+      return JSON.parse(Buffer.from(json, "base64").toString("utf8")).project_id;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
 export const env = {
   port: Number(process.env.PORT ?? 4000),
   backendUrl: required("BACKEND_URL", "http://localhost:4000"),
@@ -27,7 +40,14 @@ export const env = {
 
   // Firebase (auth + Firestore). FIREBASE_SERVICE_ACCOUNT accepts the raw
   // service-account JSON, a base64 encoding of it, or a path to the file.
-  firebaseProjectId: required("FIREBASE_PROJECT_ID"),
+  // FIREBASE_PROJECT_ID falls back to that account's project_id so the API
+  // isn't degraded when only credentials are configured. Do NOT fall back to
+  // GOOGLE_CREDENTIALS_JSON — that account is for Google STT (clipforge-v1),
+  // a different project from Firebase (clipforge-ai-8326b).
+  firebaseProjectId: required(
+    "FIREBASE_PROJECT_ID",
+    credsProjectId(process.env.FIREBASE_SERVICE_ACCOUNT)
+  ),
   firebaseServiceAccount: required("FIREBASE_SERVICE_ACCOUNT"),
 
   // Cloudflare R2 (file storage; replaces Supabase Storage)
@@ -84,17 +104,20 @@ export const env = {
 };
 
 export function assertCriticalEnv() {
-  for (const key of [
-    "FIREBASE_PROJECT_ID",
-    "FIREBASE_SERVICE_ACCOUNT",
-    "REDIS_URL",
-    "R2_ACCOUNT_ID",
-    "R2_ACCESS_KEY_ID",
-    "R2_SECRET_ACCESS_KEY",
-    "R2_BUCKET",
-    "R2_PUBLIC_BASE_URL",
-  ]) {
-    if (!process.env[key]) {
+  // FIREBASE_PROJECT_ID is satisfied via the GOOGLE_CREDENTIALS_JSON fallback,
+  // so only flag it when neither variable resolves to a project id.
+  const checks = [
+    ["FIREBASE_PROJECT_ID", env.firebaseProjectId],
+    ["FIREBASE_SERVICE_ACCOUNT", env.firebaseServiceAccount],
+    ["REDIS_URL", env.redisUrl],
+    ["R2_ACCOUNT_ID", env.r2AccountId],
+    ["R2_ACCESS_KEY_ID", env.r2AccessKeyId],
+    ["R2_SECRET_ACCESS_KEY", env.r2SecretAccessKey],
+    ["R2_BUCKET", env.r2Bucket],
+    ["R2_PUBLIC_BASE_URL", env.r2PublicBaseUrl],
+  ];
+  for (const [key, value] of checks) {
+    if (!value) {
       console.warn(`[env] ${key} is not set — API will start in degraded mode.`);
     }
   }

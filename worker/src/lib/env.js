@@ -3,7 +3,13 @@ import "dotenv/config";
 export const env = {
   // Firebase (auth + Firestore). FIREBASE_SERVICE_ACCOUNT accepts the raw
   // service-account JSON, a base64 encoding of it, or a path to the file.
-  firebaseProjectId: process.env.FIREBASE_PROJECT_ID,
+  // FIREBASE_PROJECT_ID falls back to that account's project_id so the worker
+  // still targets the right project when only credentials are set. Do NOT
+  // fall back to GOOGLE_CREDENTIALS_JSON — that account is for Google STT
+  // (clipforge-v1), a different project from Firebase (clipforge-ai-8326b).
+  firebaseProjectId:
+    process.env.FIREBASE_PROJECT_ID ??
+    safeCredsProjectId(process.env.FIREBASE_SERVICE_ACCOUNT),
   firebaseServiceAccount: process.env.FIREBASE_SERVICE_ACCOUNT,
 
   // Cloudflare R2 (file storage; replaces Supabase Storage)
@@ -21,11 +27,13 @@ export const env = {
   streamSigningKey: process.env.CLOUDFLARE_STREAM_SIGNING_KEY,
   streamSigningToken: process.env.CLOUDFLARE_STREAM_SIGNING_TOKEN,
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
-  // Default 1: each render decodes the source with ffmpeg (~400MB+ RSS for
-  // 4K) inside a container that also runs the API and redis — two concurrent
-  // renders OOM-kill small plans. Raise via WORKER_CONCURRENCY on bigger
-  // instances only.
-  concurrency: Number(process.env.WORKER_CONCURRENCY ?? 1),
+  // Each render decodes the source with ffmpeg (~400MB+ RSS for 4K) inside a
+  // container that also runs the API and redis — two concurrent renders
+  // OOM-kill small plans. On nf-compute-10 (1GB) the deployment plan, a
+  // WORKER_CONCURRENCY=2 override caused a crash loop where recovery.js
+  // re-enqueued the same clips every restart. Clamp to 1 until the plan is
+  // upgraded.
+  concurrency: Math.min(Number(process.env.WORKER_CONCURRENCY ?? 1), 1),
   maxClips: Number(process.env.MAX_CLIPS_PER_VIDEO ?? 6),
   sttLanguage: process.env.STT_LANGUAGE_CODE ?? "en-US",
 
@@ -55,6 +63,19 @@ export const env = {
   shotstackWebhookSecret: process.env.SHOTSTACK_WEBHOOK_SECRET,
   encryptionKey: process.env.ENCRYPTION_KEY,
 };
+
+function safeCredsProjectId(json) {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json).project_id;
+  } catch {
+    try {
+      return JSON.parse(Buffer.from(json, "base64").toString("utf8")).project_id;
+    } catch {
+      return undefined;
+    }
+  }
+}
 
 export function warnMissing() {
   const checks = {

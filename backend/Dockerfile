@@ -20,6 +20,9 @@ COPY worker/src /worker/src
 
 # ffmpeg-static ships a bundled binary; keep tmp space for processing
 RUN mkdir -p /tmp/clipforge
+# Cap the Node heap below the 1GB container limit so V8 GCs before the
+# OOM killer takes the whole pod (API + redis + worker share this memory).
+ENV NODE_OPTIONS=--max-old-space-size=512
 EXPOSE 4000 6379
 # start.sh daemonizes redis, supervises the worker and execs the API.
 # (An inline `redis && node worker & exec api` CMD once left redis in the
