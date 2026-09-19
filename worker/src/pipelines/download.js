@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../lib/supabase.js";
-import { upload as r2Upload } from "../lib/r2.js";
+import { uploadFile as r2UploadFile } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, probeDurationSeconds } from "../lib/ffmpeg.js";
@@ -34,8 +34,9 @@ export async function processDownload(job) {
     const durationSeconds = await probeDurationSeconds(localFile).catch(() => null);
 
     const storagePath = `${project.user_id}/${projectId}.mp4`;
-    const fileBuffer = await (await import("node:fs/promises")).readFile(localFile);
-    await r2Upload(`source-videos/${storagePath}`, fileBuffer, "video/mp4");
+    // Stream from disk — buffering the whole video in the heap OOM-kills
+    // small containers before the upload even starts.
+    await r2UploadFile(`source-videos/${storagePath}`, localFile, "video/mp4");
 
     await supabaseAdmin
       .from("projects")

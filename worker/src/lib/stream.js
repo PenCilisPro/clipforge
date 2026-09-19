@@ -1,4 +1,6 @@
 import { env } from "./env.js";
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 
 /**
  * Cloudflare Stream — playback delivery layer for finalized clips.
@@ -61,12 +63,18 @@ export async function uploadToStream(filePath, { name } = {}) {
   const { uploadURL, uid } = createData?.result ?? {};
   if (!uploadURL || !uid) throw new Error("Stream did not return an upload URL");
 
-  const { readFile } = await import("node:fs/promises");
-  const fileBuffer = await readFile(filePath);
+  const { stat } = await import("node:fs/promises");
+  const { size } = await stat(filePath);
+  const fileStream = Readable.toWeb(createReadStream(filePath));
   const uploadRes = await fetch(uploadURL, {
     method: "POST",
-    body: fileBuffer,
-    headers: { "Content-Type": "video/mp4" },
+    body: fileStream,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Length": String(size),
+    },
+    // Node's fetch requires duplex:"half" for stream bodies.
+    duplex: "half",
     signal: AbortSignal.timeout(10 * 60 * 1000),
   });
   if (!uploadRes.ok) {

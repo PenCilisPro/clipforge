@@ -92,7 +92,10 @@ export async function processTranscribe(job) {
     }
 
     // 3. Google Speech-to-Text (long-running, word-level timestamps)
-    const audioBuffer = await fs.readFile(localAudio);
+    // Only the file size is needed up front — the WAV itself stays on disk.
+    // Holding the full buffer (and its base64 copy) resident through the
+    // long-running STT call spikes RSS by ~2x the audio size on the 1GB plan.
+    const { size: audioBytes } = await fs.stat(localAudio);
     const config = {
       encoding: "LINEAR16",
       sampleRateHertz: 16000,
@@ -115,18 +118,18 @@ export async function processTranscribe(job) {
     let gcsObjectPath = null;
     let chunkFiles = [];
     let sttResults;
-    const payloadBytes = Math.ceil((audioBuffer.length * 4) / 3);
+    const payloadBytes = Math.ceil((audioBytes * 4) / 3);
     if (payloadBytes > 9 * 1024 * 1024 && env.gcsBucket) {
       gcsObjectPath = `stt/${projectId}/${Date.now()}.wav`;
       job.log(
-        `Audio ${Math.round(audioBuffer.length / 1024 / 1024)} MB — uploading to ` +
+        `Audio ${Math.round(audioBytes / 1024 / 1024)} MB — uploading to ` +
           `gs://${env.gcsBucket}/${gcsObjectPath} for transcription`
       );
       await getStorageClient()
         .bucket(env.gcsBucket)
         .upload(localAudio, {
           destination: gcsObjectPath,
-          resumable: false,
+          resumable: true,
           contentType: "audio/wav",
         });
       const [operation] = await getSpeechClient().longRunningRecognize({
@@ -142,7 +145,7 @@ export async function processTranscribe(job) {
       const chunks = await splitAudioChunks(localAudio);
       chunkFiles = chunks.map((c) => c.path);
       job.log(
-        `Audio ${Math.round(audioBuffer.length / 1024 / 1024)} MB exceeds the STT ` +
+        `Audio ${Math.round(audioBytes / 1024 / 1024)} MB exceeds the STT ` +
           `inline limit — transcribing in ${chunks.length} chunks`
       );
       const transcribeChunk = async ({ path, startSeconds }, index) => {
@@ -184,6 +187,8 @@ export async function processTranscribe(job) {
         );
       }
     } else {
+      // Small audio only (< ~9 MiB base64) — buffering inline is fine here.
+      const audioBuffer = await fs.readFile(localAudio);
       const [operation] = await getSpeechClient().longRunningRecognize({
         audio: { content: audioBuffer.toString("base64") },
         config,
