@@ -1,6 +1,4 @@
 import fs from "node:fs/promises";
-import speech from "@google-cloud/speech";
-import { Storage } from "@google-cloud/storage";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
@@ -8,6 +6,10 @@ import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, pro
 import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
+// The Google SDKs (gRPC + GCS) are heavy — importing them eagerly keeps
+// ~50-100MB resident in the worker process even while it spends its whole
+// life on render jobs that never touch STT. Load them on first use instead;
+// on a 1GB shared container that headroom decides whether a 4K trim OOMs.
 let speechClient = null;
 let storageClient = null;
 
@@ -21,14 +23,16 @@ function googleAuthOptions() {
   return {};
 }
 
-function getSpeechClient() {
+async function getSpeechClient() {
   if (speechClient) return speechClient;
+  const speech = (await import("@google-cloud/speech")).default;
   speechClient = new speech.SpeechClient(googleAuthOptions());
   return speechClient;
 }
 
-function getStorageClient() {
+async function getStorageClient() {
   if (storageClient) return storageClient;
+  const { Storage } = await import("@google-cloud/storage");
   storageClient = new Storage(googleAuthOptions());
   return storageClient;
 }
@@ -125,14 +129,14 @@ export async function processTranscribe(job) {
         `Audio ${Math.round(audioBytes / 1024 / 1024)} MB — uploading to ` +
           `gs://${env.gcsBucket}/${gcsObjectPath} for transcription`
       );
-      await getStorageClient()
+      await (await getStorageClient())
         .bucket(env.gcsBucket)
         .upload(localAudio, {
           destination: gcsObjectPath,
           resumable: true,
           contentType: "audio/wav",
         });
-      const [operation] = await getSpeechClient().longRunningRecognize({
+      const [operation] = await (await getSpeechClient()).longRunningRecognize({
         audio: { uri: `gs://${env.gcsBucket}/${gcsObjectPath}` },
         config,
       });
@@ -150,7 +154,7 @@ export async function processTranscribe(job) {
       );
       const transcribeChunk = async ({ path, startSeconds }, index) => {
         const buffer = await fs.readFile(path);
-        const [op] = await getSpeechClient().longRunningRecognize({
+        const [op] = await (await getSpeechClient()).longRunningRecognize({
           audio: { content: buffer.toString("base64") },
           config,
         });
@@ -189,7 +193,7 @@ export async function processTranscribe(job) {
     } else {
       // Small audio only (< ~9 MiB base64) — buffering inline is fine here.
       const audioBuffer = await fs.readFile(localAudio);
-      const [operation] = await getSpeechClient().longRunningRecognize({
+      const [operation] = await (await getSpeechClient()).longRunningRecognize({
         audio: { content: audioBuffer.toString("base64") },
         config,
       });
@@ -199,7 +203,7 @@ export async function processTranscribe(job) {
     }
 
     if (gcsObjectPath) {
-      await getStorageClient()
+      await (await getStorageClient())
         .bucket(env.gcsBucket)
         .file(gcsObjectPath)
         .delete({ ignoreNotFound: true })

@@ -139,8 +139,11 @@ export async function trimSegment(inputPath, outputPath, startSeconds, durationS
     "-vf", `scale='min(1920,iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", String(crf),
     // Cap encoder threads — x264 sizes its thread pool from detected cores,
-    // which balloons RSS on big hosts and OOMs small containers.
-    "-threads", "2",
+    // which balloons RSS on big hosts and OOMs small containers. 1 thread
+    // (not 2): this container also runs the API + redis + a second node
+    // process, and every MB here is the difference between the OOM killer
+    // taking ffmpeg (trimSegment retries at 720p) and the whole pod.
+    "-threads", "1",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
     outputPath,
