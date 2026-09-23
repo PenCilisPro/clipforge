@@ -30,8 +30,6 @@ const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 15 * 60 * 100
 /** Run a raw ffmpeg command (spawn) and reject on non-zero exit. */
 export function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
-    // -nostdin + ignored stdin: with a piped stdin ffmpeg can stall waiting
-    // for interactive commands that never come.
     const proc = spawn(
       FFMPEG_PATH,
       ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", ...args],
@@ -48,9 +46,8 @@ export function runFfmpeg(args) {
       code === 0
         ? resolve()
         : code === null
-          ? // Null exit code = killed by a signal (OOM on small containers).
-            reject(new Error(`ffmpeg was killed by signal ${signal} (likely out of memory)`))
-          : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`))
+          ? reject(new Error(`ffmpeg was killed by signal ${signal} (likely out of memory)`))
+          : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
     });
     proc.on("error", (err) => {
       clearTimeout(timer);
@@ -77,15 +74,14 @@ export function probeStreams(filePath) {
   });
 }
 
-/** Extract mono 16 kHz WAV for Speech-to-Text:
- *   ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 audio.wav
- */
-export async function extractAudio(inputPath, outputPath) {
-  return runFfmpeg([
-    "-i", inputPath,
-    "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-    outputPath,
-  ]);
+/** Extract one bounded mono 16 kHz WAV segment for Speech-to-Text. */
+export async function extractAudio(inputPath, outputPath, startSeconds = 0, durationSeconds = null) {
+  const args = ["-threads", "1"];
+  if (startSeconds > 0) args.push("-ss", String(startSeconds));
+  args.push("-i", inputPath);
+  if (durationSeconds != null) args.push("-t", String(durationSeconds));
+  args.push("-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", outputPath);
+  return runFfmpeg(args);
 }
 
 /**
@@ -127,10 +123,6 @@ let trimChain = Promise.resolve();
  */
 export async function trimSegment(inputPath, outputPath, startSeconds, durationSeconds) {
   const args = (maxHeight, crf) => [
-    // Input-side thread cap limits the AV1/H264 decoder's per-thread frame
-    // buffers — dav1d defaults to one thread per core at 4K and each holds
-    // big reference frames. Measured on a 4K AV1 source: threads=2 → 890MB,
-    // threads=1 → 410MB, so single-threaded decode is the big lever.
     "-threads", "1",
     "-filter_threads", "1",
     "-ss", String(startSeconds),
@@ -138,11 +130,6 @@ export async function trimSegment(inputPath, outputPath, startSeconds, durationS
     "-t", String(durationSeconds),
     "-vf", `scale='min(1920,iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", String(crf),
-    // Cap encoder threads — x264 sizes its thread pool from detected cores,
-    // which balloons RSS on big hosts and OOMs small containers. 1 thread
-    // (not 2): this container also runs the API + redis + a second node
-    // process, and every MB here is the difference between the OOM killer
-    // taking ffmpeg (trimSegment retries at 720p) and the whole pod.
     "-threads", "1",
     "-c:a", "aac", "-b:a", "128k",
     "-movflags", "+faststart",
@@ -150,12 +137,7 @@ export async function trimSegment(inputPath, outputPath, startSeconds, durationS
   ];
   const run = (a) => {
     const p = trimChain.then(() => runFfmpeg(a));
-    // Keep the chain alive regardless of failures, and drop settled results so
-    // a long session doesn't hold references.
-    trimChain = p.then(
-      () => {},
-      () => {}
-    );
+    trimChain = p.then(() => {}, () => {});
     return p;
   };
 
@@ -186,11 +168,7 @@ export async function cleanup(...paths) {
   );
 }
 
-/**
- * Stream a URL straight to disk. Buffering a whole source video in RAM
- * (e.g. storage.download → Buffer) OOM-kills small containers before ffmpeg
- * even starts; the bytes belong on disk, not in the heap.
- */
+/** Stream a URL straight to disk; do not buffer an entire video in RAM. */
 export async function downloadToFile(url, filePath) {
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
