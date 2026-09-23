@@ -2,16 +2,12 @@ import fs from "node:fs/promises";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
-import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, probeStreams, splitAudioChunks } from "../lib/ffmpeg.js";
+import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, probeStreams } from "../lib/ffmpeg.js";
 import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
-// The Google SDKs (gRPC + GCS) are heavy — importing them eagerly keeps
-// ~50-100MB resident in the worker process even while it spends its whole
-// life on render jobs that never touch STT. Load them on first use instead;
-// on a 1GB shared container that headroom decides whether a 4K trim OOMs.
+// The Google speech SDK is heavy; load it only when transcription is needed.
 let speechClient = null;
-let storageClient = null;
 
 function googleAuthOptions() {
   if (env.googleCredentialsJson) {
@@ -30,22 +26,15 @@ async function getSpeechClient() {
   return speechClient;
 }
 
-async function getStorageClient() {
-  if (storageClient) return storageClient;
-  const { Storage } = await import("@google-cloud/storage");
-  storageClient = new Storage(googleAuthOptions());
-  return storageClient;
-}
-
 /**
  * Stage 2 — transcribe.
- * Downloads the source video, extracts mono 16 kHz WAV with FFmpeg, sends it
- * to Google Speech-to-Text with word-level timestamps and stores the result
- * in projects.transcript_json: { transcript, words: [{word, start, end}] }.
- * Also deducts credits (1 per started minute).
+ * Processes bounded mono 16 kHz WAV chunks serially, so long sources do not
+ * require a full-length PCM WAV or concurrent base64 request buffers in RAM.
  */
 export async function processTranscribe(job) {
   const { projectId, jobRowId } = job.data;
+  let localVideo = null;
+  const chunkFiles = [];
 
   try {
     await setJobStatus(jobRowId, "active");
@@ -60,18 +49,13 @@ export async function processTranscribe(job) {
     }
 
     await ensureTmpDir();
-
-    // 1. Pull source video out of storage (reassembles split uploads)
-    const localVideo = tmpPath(`source-${projectId}.mp4`);
+    localVideo = tmpPath(`source-${projectId}.mp4`);
     await fetchSourceVideo(project, localVideo);
 
-    // Fail early with a readable message when the upload has no audio track
-    // (yt-dlp video-only downloads keep a ".fNNN" format suffix in the name).
     const hasAudio = (await probeStreams(localVideo).catch(() => [])).some(
-      (s) => s.codec_type === "audio"
+      (stream) => stream.codec_type === "audio"
     );
     if (!hasAudio) {
-      await cleanup(localVideo);
       throw new Error(
         "This video has no audio track — it looks like a video-only download " +
           "(filenames ending in .fNNN, e.g. .f401). Re-download with audio merged " +
@@ -79,15 +63,13 @@ export async function processTranscribe(job) {
       );
     }
 
-    // 2. FFmpeg → mono 16 kHz WAV
-    const localAudio = tmpPath(`audio-${projectId}.wav`);
-    await extractAudio(localVideo, localAudio);
-
     const durationSeconds =
-      project.duration_seconds ?? (await probeDurationSeconds(localVideo).catch(() => null));
-    // Credits are per processed video, not per retry — only the first
-    // attempt pays, otherwise each failed retry burns more minutes.
-    if (durationSeconds && !job.attemptsMade) {
+      await probeDurationSeconds(localVideo).catch(() => project.duration_seconds ?? null);
+    if (!durationSeconds || !Number.isFinite(durationSeconds)) {
+      throw new Error("Could not determine the source video duration");
+    }
+
+    if (!job.attemptsMade) {
       await supabaseAdmin
         .from("projects")
         .update({ duration_seconds: durationSeconds })
@@ -95,11 +77,6 @@ export async function processTranscribe(job) {
       await deductCredits(project.user_id, durationSeconds);
     }
 
-    // 3. Google Speech-to-Text (long-running, word-level timestamps)
-    // Only the file size is needed up front — the WAV itself stays on disk.
-    // Holding the full buffer (and its base64 copy) resident through the
-    // long-running STT call spikes RSS by ~2x the audio size on the 1GB plan.
-    const { size: audioBytes } = await fs.stat(localAudio);
     const config = {
       encoding: "LINEAR16",
       sampleRateHertz: 16000,
@@ -108,121 +85,61 @@ export async function processTranscribe(job) {
       enableAutomaticPunctuation: true,
       model: "latest_long",
     };
-
-    // The STT request payload (base64 = 4/3 of raw size) is hard-capped at
-    // 10 MiB AND inline audio at 60s duration — longer audio must go via GCS
-    // (when GCS_BUCKET is set) or be split into inline-sized chunks.
-    const toSeconds = (t) =>
-      t == null
+    const toSeconds = (time) =>
+      time == null
         ? 0
-        : typeof t === "number"
-          ? t
-          : Number(t.seconds ?? 0) + Number(t.nanos ?? 0) / 1e9;
+        : typeof time === "number"
+          ? time
+          : Number(time.seconds ?? 0) + Number(time.nanos ?? 0) / 1e9;
 
-    let gcsObjectPath = null;
-    let chunkFiles = [];
-    let sttResults;
-    const payloadBytes = Math.ceil((audioBytes * 4) / 3);
-    if (payloadBytes > 9 * 1024 * 1024 && env.gcsBucket) {
-      gcsObjectPath = `stt/${projectId}/${Date.now()}.wav`;
-      job.log(
-        `Audio ${Math.round(audioBytes / 1024 / 1024)} MB — uploading to ` +
-          `gs://${env.gcsBucket}/${gcsObjectPath} for transcription`
-      );
-      await (await getStorageClient())
-        .bucket(env.gcsBucket)
-        .upload(localAudio, {
-          destination: gcsObjectPath,
-          resumable: true,
-          contentType: "audio/wav",
-        });
-      const [operation] = await (await getSpeechClient()).longRunningRecognize({
-        audio: { uri: `gs://${env.gcsBucket}/${gcsObjectPath}` },
-        config,
-      });
-      job.log("STT operation started — waiting…");
-      const [response] = await operation.promise();
-      sttResults = response.results ?? [];
-    } else if (payloadBytes > 9 * 1024 * 1024) {
-      // No GCS bucket configured — split the audio into chunks that each fit
-      // the inline limit and transcribe them with the chunk start offset.
-      const chunks = await splitAudioChunks(localAudio);
-      chunkFiles = chunks.map((c) => c.path);
-      job.log(
-        `Audio ${Math.round(audioBytes / 1024 / 1024)} MB exceeds the STT ` +
-          `inline limit — transcribing in ${chunks.length} chunks`
-      );
-      const transcribeChunk = async ({ path, startSeconds }, index) => {
-        const buffer = await fs.readFile(path);
-        const [op] = await (await getSpeechClient()).longRunningRecognize({
-          audio: { content: buffer.toString("base64") },
-          config,
-        });
-        const [response] = await op.promise();
-        job.log(`Chunk ${index + 1}/${chunks.length} done`);
-        return (response.results ?? [])
-          .map((result) => {
-            const alternative = result.alternatives?.[0];
-            if (!alternative) return null;
-            return {
-              alternatives: [
-                {
-                  transcript: alternative.transcript,
-                  words: (alternative.words ?? []).map((w) => ({
-                    ...w,
-                    startTime: toSeconds(w.startTime) + startSeconds,
-                    endTime: toSeconds(w.endTime) + startSeconds,
-                  })),
-                },
-              ],
-            };
-          })
-          .filter(Boolean);
-      };
-      // Small concurrency: STT bills per audio second anyway, and parallel
-      // requests keep a long video from serializing into a wall-clock slog.
-      sttResults = [];
-      const CONCURRENCY = 3;
-      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
-        sttResults.push(
-          ...(await Promise.all(
-            chunks.slice(i, i + CONCURRENCY).map((chunk, j) => transcribeChunk(chunk, i + j))
-          )).flat()
-        );
-      }
-    } else {
-      // Small audio only (< ~9 MiB base64) — buffering inline is fine here.
-      const audioBuffer = await fs.readFile(localAudio);
-      const [operation] = await (await getSpeechClient()).longRunningRecognize({
-        audio: { content: audioBuffer.toString("base64") },
-        config,
-      });
-      job.log("STT operation started — waiting…");
-      const [response] = await operation.promise();
-      sttResults = response.results ?? [];
-    }
-
-    if (gcsObjectPath) {
-      await (await getStorageClient())
-        .bucket(env.gcsBucket)
-        .file(gcsObjectPath)
-        .delete({ ignoreNotFound: true })
-        .catch(() => {});
-    }
-
+    const chunkSeconds = 55;
     const words = [];
     const transcriptParts = [];
-    for (const result of sttResults) {
-      const alternative = result.alternatives?.[0];
-      if (!alternative) continue;
-      transcriptParts.push(alternative.transcript);
-      for (const w of alternative.words ?? []) {
-        words.push({
-          word: w.word,
-          start: toSeconds(w.startTime),
-          end: toSeconds(w.endTime),
+    const client = await getSpeechClient();
+    let chunkIndex = 0;
+
+    for (let start = 0; start < durationSeconds; start += chunkSeconds) {
+      const chunkPath = tmpPath(`audio-${projectId}-${start}.wav`);
+      chunkFiles.push(chunkPath);
+      try {
+        await extractAudio(
+          localVideo,
+          chunkPath,
+          start,
+          Math.min(chunkSeconds, durationSeconds - start)
+        );
+        const audioBuffer = await fs.readFile(chunkPath);
+        const [operation] = await client.longRunningRecognize({
+          audio: { content: audioBuffer.toString("base64") },
+          config,
         });
+        audioBuffer.fill(0);
+        const [response] = await operation.promise();
+
+        for (const result of response.results ?? []) {
+          const alternative = result.alternatives?.[0];
+          if (!alternative) continue;
+          transcriptParts.push(alternative.transcript);
+          for (const word of alternative.words ?? []) {
+            words.push({
+              word: word.word,
+              start: toSeconds(word.startTime) + start,
+              end: toSeconds(word.endTime) + start,
+            });
+          }
+        }
+        await cleanup(chunkPath);
+        chunkFiles.pop();
+      } catch (error) {
+        await cleanup(chunkPath);
+        chunkFiles.pop();
+        throw error;
       }
+
+      chunkIndex++;
+      job.log(
+        `Transcribed segment ${chunkIndex} (${Math.min(start + chunkSeconds, durationSeconds).toFixed(0)} / ${durationSeconds.toFixed(0)}s)`
+      );
     }
 
     if (words.length === 0) {
@@ -236,10 +153,9 @@ export async function processTranscribe(job) {
       .eq("id", projectId);
     if (updateError) throw updateError;
 
-    await cleanup(localVideo, localAudio, ...chunkFiles);
+    await cleanup(localVideo);
+    localVideo = null;
 
-    // Transcript-only projects stop here: no AI analysis, no clip rows, no
-    // renders — the transcript on the project row IS the deliverable.
     if (project.project_mode === "transcript") {
       await setProjectStatus(projectId, "done");
       await setJobStatus(jobRowId, "completed");
@@ -248,12 +164,12 @@ export async function processTranscribe(job) {
     }
 
     await setJobStatus(jobRowId, "completed");
-    // Chain to the next stage — nothing else enqueues analyze.
     const analyzeJobRowId = await insertJobRow(projectId, "analyze");
     await enqueuePipeline("analyze", { projectId, jobRowId: analyzeJobRowId });
     job.log(`Transcribed ${words.length} words`);
     return { projectId, wordCount: words.length };
   } catch (error) {
+    await cleanup(localVideo, ...chunkFiles);
     await setJobStatus(jobRowId, "failed", error.message);
     await setProjectStatus(projectId, "failed", error.message);
     throw error;
