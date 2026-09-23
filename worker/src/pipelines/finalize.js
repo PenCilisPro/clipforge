@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
-import { ensureTmpDir, tmpPath, cleanup } from "../lib/ffmpeg.js";
+import { ensureTmpDir, tmpPath, cleanup, generateThumbnail } from "../lib/ffmpeg.js";
 import { downloadRenderedClip } from "../lib/shotstack.js";
 import { streamConfigured, uploadToStream, deleteStreamVideo } from "../lib/stream.js";
 
@@ -36,6 +36,16 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
 
   const storagePath = `${clip.user_id}/${clipId}.mp4`;
   await r2UploadFile(`clips/${storagePath}`, localFinal, "video/mp4");
+  const thumbnailPath = `${clip.user_id}/${clipId}.jpg`;
+  const localThumbnail = tmpPath(`thumb-${clipId}.jpg`);
+  let savedThumbnailPath = null;
+  try {
+    await generateThumbnail(localFinal, localThumbnail, 1);
+    await r2UploadFile(`assets/${thumbnailPath}`, localThumbnail, "image/jpeg");
+    savedThumbnailPath = thumbnailPath;
+  } catch (err) {
+    console.warn(`[finalize] thumbnail generation failed for clip ${clipId}: ${err.message}`);
+  }
 
   // Mirror the finished MP4 into Cloudflare Stream for playback delivery
   // (adaptive HLS + CDN MP4 in the clip editor). R2 stays the source of
@@ -66,6 +76,7 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
 
   await supabaseAdmin.from("clips").update({
     storage_path: storagePath,
+    thumbnail_path: savedThumbnailPath,
     status: "ready",
     error_message: null,
     // stream_uid=null marks "no mirror yet"; the backend lazily flips
@@ -73,12 +84,11 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
     stream_uid: streamUid,
     stream_ready: false,
   }).eq("id", clipId);
-  await cleanup(localFinal);
+  await cleanup(localFinal, localThumbnail);
 
-  // The raw intermediate clip (`raw/<clipId>.mp4`) only exists so Shotstack
-  // can fetch it during submission — the render is done now, and re-renders
-  // re-trim from the source video, so the raw file is dead weight. Removing
-  // it roughly halves per-clip storage. Best-effort.
+  // Older worker versions stored an intermediate raw clip for Shotstack.
+  // Remove any such legacy object now that re-renders trim the source in
+  // Shotstack directly. Best-effort.
   const { data: rawClip } = await supabaseAdmin
     .from("clips")
     .select("raw_clip_path")

@@ -24,7 +24,8 @@ const BASE_URL = () =>
  * word accented (word-sync highlight); 250+ clips validated on stage.
  */
 export function buildEditJson({
-  rawClipUrl,
+  sourceVideoUrl,
+  sourceTrimSeconds = 0,
   durationSeconds,
   watermarkUrl,
   brollClips = [],
@@ -45,7 +46,8 @@ export function buildEditJson({
       {
         asset: {
           type: "video",
-          src: rawClipUrl,
+          src: sourceVideoUrl,
+          trim: sourceTrimSeconds,
           volume: 1,
         },
         start: 0,

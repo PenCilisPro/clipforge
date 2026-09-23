@@ -27,12 +27,9 @@ export const env = {
   streamSigningKey: process.env.CLOUDFLARE_STREAM_SIGNING_KEY,
   streamSigningToken: process.env.CLOUDFLARE_STREAM_SIGNING_TOKEN,
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
-  // Each render decodes the source with ffmpeg (~400MB+ RSS for 4K) inside a
-  // container that also runs the API and redis — two concurrent renders
-  // OOM-kill small plans. On nf-compute-10 (1GB) the deployment plan, a
-  // WORKER_CONCURRENCY=2 override caused a crash loop where recovery.js
-  // re-enqueued the same clips every restart. Clamp to 1 until the plan is
-  // upgraded.
+  // Keep pipeline jobs serial on the constrained service. Transcription and
+  // poster extraction use FFmpeg; video clipping and final rendering happen
+  // remotely in Shotstack, so concurrent FFmpeg work is unnecessary here.
   concurrency: Math.min(Number(process.env.WORKER_CONCURRENCY ?? 1), 1),
   maxClips: Number(process.env.MAX_CLIPS_PER_VIDEO ?? 6),
   sttLanguage: process.env.STT_LANGUAGE_CODE ?? "en-US",

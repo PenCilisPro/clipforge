@@ -1,17 +1,9 @@
 import { supabaseAdmin } from "../lib/supabase.js";
-import { r2Key, upload as r2Upload, uploadFile as r2UploadFile, presignGet } from "../lib/r2.js";
+import { r2Key, upload as r2Upload, presignGet, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
-import {
-  ensureTmpDir,
-  tmpPath,
-  cleanup,
-  trimSegment,
-  generateThumbnail,
-} from "../lib/ffmpeg.js";
 import { buildCaptionsForClip, cuesToSrt, parseSrt, attachWordTimings } from "../lib/srt.js";
 import { buildEditJson, submitRender } from "../lib/shotstack.js";
 import { planBroll, brollConfigured, isTrustedStockUrl } from "../lib/broll.js";
-import { fetchSourceVideo } from "../lib/source.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
@@ -22,12 +14,11 @@ async function signedSourceUrl(bucket, path) {
 
 /**
  * Stage 4 — render (per clip).
- * 1. Pull source video from storage, trim the segment with FFmpeg
- * 2. Generate a vertical thumbnail
- * 3. Upload raw clip / thumbnail / SRT captions
- * 4. Build the Shotstack Edit JSON (9:16 crop + caption track) and submit the
+ * 1. Give Shotstack a signed source URL and trim point (no local video encode)
+ * 2. Upload SRT captions
+ * 3. Build the Shotstack Edit JSON (9:16 crop + caption track) and submit the
  *    render with a completion callback URL
- * 5. The callback hits the backend, which enqueues the finalize stage to
+ * 4. The callback hits the backend, which enqueues the finalize stage to
  *    download and store the finished MP4 (callback-only completion).
  */
 export async function processRender(job) {
@@ -52,7 +43,6 @@ export async function processRender(job) {
 
     await setClipStatus(clipId, { status: "rendering" });
     await setProjectStatus(projectId, "processing");
-    await ensureTmpDir();
     const log = (msg) => console.log(`[render ${clipId}] ${msg}`);
     log(`started — source ${project.original_video_path}`);
 
@@ -63,23 +53,12 @@ export async function processRender(job) {
       return { clipId, skipped: true };
     }
 
-    // 1. Source video → local. Fetched part-by-part and written to disk —
-    // buffering the whole file in the Node heap OOM-kills small containers
-    // before ffmpeg even starts. Split uploads are reassembled on the fly.
-    const localSource = tmpPath(`source-${projectId}.mp4`);
-    await fetchSourceVideo(project, localSource);
-    log("source video downloaded");
-
+    if (!project.original_video_path?.startsWith(`${project.user_id}/`)) {
+      throw new Error("Source video path does not belong to the project owner");
+    }
     const start = Number(clip.start_time);
     const duration = Math.max(3, Number(clip.end_time) - start);
-
-    // 2. Trim + thumbnail
-    const localRawClip = tmpPath(`raw-${clipId}.mp4`);
-    await trimSegment(localSource, localRawClip, start, duration);
-
-    const localThumb = tmpPath(`thumb-${clipId}.jpg`);
-    await generateThumbnail(localRawClip, localThumb, Math.min(1, duration / 2));
-    log("trim + thumbnail done");
+    const sourceVideoUrl = await signedSourceUrl("source-videos", project.original_video_path);
 
     // 3. Captions — manual edits from the clip editor win; otherwise
     // regenerate from word-level timestamps, shifted to clip-local time.
@@ -137,25 +116,11 @@ export async function processRender(job) {
       });
     }
 
-    // 4. Uploads
-    const rawPath = `${project.user_id}/raw/${clipId}.mp4`;
-    const thumbPath = `${project.user_id}/${clipId}.jpg`;
+    // Keep the large source in R2; Shotstack trims it remotely so worker CPU,
+    // RAM, and disk use do not scale with source size or clip count.
     const srtPath = `${project.user_id}/srt/${clipId}.srt`;
-
-    // Streamed from disk — readFile'ing the raw clip spikes the heap by its
-    // full size and can OOM the container mid-render.
-    await r2UploadFile(r2Key("clips", rawPath), localRawClip, "video/mp4");
-    await r2UploadFile(r2Key("assets", thumbPath), localThumb, "image/jpeg");
     await r2Upload(r2Key("clips", srtPath), Buffer.from(srtText, "utf8"), "application/x-subrip");
-    log("uploads done");
-
-    await supabaseAdmin
-      .from("clips")
-      .update({ raw_clip_path: rawPath, thumbnail_path: thumbPath, srt_path: srtPath })
-      .eq("id", clipId);
-
-    // 5. Shotstack Edit JSON
-    const rawClipUrl = await signedSourceUrl("clips", rawPath);
+    log("captions uploaded");
 
     // Music: a Jamendo URL is fetched directly; an uploaded MP3 is signed —
     // but only if it lives in the project owner's own uploads folder.
@@ -170,7 +135,8 @@ export async function processRender(job) {
 
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;
     const editJson = buildEditJson({
-      rawClipUrl,
+      sourceVideoUrl,
+      sourceTrimSeconds: start,
       durationSeconds: duration,
       watermarkUrl,
       brollClips,
@@ -205,12 +171,17 @@ export async function processRender(job) {
       .from("clips")
       .update({
         shotstack_render_id: renderId,
+        raw_clip_path: null,
+        thumbnail_path: null,
+        srt_path: srtPath,
         status: "rendering",
         render_submitted_at: new Date().toISOString(),
       })
       .eq("id", clipId);
 
-    await cleanup(localSource, localRawClip, localThumb);
+    if (clip.raw_clip_path?.startsWith(`${project.user_id}/`)) {
+      await r2Remove([r2Key("clips", clip.raw_clip_path)]).catch(() => {});
+    }
 
     // 6. Done from the worker's perspective — completion arrives via the
     // Shotstack webhook (backend /webhooks/shotstack), which enqueues the

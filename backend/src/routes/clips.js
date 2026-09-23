@@ -485,13 +485,13 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
     if (clipError || !clip) {
       return res.status(404).json({ error: "Clip not found" });
     }
-    // Failed clips may lack a raw trim (e.g. the trim itself OOM-killed) —
-    // the render stage re-trims from the source, so they can retry safely.
-    const canRetry = Boolean(clip.raw_clip_path) || clip.status === "failed";
+    // Shotstack now trims directly from the stored project source, so ready
+    // and failed clips can be regenerated without a temporary raw-clip file.
+    const canRetry = clip.status === "ready" || clip.status === "failed";
     if (!canRetry) {
       return res
         .status(409)
-        .json({ error: "Raw clip is not available yet — wait for the first render." });
+        .json({ error: "Wait for the first render to finish before regenerating this clip." });
     }
 
     const { data: updated, error } = await supabaseAdmin

@@ -37,6 +37,7 @@ export function r2Key(bucket, path) {
 // awaiting promise (and a worker slot) forever. Generous: source videos are
 // large, but never legitimately minutes-silent.
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const LARGE_TRANSFER_TIMEOUT_MS = 30 * 60 * 1000;
 
 export async function upload(key, body, contentType) {
   await client.send(
@@ -46,14 +47,14 @@ export async function upload(key, body, contentType) {
       Body: body,
       ContentType: contentType,
     }),
-    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+    { abortSignal: AbortSignal.timeout(LARGE_TRANSFER_TIMEOUT_MS) }
   );
 }
 
 /**
  * Upload straight from a file on disk. Reading the whole video into the heap
- * first (fs.readFile → Buffer) spikes RSS by the file size and OOM-kills
- * small containers while ffmpeg is trying to allocate its own buffers.
+ * first (fs.readFile → Buffer) spikes RSS by the file size. Keep transfers
+ * on a file stream so source and output size do not become Node heap size.
  */
 export async function uploadFile(key, filePath, contentType) {
   const { createReadStream } = await import("node:fs");
@@ -67,7 +68,7 @@ export async function uploadFile(key, filePath, contentType) {
       ContentLength: size,
       ContentType: contentType,
     }),
-    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+    { abortSignal: AbortSignal.timeout(LARGE_TRANSFER_TIMEOUT_MS) }
   );
 }
 

@@ -36,7 +36,9 @@ export function runFfmpeg(args) {
       { stdio: ["ignore", "ignore", "pipe"] }
     );
     let stderr = "";
-    proc.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+    proc.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-8000);
+    });
     const timer = setTimeout(() => {
       proc.kill("SIGKILL");
       reject(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60000)} min: ${stderr.slice(-400)}`));
@@ -74,9 +76,11 @@ export function probeStreams(filePath) {
   });
 }
 
-/** Extract one bounded mono 16 kHz WAV segment for Speech-to-Text. */
+/** Extract mono 16 kHz WAV for Speech-to-Text:
+ *   ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 audio.wav
+ */
 export async function extractAudio(inputPath, outputPath, startSeconds = 0, durationSeconds = null) {
-  const args = ["-threads", "1"];
+  const args = ["-threads", "1", "-filter_threads", "1"];
   if (startSeconds > 0) args.push("-ss", String(startSeconds));
   args.push("-i", inputPath);
   if (durationSeconds != null) args.push("-t", String(durationSeconds));
@@ -153,11 +157,14 @@ export async function trimSegment(inputPath, outputPath, startSeconds, durationS
 /** Grab a vertical thumbnail from a clip. */
 export async function generateThumbnail(inputPath, outputPath, atSeconds = 1) {
   return runFfmpeg([
+    "-threads", "1",
+    "-filter_threads", "1",
     "-ss", String(Math.max(0, atSeconds)),
     "-i", inputPath,
     "-frames:v", "1",
     "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
     "-q:v", "3",
+    "-threads", "1",
     outputPath,
   ]);
 }

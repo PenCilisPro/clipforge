@@ -35,10 +35,12 @@ security rules ([`firestore.rules`](firestore.rules)) replacing RLS.
 ### Pipeline (per project)
 
 1. **download** — RapidAPI downloader fetches the source URL → stored in the R2 `source-videos/` prefix (uploads skip this stage)
-2. **transcribe** — FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (`enableWordTimeOffsets`) → word-level transcript saved + credits deducted
+2. **transcribe** — large browser uploads are joined once into a single streamed R2 source; FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (enableWordTimeOffsets) → word-level transcript saved + credits deducted
 3. **analyze** — z.ai (Zhipu GLM, OpenAI-compatible API) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` doc per suggestion
-4. **render** (per clip) — FFmpeg trims the segment + thumbnail → raw clip/SRT uploaded to R2 → Shotstack Edit JSON (1080×1920 `fit: crop`, caption track with `#FF5D1C` word highlight) → submitted with a webhook callback (`SHOTSTACK_WEBHOOK_URL` is required — the worker never polls)
-5. **finalize** — Shotstack calls the backend's secret-verified webhook → finished MP4 is re-uploaded from Shotstack's CDN into R2 for permanent ownership → clip `status=ready`. The MP4 is also mirrored into **Cloudflare Stream** (optional) so the clip editor plays from Cloudflare's CDN; without Stream the editor falls back to R2 presigned playback.
+4. **render** (per clip) — the worker gives Shotstack a signed R2 source URL and trim offset; Shotstack cuts and renders the 1080×1920 clip in its cloud with the caption track. No full source download, local video re-encode, or temporary raw clip upload is needed for each clip. Completion uses the required webhook (SHOTSTACK_WEBHOOK_URL).
+5. **finalize** — the backend verifies the Shotstack callback; the worker streams the finished MP4 from Shotstack into R2 and creates its poster from the final output. The MP4 is optionally mirrored to Cloudflare Stream for playback.
+
+Large uploads go directly from the browser to R2 in 40 MB pieces; the API only signs each request. The worker uses one pipeline job at a time, single-threaded FFmpeg audio and thumbnail operations, and 128 MB Node heap caps for each Node process. This targets a 0.2 vCPU / 512 MB combined API/worker service, with lower throughput and longer queues at that CPU allocation. Transcription needs temporary disk space at least as large as the source file. Shotstack documents a 5 GB maximum per source file, so a 920 MB file is within its limit.
 
 Scheduling: "Schedule" creates a `scheduled_posts` doc + a delayed BullMQ job; when it fires the worker uploads the clip via YouTube Data API / Meta Graph API / TikTok Content Posting API and marks the post `published` or `failed`.
 
@@ -126,7 +128,7 @@ Create the services in the `official-clipforge` Northflank project from this rep
 | Service | Root directory | Notes |
 |---|---|---|
 | `clipforge-web` | `frontend` | Build args = the `NEXT_PUBLIC_*` vars (inlined at build time) |
-| `clipforge-api` | `backend` | Single image hosts API + worker + bundled redis; needs a public port for 4000 (OAuth callbacks + Shotstack webhook) |
+| `clipforge-api` | `backend` | Combined API + worker + bundled Redis; public port 4000 for OAuth callbacks and Shotstack webhooks. Set the service to 0.2 vCPU / 512 MB RAM and keep one replica for the constrained profile.
 | Redis addon | — | Northflank Redis addon (or Upstash) → set `REDIS_URL` on the api service |
 
 Environment variables: create a **Secret Group** in the project with the vars from each `.env.example`, link it to the services, plus cross-links:

@@ -32,15 +32,19 @@ export async function publishToYouTube({ accessToken, caption, videoUrl }) {
   // 2. Fetch the clip bytes (from Supabase Storage signed URL) and PUT them
   const videoRes = await fetch(videoUrl);
   if (!videoRes.ok) throw new Error(`Could not read clip from storage (${videoRes.status})`);
-  const videoBuffer = Buffer.from(await videoRes.arrayBuffer());
+  const contentLength = videoRes.headers.get("content-length");
+  if (!contentLength || !videoRes.body) {
+    throw new Error("Clip storage response is missing a stream or Content-Length");
+  }
 
   const uploadRes = await fetch(uploadUrl, {
     method: "PUT",
     headers: {
       "Content-Type": "video/mp4",
-      "Content-Length": String(videoBuffer.length),
+      "Content-Length": contentLength,
     },
-    body: videoBuffer,
+    body: videoRes.body,
+    duplex: "half",
   });
   if (!uploadRes.ok) {
     throw new Error(`YouTube upload failed (${uploadRes.status}): ${await uploadRes.text()}`);

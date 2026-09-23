@@ -21,5 +21,8 @@ ENV NEXT_PUBLIC_FIREBASE_API_KEY=$NEXT_PUBLIC_FIREBASE_API_KEY \
     NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_R2_PUBLIC_BASE_URL=$NEXT_PUBLIC_R2_PUBLIC_BASE_URL
 RUN npm run build
+# Bound the production server heap for the 512 MB web-service target. Set this
+# after the build so Next.js retains enough memory for compilation.
+ENV NODE_OPTIONS=--max-old-space-size=256
 EXPOSE 3000
 CMD ["npx", "next", "start", "-p", "3000"]

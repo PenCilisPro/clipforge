@@ -3,10 +3,13 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, probeStreams } from "../lib/ffmpeg.js";
-import { fetchSourceVideo } from "../lib/source.js";
+import { fetchSourceVideo, isSplitSource, sourceStoragePaths } from "../lib/source.js";
+import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { env } from "../lib/env.js";
 
-// The Google speech SDK is heavy; load it only when transcription is needed.
+// The Google speech SDK is heavy; load it only when a transcription job
+// needs it so the long-lived worker keeps more headroom inside the 512 MB
+// service while it handles queue and render-completion jobs.
 let speechClient = null;
 
 function googleAuthOptions() {
@@ -49,8 +52,25 @@ export async function processTranscribe(job) {
     }
 
     await ensureTmpDir();
+
+    // 1. Pull source video out of storage (reassembles split uploads)
     localVideo = tmpPath(`source-${projectId}.mp4`);
     await fetchSourceVideo(project, localVideo);
+    if (isSplitSource(project.original_video_path)) {
+      const previousPath = project.original_video_path;
+      const canonicalPath = `${project.user_id}/${projectId}.mp4`;
+      await r2UploadFile(`source-videos/${canonicalPath}`, localVideo, "video/mp4");
+      const { error: pathError } = await supabaseAdmin
+        .from("projects")
+        .update({ original_video_path: canonicalPath })
+        .eq("id", projectId);
+      if (pathError) throw pathError;
+      project.original_video_path = canonicalPath;
+      const oldPaths = await sourceStoragePaths(previousPath);
+      await r2Remove(oldPaths.map((sourcePath) => `source-videos/${sourcePath}`)).catch((err) => {
+        console.warn(`[transcribe] could not remove split source parts: ${err.message}`);
+      });
+    }
 
     const hasAudio = (await probeStreams(localVideo).catch(() => [])).some(
       (stream) => stream.codec_type === "audio"
@@ -68,8 +88,9 @@ export async function processTranscribe(job) {
     if (!durationSeconds || !Number.isFinite(durationSeconds)) {
       throw new Error("Could not determine the source video duration");
     }
-
-    if (!job.attemptsMade) {
+    // Credits are per processed video, not per retry — only the first
+    // attempt pays, otherwise each failed retry burns more minutes.
+    if (durationSeconds && !job.attemptsMade) {
       await supabaseAdmin
         .from("projects")
         .update({ duration_seconds: durationSeconds })
@@ -77,6 +98,10 @@ export async function processTranscribe(job) {
       await deductCredits(project.user_id, durationSeconds);
     }
 
+    // 2. Extract short audio segments and transcribe them one at a time.
+    // A full-length PCM WAV takes ~115 MB per hour on disk, and putting that
+    // audio plus base64 payload and concurrent STT requests in RAM can exceed
+    // Northflank's 512 MB limit. Keep at most one 55-second payload resident.
     const config = {
       encoding: "LINEAR16",
       sampleRateHertz: 16000,
@@ -97,7 +122,6 @@ export async function processTranscribe(job) {
     const transcriptParts = [];
     const client = await getSpeechClient();
     let chunkIndex = 0;
-
     for (let start = 0; start < durationSeconds; start += chunkSeconds) {
       const chunkPath = tmpPath(`audio-${projectId}-${start}.wav`);
       chunkFiles.push(chunkPath);
@@ -115,7 +139,6 @@ export async function processTranscribe(job) {
         });
         audioBuffer.fill(0);
         const [response] = await operation.promise();
-
         for (const result of response.results ?? []) {
           const alternative = result.alternatives?.[0];
           if (!alternative) continue;
@@ -135,7 +158,6 @@ export async function processTranscribe(job) {
         chunkFiles.pop();
         throw error;
       }
-
       chunkIndex++;
       job.log(
         `Transcribed segment ${chunkIndex} (${Math.min(start + chunkSeconds, durationSeconds).toFixed(0)} / ${durationSeconds.toFixed(0)}s)`
@@ -169,6 +191,7 @@ export async function processTranscribe(job) {
     job.log(`Transcribed ${words.length} words`);
     return { projectId, wordCount: words.length };
   } catch (error) {
+    // Clean partial media even if download, extraction, or STT fails.
     await cleanup(localVideo, ...chunkFiles);
     await setJobStatus(jobRowId, "failed", error.message);
     await setProjectStatus(projectId, "failed", error.message);
