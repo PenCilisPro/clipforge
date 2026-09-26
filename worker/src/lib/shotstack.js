@@ -168,6 +168,12 @@ export function buildEditJson({
 
 const RENDER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
+// Shotstack hosts finished renders on Backblaze B2
+// (https://f002.backblazeb2.com/file/shotstack-output/...) rather than a
+// shotstack.* domain, so the B2 host is trusted only on their output paths.
+const TRUSTED_B2_HOST_RE = /^f\d{3}\.backblazeb2\.com$/i;
+const SHOTSTACK_B2_PATH_RE = /^\/file\/shotstack-/i;
+
 /**
  * Render outputs may only be pulled from Shotstack-controlled hosts.
  * Used on every URL before the worker downloads a render (the webhook path
@@ -180,8 +186,12 @@ export function assertTrustedRenderUrl(rawUrl) {
   } catch {
     throw new Error("Shotstack render URL is malformed");
   }
-  if (parsed.protocol !== "https:" || !/(^|\.)shotstack/i.test(parsed.hostname)) {
-    throw new Error(`Refusing to download render from untrusted host: ${parsed.hostname}`);
+  const host = parsed.hostname;
+  const trusted =
+    /(^|\.)shotstack/i.test(host) ||
+    (TRUSTED_B2_HOST_RE.test(host) && SHOTSTACK_B2_PATH_RE.test(parsed.pathname));
+  if (parsed.protocol !== "https:" || !trusted) {
+    throw new Error(`Refusing to download render from untrusted host: ${host}`);
   }
   return parsed.toString();
 }

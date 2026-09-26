@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { apiFetch } from "@/lib/api";
+import { refreshBranding } from "@/lib/branding";
 import { publicAssetUrl } from "@/lib/storage";
 import { isAdminEmail } from "@/lib/admin";
 import { PLAN_ICON_KEYS, planIcon } from "@/lib/plan-icons";
@@ -364,7 +365,8 @@ export default function AdminPage() {
         body: { filename: file.name, data_base64 },
       });
       setLogoUrl(url);
-      toast.success("Logo updated — applied across the app (favicon may need a refresh)");
+      await refreshBranding();
+      toast.success("Logo updated — applied across the app and the browser tab");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to upload logo");
     } finally {
@@ -379,6 +381,7 @@ export default function AdminPage() {
     try {
       await apiFetch("/api/admin/branding", { method: "DELETE" });
       setLogoUrl(null);
+      await refreshBranding();
       toast.success("Reverted to the default ClipForge logo");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to reset logo");

@@ -20,6 +20,7 @@ router.get("/api/branding", async (req, res) => {
     // Fall back to the built-in defaults on the landing page.
   }
 
+  res.set("Cache-Control", "no-store");
   res.json({
     logoUrl: map.get("logo_url") ?? null,
     faviconUrl: map.get("favicon_url") ?? null,
