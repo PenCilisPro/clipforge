@@ -1,5 +1,5 @@
 import { env } from "./env.js";
-import { captionFont } from "./captions.js";
+import { captionFont, RENDER_STYLES } from "./captions.js";
 
 const API_BASE = "https://api.creatomate.com/v2";
 const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
@@ -26,123 +26,15 @@ const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
  * active word accented, same scheme as the Shotstack HTML clips.
  */
 
-// Visual translation of the caption templates in captions.js. The HTML
-// templates were tuned for Shotstack's stage CSS subset; these carry the same
-// look via Creatomate text properties (px sizes on the 1080-wide canvas,
-// background boxes, uppercase, %-letter-spacing).
-const CTM_STYLES = {
-  classic: { fontSize: 64, color: "#ffffff", accent: "color", accentColor: "#ff5d1c" },
-  karaoke: {
-    fontSize: 60,
-    color: "#ffffff",
-    accent: "dim",
-    background: "rgba(255,93,28,0.92)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "2%",
-  },
-  "bold-pop": {
-    fontSize: 68,
-    color: "#ffffff",
-    accent: "color",
-    accentColor: "#ff5d1c",
-    uppercase: true,
-    letterSpacingPct: "1.5%",
-    lineHeightPct: "110%",
-    background: "rgba(0,0,0,0.78)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "1.5%",
-  },
-  neon: {
-    fontSize: 60,
-    color: "#67e8f9",
-    accent: "color",
-    accentColor: "#ffffff",
-    letterSpacingPct: "3.3%",
-    background: "rgba(3,28,41,0.85)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "2%",
-  },
-  meme: {
-    fontSize: 64,
-    color: "#ffffff",
-    accent: "color",
-    accentColor: "#ff5d1c",
-    uppercase: true,
-    background: "#000000",
-    backgroundXPct: "2.5%",
-    backgroundYPct: "4.5%",
-    radiusPct: "1.5%",
-  },
-  "green-screen": {
-    fontSize: 64,
-    color: "#ffffff",
-    accent: "dim",
-    uppercase: true,
-    background: "rgba(22,163,74,0.95)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "1.5%",
-  },
-  highlighter: {
-    fontSize: 60,
-    color: "#111827",
-    accent: "dim",
-    lineHeightPct: "120%",
-    background: "#facc15",
-    backgroundXPct: "2.5%",
-    backgroundYPct: "4.5%",
-    radiusPct: "1.5%",
-  },
-  ocean: {
-    fontSize: 62,
-    color: "#e0f2fe",
-    accent: "dim",
-    letterSpacingPct: "1.6%",
-    background: "rgba(29,78,216,0.85)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "2%",
-  },
-  bubblegum: {
-    fontSize: 62,
-    color: "#ffffff",
-    accent: "dim",
-    background: "rgba(236,72,153,0.92)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "2%",
-  },
-  royal: {
-    fontSize: 62,
-    color: "#ffffff",
-    accent: "dim",
-    uppercase: true,
-    letterSpacingPct: "1.6%",
-    background: "rgba(124,58,237,0.9)",
-    backgroundXPct: "3%",
-    backgroundYPct: "5%",
-    radiusPct: "2%",
-  },
-  "minimal-mono": {
-    fontSize: 56,
-    color: "#e5e7eb",
-    accent: "color",
-    accentColor: "#ff5d1c",
-    uppercase: true,
-    letterSpacingPct: "5.4%",
-    lineHeightPct: "120%",
-  },
-};
+// Visual translation of the caption templates in captions.js lives in
+// RENDER_STYLES there (shared with the local ffmpeg provider).
 
 const MAX_WORD_ELEMENTS = 400;
 const CAPTION_TRACK = 4;
 const FAILED_STATUSES = new Set(["failed", "cancelled", "canceled"]);
 
 function captionStyleDef(style) {
-  return CTM_STYLES[style] ?? CTM_STYLES.classic;
+  return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
 }
 
 /**

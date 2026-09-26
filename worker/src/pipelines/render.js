@@ -5,6 +5,7 @@ import { buildCaptionsForClip, cuesToSrt, parseSrt, attachWordTimings } from "..
 import { buildRenderSpec, submitRender, renderProviderName } from "../lib/renderProvider.js";
 import { planBroll, brollConfigured, isTrustedStockUrl } from "../lib/broll.js";
 import { env } from "../lib/env.js";
+import { finalizeClip } from "./finalize.js";
 
 async function signedSourceUrl(bucket, path) {
   // Long-lived signed URLs — the render provider fetches them within
@@ -135,7 +136,7 @@ export async function processRender(job) {
     }
 
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;
-    const renderSpec = buildRenderSpec({
+    const renderSpecParams = {
       sourceVideoUrl,
       sourceTrimSeconds: start,
       durationSeconds: duration,
@@ -152,21 +153,32 @@ export async function processRender(job) {
       captionStrokeSize: Number(clip.caption_stroke_size) || 4,
       captionShadowColor: clip.caption_shadow_color ?? "#000000",
       captionShadowSize: Number(clip.caption_shadow_size) || 6,
-    });
+    };
 
-    // Webhook completion is mandatory: without it the render could never be
-    // finalized, so refuse to submit rather than orphan the clip.
-    if (!env.renderWebhookUrl) {
-      throw new Error(
-        "RENDER_WEBHOOK_URL is not configured — set it to https://<backend>/webhooks/render so renders can complete"
-      );
-    }
-    const webhookUrl = `${env.renderWebhookUrl}${
-      env.renderWebhookSecret ? `?secret=${encodeURIComponent(env.renderWebhookSecret)}` : ""
-    }`;
-
+    // Webhook completion is mandatory for the cloud providers: without it the
+    // render could never be finalized, so refuse to submit rather than orphan
+    // the clip. The local provider renders inline and finalizes below, so it
+    // needs no webhook at all.
     const provider = renderProviderName();
-    const renderId = await submitRender(renderSpec, webhookUrl);
+    let webhookUrl = null;
+    if (provider !== "local") {
+      if (!env.renderWebhookUrl) {
+        throw new Error(
+          "RENDER_WEBHOOK_URL is not configured — set it to https://<backend>/webhooks/render so renders can complete"
+        );
+      }
+      webhookUrl = `${env.renderWebhookUrl}${
+        env.renderWebhookSecret ? `?secret=${encodeURIComponent(env.renderWebhookSecret)}` : ""
+      }`;
+    }
+
+    // renderSpec carries clipId for the local provider; the cloud providers
+    // ignore the extra param (their spec builders pick only known keys).
+    const renderId = await submitRender(
+      buildRenderSpec({ ...renderSpecParams, clipId }),
+      webhookUrl,
+      { clipId }
+    );
     log(`${provider} render ${renderId} submitted`);
 
     await supabaseAdmin
@@ -190,7 +202,18 @@ export async function processRender(job) {
       await r2Remove([r2Key("clips", clip.raw_clip_path)]).catch(() => {});
     }
 
-    // 6. Done from the worker's perspective — completion arrives via the
+    // 6. Local renders finished inside submitRender — finalize right here so
+    // the clip goes straight to "ready" (no webhook, no separate job).
+    if (provider === "local") {
+      log("local render finished — finalizing");
+      return {
+        clipId,
+        renderId,
+        ...(await finalizeClip({ projectId, clipId, renderUrl: `local:${renderId}`, jobRowId })),
+      };
+    }
+
+    // Done from the worker's perspective — completion arrives via the
     // render webhook (backend /webhooks/render), which enqueues the
     // finalize stage to store the finished MP4.
     await setJobStatus(jobRowId, "completed", null);

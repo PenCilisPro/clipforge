@@ -53,10 +53,11 @@ export const env = {
   pexelsApiKey: process.env.PEXELS_API_KEY,
   pixabayApiKey: process.env.PIXABAY_API_KEY,
 
-  // Remote render provider. RENDER_PROVIDER pins one ("creatomate" |
-  // "shotstack"); unset auto-detects from the configured API key, preferring
-  // Creatomate (watermark-free on every plan — Shotstack's stage environment
-  // burns a watermark in and is only kept as a legacy fallback).
+  // Render provider. RENDER_PROVIDER pins one ("creatomate" | "shotstack" |
+  // "local"); unset auto-detects — Creatomate when its key is set (watermark-
+  // free on every plan), else Shotstack (stage burns a watermark; legacy
+  // fallback only), else local ffmpeg on this machine (no usage limits, no
+  // watermark, uses worker CPU).
   renderProvider: process.env.RENDER_PROVIDER,
   creatomateApiKey: process.env.CREATOMATE_API_KEY,
   // Legacy Shotstack client (kept for in-flight renders from before a swap).
@@ -115,13 +116,27 @@ export function warnMissing() {
       names: ["PEXELS_API_KEY", "PIXABAY_API_KEY"],
       consequence: "AI B-roll insertion is disabled (clips render talking-head only)",
     },
-    { names: ["CREATOMATE_API_KEY", "SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
     {
-      names: ["RENDER_WEBHOOK_URL", "SHOTSTACK_WEBHOOK_URL"],
-      consequence: "renders will submit but never complete (webhook-only design)",
+      names: ["ENCRYPTION_KEY"],
+      consequence: "social publishing will fail",
     },
-    { names: ["ENCRYPTION_KEY"], consequence: "social publishing will fail" },
   ];
+  // Cloud-render warnings only apply when a cloud provider is actually in
+  // play — RENDER_PROVIDER=local (or no keys configured) renders with ffmpeg
+  // on this machine and needs neither API keys nor a webhook.
+  const provider = String(process.env.RENDER_PROVIDER ?? "").trim().toLowerCase() ||
+    (process.env.CREATOMATE_API_KEY ? "creatomate" : process.env.SHOTSTACK_API_KEY ? "shotstack" : "local");
+  if (provider !== "local") {
+    optionalWarnings.push(
+      { names: ["CREATOMATE_API_KEY", "SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
+      {
+        names: ["RENDER_WEBHOOK_URL", "SHOTSTACK_WEBHOOK_URL"],
+        consequence: "renders will submit but never complete (webhook-only design)",
+      }
+    );
+  } else {
+    console.info("[worker] rendering locally with ffmpeg — no usage limits, no watermark");
+  }
   for (const { names, consequence } of optionalWarnings) {
     const missing = names.every((n) => !process.env[n]);
     if (missing) console.warn(`[worker] ${names.join("|")} not set → ${consequence}.`);

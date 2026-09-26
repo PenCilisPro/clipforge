@@ -28,12 +28,12 @@ export function tmpPath(name) {
 const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 15 * 60 * 1000;
 
 /** Run a raw ffmpeg command (spawn) and reject on non-zero exit. */
-export function runFfmpeg(args) {
+export function runFfmpeg(args, { cwd } = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       FFMPEG_PATH,
       ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", ...args],
-      { stdio: ["ignore", "ignore", "pipe"] }
+      { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) }
     );
     let stderr = "";
     proc.stderr.on("data", (chunk) => {

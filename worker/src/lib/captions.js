@@ -111,6 +111,119 @@ export function captionFont(key) {
   return CAPTION_FONTS[key] ?? CAPTION_FONTS.anton;
 }
 
+/**
+ * px geometry of the caption templates on the 1080-wide canvas, shared by the
+ * cloud renderer (Creatomate text elements) and the local ffmpeg provider
+ * (ASS styles). The HTML templates in STYLES above were tuned for Shotstack's
+ * stage CSS subset; these carry the same look.
+ */
+export const RENDER_STYLES = {
+  classic: { fontSize: 64, color: "#ffffff", accent: "color", accentColor: "#ff5d1c" },
+  karaoke: {
+    fontSize: 60,
+    color: "#ffffff",
+    accent: "dim",
+    background: "rgba(255,93,28,0.92)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "2%",
+  },
+  "bold-pop": {
+    fontSize: 68,
+    color: "#ffffff",
+    accent: "color",
+    accentColor: "#ff5d1c",
+    uppercase: true,
+    letterSpacingPct: "1.5%",
+    lineHeightPct: "110%",
+    background: "rgba(0,0,0,0.78)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "1.5%",
+  },
+  neon: {
+    fontSize: 60,
+    color: "#67e8f9",
+    accent: "color",
+    accentColor: "#ffffff",
+    letterSpacingPct: "3.3%",
+    background: "rgba(3,28,41,0.85)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "2%",
+  },
+  meme: {
+    fontSize: 64,
+    color: "#ffffff",
+    accent: "color",
+    accentColor: "#ff5d1c",
+    uppercase: true,
+    background: "#000000",
+    backgroundXPct: "2.5%",
+    backgroundYPct: "4.5%",
+    radiusPct: "1.5%",
+  },
+  "green-screen": {
+    fontSize: 64,
+    color: "#ffffff",
+    accent: "dim",
+    uppercase: true,
+    background: "rgba(22,163,74,0.95)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "1.5%",
+  },
+  highlighter: {
+    fontSize: 60,
+    color: "#111827",
+    accent: "dim",
+    lineHeightPct: "120%",
+    background: "#facc15",
+    backgroundXPct: "2.5%",
+    backgroundYPct: "4.5%",
+    radiusPct: "1.5%",
+  },
+  ocean: {
+    fontSize: 62,
+    color: "#e0f2fe",
+    accent: "dim",
+    letterSpacingPct: "1.6%",
+    background: "rgba(29,78,216,0.85)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "2%",
+  },
+  bubblegum: {
+    fontSize: 62,
+    color: "#ffffff",
+    accent: "dim",
+    background: "rgba(236,72,153,0.92)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "2%",
+  },
+  royal: {
+    fontSize: 62,
+    color: "#ffffff",
+    accent: "dim",
+    uppercase: true,
+    letterSpacingPct: "1.6%",
+    background: "rgba(124,58,237,0.9)",
+    backgroundXPct: "3%",
+    backgroundYPct: "5%",
+    radiusPct: "2%",
+  },
+  "minimal-mono": {
+    fontSize: 56,
+    color: "#e5e7eb",
+    accent: "color",
+    accentColor: "#ff5d1c",
+    uppercase: true,
+    letterSpacingPct: "5.4%",
+    lineHeightPct: "120%",
+  },
+};
+
 function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
