@@ -2,20 +2,20 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
 import { ensureTmpDir, tmpPath, cleanup, generateThumbnail } from "../lib/ffmpeg.js";
-import { downloadRenderedClip } from "../lib/shotstack.js";
+import { downloadRenderedClip } from "../lib/renderProvider.js";
 import { streamConfigured, uploadToStream, deleteStreamVideo } from "../lib/stream.js";
 
 /**
- * Idempotent finalization: download the finished render from Shotstack's CDN
- * and re-upload it to the Supabase `clips` bucket for permanent ownership.
- * Safe to run twice (webhook race with inline polling).
+ * Idempotent finalization: download the finished render from the render
+ * provider's CDN and re-upload it to the Supabase `clips` bucket for
+ * permanent ownership. Safe to run twice (webhook race with inline polling).
  */
 export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = null }) {
   if (!clipId) throw new Error("finalizeClip requires clipId");
 
   const { data: clip } = await supabaseAdmin
     .from("clips")
-    .select("id, user_id, storage_path, status")
+    .select("id, user_id, storage_path, status, render_provider")
     .eq("id", clipId)
     .single();
   if (!clip) throw new Error(`Clip ${clipId} not found`);
@@ -30,9 +30,10 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
   await ensureTmpDir();
   const localFinal = tmpPath(`final-${clipId}.mp4`);
 
-  // downloadRenderedClip host-allowlists the URL (webhook-provided, never
-  // trusted blindly) and streams the MP4 to disk.
-  await downloadRenderedClip(renderUrl, localFinal);
+  // downloadRenderedClip host-allowlists the URL per provider (webhook-
+  // provided, never trusted blindly) and streams the MP4 to disk. Dispatched
+  // by the provider recorded at submit time so legacy clips keep working.
+  await downloadRenderedClip(renderUrl, localFinal, clip.render_provider);
 
   const storagePath = `${clip.user_id}/${clipId}.mp4`;
   await r2UploadFile(`clips/${storagePath}`, localFinal, "video/mp4");
@@ -86,9 +87,9 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
   }).eq("id", clipId);
   await cleanup(localFinal, localThumbnail);
 
-  // Older worker versions stored an intermediate raw clip for Shotstack.
-  // Remove any such legacy object now that re-renders trim the source in
-  // Shotstack directly. Best-effort.
+  // Older worker versions stored an intermediate raw clip for the old render
+  // pipeline. Remove any such legacy object now that re-renders trim the
+  // source at the render provider directly. Best-effort.
   const { data: rawClip } = await supabaseAdmin
     .from("clips")
     .select("raw_clip_path")

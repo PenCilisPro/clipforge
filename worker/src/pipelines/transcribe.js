@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
-import { ensureTmpDir, tmpPath, cleanup, extractAudio, probeDurationSeconds, probeStreams } from "../lib/ffmpeg.js";
+import { ensureTmpDir, tmpPath, cleanup, extractRawPcm, probeMedia } from "../lib/ffmpeg.js";
 import { fetchSourceVideo, isSplitSource, sourceStoragePaths } from "../lib/source.js";
 import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { env } from "../lib/env.js";
@@ -31,13 +31,15 @@ async function getSpeechClient() {
 
 /**
  * Stage 2 — transcribe.
- * Processes bounded mono 16 kHz WAV chunks serially, so long sources do not
- * require a full-length PCM WAV or concurrent base64 request buffers in RAM.
+ * Extracts the audio in a single ffmpeg pass into raw mono 16 kHz PCM, then
+ * transcribes fixed 55-second byte ranges serially — one STT request at a
+ * time and at most one chunk payload in RAM, so neither CPU, memory, nor
+ * disk scale with the number of chunks.
  */
 export async function processTranscribe(job) {
   const { projectId, jobRowId } = job.data;
   let localVideo = null;
-  const chunkFiles = [];
+  let pcmFile = null;
 
   try {
     await setJobStatus(jobRowId, "active");
@@ -72,9 +74,8 @@ export async function processTranscribe(job) {
       });
     }
 
-    const hasAudio = (await probeStreams(localVideo).catch(() => [])).some(
-      (stream) => stream.codec_type === "audio"
-    );
+    const probe = await probeMedia(localVideo).catch(() => null);
+    const hasAudio = (probe?.streams ?? []).some((stream) => stream.codec_type === "audio");
     if (!hasAudio) {
       throw new Error(
         "This video has no audio track — it looks like a video-only download " +
@@ -84,7 +85,7 @@ export async function processTranscribe(job) {
     }
 
     const durationSeconds =
-      await probeDurationSeconds(localVideo).catch(() => project.duration_seconds ?? null);
+      probe && probe.duration > 0 ? probe.duration : project.duration_seconds ?? null;
     if (!durationSeconds || !Number.isFinite(durationSeconds)) {
       throw new Error("Could not determine the source video duration");
     }
@@ -98,10 +99,26 @@ export async function processTranscribe(job) {
       await deductCredits(project.user_id, durationSeconds);
     }
 
-    // 2. Extract short audio segments and transcribe them one at a time.
-    // A full-length PCM WAV takes ~115 MB per hour on disk, and putting that
-    // audio plus base64 payload and concurrent STT requests in RAM can exceed
-    // Northflank's 512 MB limit. Keep at most one 55-second payload resident.
+    // 2. Extract the audio once, then slice it in memory. A full-length PCM
+    // WAV takes ~115 MB per hour on disk, and re-running ffmpeg on a
+    // source-sized video once per 55-second chunk would saturate the
+    // constrained 0.2 vCPU service for the whole transcription. One pass
+    // writes raw mono 16 kHz PCM; each STT request then reads a fixed byte
+    // range (32 000 B/s × 55 s ≈ 1.7 MB, well under Google's 10 MiB inline
+    // and 60 s limits) through a single reused buffer.
+    pcmFile = tmpPath(`audio-${projectId}.pcm`);
+    await extractRawPcm(localVideo, pcmFile);
+    // The source is no longer needed locally — render works off the R2
+    // object — so free its disk before the long transcription loop.
+    await cleanup(localVideo);
+    localVideo = null;
+
+    const BYTES_PER_SECOND = 16000 * 2; // 16 kHz × 16-bit mono
+    const chunkSeconds = 55;
+    const chunkBytes = chunkSeconds * BYTES_PER_SECOND;
+    const { size: pcmBytes } = await fs.stat(pcmFile);
+    const chunkCount = Math.ceil(pcmBytes / chunkBytes);
+
     const config = {
       encoding: "LINEAR16",
       sampleRateHertz: 16000,
@@ -117,27 +134,19 @@ export async function processTranscribe(job) {
           ? time
           : Number(time.seconds ?? 0) + Number(time.nanos ?? 0) / 1e9;
 
-    const chunkSeconds = 55;
     const words = [];
     const transcriptParts = [];
     const client = await getSpeechClient();
-    let chunkIndex = 0;
-    for (let start = 0; start < durationSeconds; start += chunkSeconds) {
-      const chunkPath = tmpPath(`audio-${projectId}-${start}.wav`);
-      chunkFiles.push(chunkPath);
-      try {
-        await extractAudio(
-          localVideo,
-          chunkPath,
-          start,
-          Math.min(chunkSeconds, durationSeconds - start)
-        );
-        const audioBuffer = await fs.readFile(chunkPath);
+    const pcm = await fs.open(pcmFile, "r");
+    const buffer = Buffer.alloc(chunkBytes);
+    try {
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+        const start = chunkIndex * chunkSeconds;
+        const { bytesRead } = await pcm.read(buffer, 0, chunkBytes, chunkIndex * chunkBytes);
         const [operation] = await client.longRunningRecognize({
-          audio: { content: audioBuffer.toString("base64") },
+          audio: { content: buffer.subarray(0, bytesRead).toString("base64") },
           config,
         });
-        audioBuffer.fill(0);
         const [response] = await operation.promise();
         for (const result of response.results ?? []) {
           const alternative = result.alternatives?.[0];
@@ -151,18 +160,16 @@ export async function processTranscribe(job) {
             });
           }
         }
-        await cleanup(chunkPath);
-        chunkFiles.pop();
-      } catch (error) {
-        await cleanup(chunkPath);
-        chunkFiles.pop();
-        throw error;
+        job.log(
+          `Transcribed segment ${chunkIndex + 1} (${Math.min(start + chunkSeconds, durationSeconds).toFixed(0)} / ${durationSeconds.toFixed(0)}s)`
+        );
       }
-      chunkIndex++;
-      job.log(
-        `Transcribed segment ${chunkIndex} (${Math.min(start + chunkSeconds, durationSeconds).toFixed(0)} / ${durationSeconds.toFixed(0)}s)`
-      );
+    } finally {
+      await pcm.close().catch(() => {});
     }
+
+    await cleanup(pcmFile);
+    pcmFile = null;
 
     if (words.length === 0) {
       throw new Error("Transcription produced no words — is there speech in this video?");
@@ -174,9 +181,6 @@ export async function processTranscribe(job) {
       .update({ transcript_json: transcriptJson })
       .eq("id", projectId);
     if (updateError) throw updateError;
-
-    await cleanup(localVideo);
-    localVideo = null;
 
     if (project.project_mode === "transcript") {
       await setProjectStatus(projectId, "done");
@@ -192,7 +196,7 @@ export async function processTranscribe(job) {
     return { projectId, wordCount: words.length };
   } catch (error) {
     // Clean partial media even if download, extraction, or STT fails.
-    await cleanup(localVideo, ...chunkFiles);
+    await cleanup(localVideo, pcmFile);
     await setJobStatus(jobRowId, "failed", error.message);
     await setProjectStatus(projectId, "failed", error.message);
     throw error;

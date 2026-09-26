@@ -5,10 +5,11 @@ import { Readable } from "node:stream";
 /**
  * Cloudflare Stream — playback delivery layer for finalized clips.
  *
- * The render pipeline (FFmpeg + Shotstack) is unchanged; once the finished MP4
- * lands in R2 it is mirrored into Stream so the clip editor plays from
- * Cloudflare's CDN (adaptive HLS + progressive MP4) instead of R2 presigned
- * URLs. Playback URL signing lives in the backend (backend/src/lib/stream.js).
+ * The render pipeline (FFmpeg + remote render provider) is unchanged; once the
+ * finished MP4 lands in R2 it is mirrored into Stream so the clip editor plays
+ * from Cloudflare's CDN (adaptive HLS + progressive MP4) instead of R2
+ * presigned URLs. Playback URL signing lives in the backend
+ * (backend/src/lib/stream.js).
  *
  * Requires CLOUDFLARE_STREAM_API_TOKEN (a token with Stream:Edit permission)
  * and an account id (CLOUDFLARE_ACCOUNT_ID, falling back to R2_ACCOUNT_ID).

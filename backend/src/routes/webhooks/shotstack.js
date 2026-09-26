@@ -15,36 +15,60 @@ function secretMatches(provided, expected) {
 }
 
 /**
- * Shotstack render webhook.
- * Configure in the Shotstack dashboard (or per-render `webhook` field):
- *   URL:  {BACKEND_URL}/webhooks/shotstack
- * Shotstack sends the configured secret in `x-shotstack-webhook-secret`.
- * The worker also polls, so this handler is an optimization for instant UX:
- * on `done` it enqueues a finalize stage that downloads the MP4 and stores it
- * in Supabase Storage.
+ * Render webhook — provider-agnostic receiver for render completion
+ * callbacks. The worker appends the shared secret to each render's
+ * `webhook_url`/`callback` (?secret=...), which arrives here on:
+ *   /webhooks/render     (current providers, e.g. Creatomate)
+ *   /webhooks/shotstack  (legacy path kept for in-flight renders)
+ *
+ * Payloads differ slightly by provider and both are accepted:
+ *   Shotstack: { id, status: "done"|"failed", url, error: {message}|string }
+ *   Creatomate: { id, status: "succeeded"|"failed"|"cancelled", url,
+ *                 error_message: "..." }
+ *
+ * On success this enqueues a finalize stage that downloads the MP4 and
+ * stores it in R2; the worker also polls, so this handler is an
+ * optimization for instant UX, not the only completion path.
  */
-router.post("/webhooks/shotstack", async (req, res) => {
+const DONE_STATUSES = new Set(["done", "succeeded"]);
+const FAILED_STATUSES = new Set(["failed", "cancelled", "canceled"]);
+
+async function handleRenderWebhook(req, res) {
   const provided =
-    req.get("x-shotstack-webhook-secret") ?? req.query.secret ?? "";
-  if (!secretMatches(provided, env.shotstackWebhookSecret)) {
+    req.get("x-shotstack-webhook-secret") ?? req.get("x-creatomate-signature") ?? req.query.secret ?? "";
+  if (!secretMatches(provided, env.renderWebhookSecret)) {
     return res.status(401).json({ error: "Invalid webhook secret" });
   }
 
-  const { id, status, url, error: renderError } = req.body ?? {};
+  const { id, status, url } = req.body ?? {};
   if (!id) return res.status(400).json({ error: "Missing render id" });
 
-  const { data: clip } = await supabaseAdmin
+  const renderError =
+    req.body?.error_message ??
+    (typeof req.body?.error === "string" ? req.body.error : req.body?.error?.message) ??
+    null;
+
+  // New clips carry render_id; legacy Shotstack rows only have the old field.
+  let { data: clip } = await supabaseAdmin
     .from("clips")
     .select("id, project_id, user_id")
-    .eq("shotstack_render_id", id)
-    .single();
+    .eq("render_id", id)
+    .maybeSingle();
+  if (!clip) {
+    ({ data: clip } = await supabaseAdmin
+      .from("clips")
+      .select("id, project_id, user_id")
+      .eq("shotstack_render_id", id)
+      .maybeSingle());
+  }
 
   if (!clip) {
-    // Unknown render — ack so Shotstack doesn't retry forever.
+    // Unknown render — ack so the provider doesn't retry forever.
     return res.json({ ok: true, ignored: true });
   }
 
-  if (status === "done" && url) {
+  const normalized = String(status ?? "").toLowerCase();
+  if (DONE_STATUSES.has(normalized) && url) {
     await supabaseAdmin
       .from("clips")
       .update({ status: "rendering" })
@@ -56,14 +80,17 @@ router.post("/webhooks/shotstack", async (req, res) => {
       { projectId: clip.project_id, clipId: clip.id, renderUrl: url, jobRowId: null },
       { attempts: 5 }
     );
-  } else if (status === "failed") {
+  } else if (FAILED_STATUSES.has(normalized)) {
     await supabaseAdmin
       .from("clips")
-      .update({ status: "failed", error_message: renderError ?? "Shotstack render failed" })
+      .update({ status: "failed", error_message: renderError ?? "Render failed" })
       .eq("id", clip.id);
   }
 
   res.json({ ok: true });
-});
+}
+
+router.post("/webhooks/render", handleRenderWebhook);
+router.post("/webhooks/shotstack", handleRenderWebhook);
 
 export default router;

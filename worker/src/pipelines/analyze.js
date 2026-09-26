@@ -11,7 +11,7 @@ import { env } from "../lib/env.js";
  *
  * Fallback: if ZAI_API_KEY is not configured (or the provider errors), evenly
  * spaced sample clips are created so the rest of the pipeline (trim →
- * Shotstack → storage) remains testable end-to-end.
+ * render → storage) remains testable end-to-end.
  */
 /** User-chosen clip-count tier → upper bound handed to viral selection. */
 const CLIP_COUNT_MAX = { "1-5": 5, "6-10": 10, "11-15": 15 };
@@ -104,6 +104,8 @@ export async function processAnalyze(job) {
           // semantics did), so recovery.js's stranded-clip query needs these
           // to exist as explicit nulls on every clip row.
           storage_path: null,
+          render_id: null,
+          render_provider: null,
           shotstack_render_id: null,
           render_submitted_at: null,
           ...captionDefaults,

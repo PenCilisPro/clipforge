@@ -110,6 +110,9 @@ export interface Clip {
   srt_path: string | null;
   storage_path: string | null;
   thumbnail_path: string | null;
+  /** Canonical render id + provider; shotstack_render_id is the legacy mirror */
+  render_id: string | null;
+  render_provider: "creatomate" | "shotstack" | null;
   shotstack_render_id: string | null;
   status: ClipStatus;
   error_message: string | null;

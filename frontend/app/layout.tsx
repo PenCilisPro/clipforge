@@ -24,7 +24,7 @@ import { CookieConsent } from "@/components/cookie-consent";
 import { FirestoreCrashGuard } from "@/components/firestore-crash-guard";
 
 // Caption fonts — bundled so the editor/dialog previews render exactly like
-// the final Shotstack captions.
+// the final cloud-rendered captions.
 const anton = Anton({ weight: "400", subsets: ["latin"], variable: "--font-caption-anton" });
 const bebas = Bebas_Neue({ weight: "400", subsets: ["latin"], variable: "--font-caption-bebas" });
 const archivo = Archivo_Black({ weight: "400", subsets: ["latin"], variable: "--font-caption-archivo" });

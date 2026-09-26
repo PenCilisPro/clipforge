@@ -4,7 +4,7 @@ import IORedis from "ioredis";
 import { env } from "./env.js";
 import { supabaseAdmin } from "./supabase.js";
 import { insertJobRow, setJobStatus, setProjectStatus, reconcileProjectDone } from "./jobs.js";
-import { getRender } from "./shotstack.js";
+import { getRender } from "./renderProvider.js";
 
 /**
  * Queue recovery. Redis here is ephemeral (in-container, wiped on every
@@ -13,11 +13,12 @@ import { getRender } from "./shotstack.js";
  * the dashboard would spin forever. This module:
  *
  *   1. on worker startup — re-enqueues render jobs for clips that never
- *      reached Shotstack (no shotstack_render_id) and aren't already waiting
+ *      reached the render provider (no shotstack_render_id — the legacy
+ *      render-id field every clip row carries) and aren't already waiting
  *      in the queue;
  *   2. every minute — re-enqueues clips stuck that way for over 30
  *      minutes (covers a hung/dead worker tick), and fails clips whose
- *      Shotstack render was submitted but whose webhook never arrived within
+ *      render was submitted but whose webhook never arrived within
  *      2 hours, so the UI stops showing an endless spinner.
  */
 
@@ -192,7 +193,7 @@ async function failLostWebhookRenders() {
   if (!clips?.length) return;
 
   const message =
-    "Render timed out — the Shotstack webhook never arrived. Use re-render on this clip to try again.";
+    "Render timed out — the render webhook never arrived. Use re-render on this clip to try again.";
   for (const clip of clips) {
     await supabaseAdmin
       .from("clips")
@@ -205,16 +206,16 @@ async function failLostWebhookRenders() {
 }
 
 /**
- * Poll Shotstack directly for submitted renders that have been waiting more
- * than 5 minutes. The webhook remains the fast path; this guarantees a
- * finished render is still finalized (and a failed one surfaced) even when
- * the webhook never reaches the backend.
+ * Poll the render provider directly for submitted renders that have been
+ * waiting more than 5 minutes. The webhook remains the fast path; this
+ * guarantees a finished render is still finalized (and a failed one
+ * surfaced) even when the webhook never reaches the backend.
  */
 async function pollSubmittedRenders() {
   const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const { data: clips, error } = await supabaseAdmin
     .from("clips")
-    .select("id, project_id, shotstack_render_id")
+    .select("id, project_id, shotstack_render_id, render_provider")
     .eq("status", "rendering")
     .not("shotstack_render_id", "is", null)
     .is("storage_path", null)
@@ -227,7 +228,9 @@ async function pollSubmittedRenders() {
   for (const clip of clips ?? []) {
     let render;
     try {
-      render = await getRender(clip.shotstack_render_id);
+      // Dispatch by the provider recorded at submit time so clips rendered
+      // before a provider swap are still polled on the right API.
+      render = await getRender(clip.shotstack_render_id, clip.render_provider ?? "shotstack");
     } catch (err) {
       console.error(`[recovery] poll render ${clip.shotstack_render_id}:`, err.message);
       continue;
@@ -245,13 +248,13 @@ async function pollSubmittedRenders() {
         .update({
           status: "failed",
           error_message:
-            render.error?.message ?? `Shotstack render ${render.status} (found by poll)`,
+            render.error?.message ?? render.error ?? `Render ${render.status} (found by poll)`,
         })
         .eq("id", clip.id)
         .eq("status", "rendering");
       await reconcileProjectDone(clip.project_id);
     }
-    // otherwise still queued/rendering on Shotstack — nothing to do yet
+    // otherwise still queued/rendering at the provider — nothing to do yet
   }
 }
 

@@ -2,22 +2,23 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { r2Key, upload as r2Upload, presignGet, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, setClipStatus, reconcileProjectDone } from "../lib/jobs.js";
 import { buildCaptionsForClip, cuesToSrt, parseSrt, attachWordTimings } from "../lib/srt.js";
-import { buildEditJson, submitRender } from "../lib/shotstack.js";
+import { buildRenderSpec, submitRender, renderProviderName } from "../lib/renderProvider.js";
 import { planBroll, brollConfigured, isTrustedStockUrl } from "../lib/broll.js";
 import { env } from "../lib/env.js";
 
 async function signedSourceUrl(bucket, path) {
-  // Long-lived signed URLs — Shotstack fetches them within minutes, but the
-  // extra headroom avoids flaky auth on slow retries.
+  // Long-lived signed URLs — the render provider fetches them within
+  // minutes, but the extra headroom avoids flaky auth on slow retries.
   return presignGet(r2Key(bucket, path), 60 * 60 * 24 * 7);
 }
 
 /**
  * Stage 4 — render (per clip).
- * 1. Give Shotstack a signed source URL and trim point (no local video encode)
+ * 1. Give the remote render provider a signed source URL and trim point (no
+ *    local video encode)
  * 2. Upload SRT captions
- * 3. Build the Shotstack Edit JSON (9:16 crop + caption track) and submit the
- *    render with a completion callback URL
+ * 3. Build the render spec (9:16 crop + caption track) and submit the render
+ *    with a completion callback URL
  * 4. The callback hits the backend, which enqueues the finalize stage to
  *    download and store the finished MP4 (callback-only completion).
  */
@@ -116,8 +117,8 @@ export async function processRender(job) {
       });
     }
 
-    // Keep the large source in R2; Shotstack trims it remotely so worker CPU,
-    // RAM, and disk use do not scale with source size or clip count.
+    // Keep the large source in R2; the render provider trims it remotely so
+    // worker CPU, RAM, and disk use do not scale with source size or clip count.
     const srtPath = `${project.user_id}/srt/${clipId}.srt`;
     await r2Upload(r2Key("clips", srtPath), Buffer.from(srtText, "utf8"), "application/x-subrip");
     log("captions uploaded");
@@ -134,7 +135,7 @@ export async function processRender(job) {
     }
 
     const watermarkUrl = process.env.WATERMARK_LOGO_URL || null;
-    const editJson = buildEditJson({
+    const renderSpec = buildRenderSpec({
       sourceVideoUrl,
       sourceTrimSeconds: start,
       durationSeconds: duration,
@@ -155,21 +156,27 @@ export async function processRender(job) {
 
     // Webhook completion is mandatory: without it the render could never be
     // finalized, so refuse to submit rather than orphan the clip.
-    if (!env.shotstackWebhookUrl) {
+    if (!env.renderWebhookUrl) {
       throw new Error(
-        "SHOTSTACK_WEBHOOK_URL is not configured — set it to https://<backend>/webhooks/shotstack so renders can complete"
+        "RENDER_WEBHOOK_URL is not configured — set it to https://<backend>/webhooks/render so renders can complete"
       );
     }
-    const webhookUrl = `${env.shotstackWebhookUrl}${
-      env.shotstackWebhookSecret ? `?secret=${encodeURIComponent(env.shotstackWebhookSecret)}` : ""
+    const webhookUrl = `${env.renderWebhookUrl}${
+      env.renderWebhookSecret ? `?secret=${encodeURIComponent(env.renderWebhookSecret)}` : ""
     }`;
 
-    const renderId = await submitRender(editJson, webhookUrl);
-    log(`Shotstack render ${renderId} submitted`);
+    const provider = renderProviderName();
+    const renderId = await submitRender(renderSpec, webhookUrl);
+    log(`${provider} render ${renderId} submitted`);
 
     await supabaseAdmin
       .from("clips")
       .update({
+        // shotstack_render_id is the legacy field the recovery queries and
+        // composite indexes already use — mirror the id there so clips
+        // rendered on any provider stay recoverable without a migration.
+        render_id: renderId,
+        render_provider: provider,
         shotstack_render_id: renderId,
         raw_clip_path: null,
         thumbnail_path: null,
@@ -184,7 +191,7 @@ export async function processRender(job) {
     }
 
     // 6. Done from the worker's perspective — completion arrives via the
-    // Shotstack webhook (backend /webhooks/shotstack), which enqueues the
+    // render webhook (backend /webhooks/render), which enqueues the
     // finalize stage to store the finished MP4.
     await setJobStatus(jobRowId, "completed", null);
     return { clipId, renderId, awaitingWebhook: true };

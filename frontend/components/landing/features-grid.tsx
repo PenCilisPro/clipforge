@@ -48,7 +48,7 @@ const FEATURES = [
     icon: Cloud,
     title: "Fast Cloud Rendering",
     description:
-      "Everything renders in the cloud via the Shotstack API. No downloads, no plugins, no GPU fan noise.",
+      "Everything renders in the cloud via the Creatomate API — watermark-free. No downloads, no plugins, no GPU fan noise.",
     className: "sm:col-span-2 lg:col-span-1",
   },
 ];

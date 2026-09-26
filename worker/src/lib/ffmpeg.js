@@ -67,50 +67,38 @@ export function probeDurationSeconds(filePath) {
   });
 }
 
-export function probeStreams(filePath) {
+/**
+ * One ffprobe invocation for everything the transcribe stage needs (stream
+ * layout + container duration). Two separate probes double the startup cost
+ * on exactly the large sources where CPU is scarcest.
+ */
+export function probeMedia(filePath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, data) => {
       if (err) return reject(err);
-      resolve(data?.streams ?? []);
+      resolve({
+        streams: data?.streams ?? [],
+        duration: Number(data?.format?.duration ?? 0),
+      });
     });
   });
 }
 
-/** Extract mono 16 kHz WAV for Speech-to-Text:
- *   ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 audio.wav
- */
-export async function extractAudio(inputPath, outputPath, startSeconds = 0, durationSeconds = null) {
-  const args = ["-threads", "1", "-filter_threads", "1"];
-  if (startSeconds > 0) args.push("-ss", String(startSeconds));
-  args.push("-i", inputPath);
-  if (durationSeconds != null) args.push("-t", String(durationSeconds));
-  args.push("-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", outputPath);
-  return runFfmpeg(args);
-}
-
 /**
- * Split an audio file into fixed-length WAV chunks that each stay under
- * Google STT's inline limits (60s duration AND 10 MiB payload; 55s of
- * 16 kHz mono PCM ≈ 1.7 MB raw ≈ 2.3 MB base64). Returns
- * [{path, startSeconds}] covering the file in order; the last chunk carries
- * whatever remains.
+ * Extract the whole audio track as raw mono 16 kHz PCM in a single ffmpeg
+ * pass (no WAV header — chunk boundaries are pure byte math at 32 000 B/s).
+ * Per-chunk extraction would instead re-open and re-index a source-sized
+ * MP4 once per 55 s of speech, saturating the 0.2 vCPU service for hours.
  */
-export async function splitAudioChunks(inputPath, chunkSeconds = 55) {
-  const duration = await probeDurationSeconds(inputPath);
-  if (!duration || duration <= chunkSeconds) return [{ path: inputPath, startSeconds: 0 }];
-  const chunks = [];
-  for (let start = 0; start < duration; start += chunkSeconds) {
-    const out = tmpPath(`audio-chunk-${start}.wav`);
-    await runFfmpeg([
-      "-ss", String(start),
-      "-i", inputPath,
-      "-t", String(chunkSeconds),
-      "-c:a", "pcm_s16le",
-      out,
-    ]);
-    chunks.push({ path: out, startSeconds: start });
-  }
-  return chunks;
+export async function extractRawPcm(inputPath, outputPath) {
+  return runFfmpeg([
+    "-threads", "1",
+    "-filter_threads", "1",
+    "-i", inputPath,
+    "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+    "-f", "s16le",
+    outputPath,
+  ]);
 }
 
 // Heavy re-encode trims are serialized: two concurrent 4K trims OOM small

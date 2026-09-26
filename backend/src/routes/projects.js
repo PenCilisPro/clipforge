@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { supabaseAdmin } from "../lib/supabase.js";
-import { remove as r2Remove, exists as r2Exists, listByPrefix } from "../lib/r2.js";
+import { remove as r2Remove, exists as r2Exists, objectSize, listByPrefix } from "../lib/r2.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { requireAuth } from "../middleware/auth.js";
 import { isProOrAdmin } from "../lib/tiers.js";
@@ -33,6 +33,13 @@ const CAPTION_FONTS = [
 ];
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+// Source uploads are capped at 1 GiB: everything above that makes the
+// constrained 0.2 vCPU / 512 MB pipeline service thrash (audio extraction and
+// the temporary PCM file both scale with source size). Rendering itself
+// happens remotely from a signed URL, so lifting this later only needs a
+// bigger container.
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 // Project-level caption defaults — applied to EVERY clip the project creates
 // (the analyze stage seeds them onto each clip row).
@@ -132,11 +139,28 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
       if (!path.startsWith(`${req.user.id}/`)) {
         return res.status(400).json({ error: "Invalid upload path" });
       }
-      const fileExists = await r2Exists(`source-videos/${path}`);
-      if (!fileExists) {
-        return res
-          .status(400)
-          .json({ error: "Uploaded video not found — try uploading again" });
+      // Legacy split-upload manifests are tiny JSON — the size cap applies to
+      // the actual video object only.
+      if (!path.endsWith("/manifest.json")) {
+        const size = await objectSize(`source-videos/${path}`);
+        if (size == null) {
+          return res
+            .status(400)
+            .json({ error: "Uploaded video not found — try uploading again" });
+        }
+        if (size > MAX_UPLOAD_BYTES) {
+          return res.status(413).json({
+            error:
+              "This video is larger than the 1 GB upload limit. Trim it down, or compress it to a lower bitrate and try again.",
+          });
+        }
+      } else {
+        const fileExists = await r2Exists(`source-videos/${path}`);
+        if (!fileExists) {
+          return res
+            .status(400)
+            .json({ error: "Uploaded video not found — try uploading again" });
+        }
       }
     }
 

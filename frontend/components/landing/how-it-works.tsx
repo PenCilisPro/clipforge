@@ -25,7 +25,7 @@ const STEPS = [
     step: "03",
     title: "Get vertical clips with auto-captions",
     description:
-      "Shotstack renders each clip in 9:16 with animated word-by-word captions, reframed to keep the speaker centered.",
+      "A cloud render engine builds each clip in 9:16 with animated word-by-word captions, reframed to keep the speaker centered.",
   },
   {
     icon: CalendarClock,

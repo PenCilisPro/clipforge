@@ -5,6 +5,10 @@ import {
   HeadObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env.js";
@@ -69,6 +73,60 @@ export async function exists(key) {
     if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NotFound") return false;
     throw err;
   }
+}
+
+/** Object size in bytes, or null when the object does not exist. */
+export async function objectSize(key) {
+  try {
+    const res = await client.send(new HeadObjectCommand({ Bucket: env.r2Bucket, Key: key }));
+    return res.ContentLength ?? null;
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NotFound") return null;
+    throw err;
+  }
+}
+
+/**
+ * S3 multipart upload — the browser assembles large files in R2 part by part
+ * and only the metadata round-trips through this (memory-poor) service. The
+ * joined object exists in R2 exactly once, so no worker-side reassembly or
+ * re-upload of a multi-hundred-MB file is ever needed.
+ */
+export async function createMultipartUpload(key, contentType) {
+  const res = await client.send(
+    new CreateMultipartUploadCommand({ Bucket: env.r2Bucket, Key: key, ContentType: contentType })
+  );
+  if (!res.UploadId) throw new Error("R2 did not return an upload id");
+  return res.UploadId;
+}
+
+export async function presignUploadPart(key, uploadId, partNumber, expiresIn = 60 * 60 * 24) {
+  return getSignedUrl(
+    client,
+    new UploadPartCommand({ Bucket: env.r2Bucket, Key: key, UploadId: uploadId, PartNumber: partNumber }),
+    { expiresIn }
+  );
+}
+
+export async function completeMultipartUpload(key, uploadId, parts) {
+  await client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: env.r2Bucket,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: [...parts]
+          .sort((a, b) => a.partNumber - b.partNumber)
+          .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+      },
+    })
+  );
+}
+
+export async function abortMultipartUpload(key, uploadId) {
+  await client.send(
+    new AbortMultipartUploadCommand({ Bucket: env.r2Bucket, Key: key, UploadId: uploadId })
+  );
 }
 
 /** All object keys under a prefix (up to 10k — fine for upload part folders). */

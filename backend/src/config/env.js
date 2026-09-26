@@ -66,7 +66,12 @@ export const env = {
 
   redisUrl: required("REDIS_URL", "redis://127.0.0.1:6379"),
   appSecret: required("APP_SECRET", "dev-insecure-secret"),
-  shotstackWebhookSecret: required("SHOTSTACK_WEBHOOK_SECRET", "dev-insecure-hook"),
+  // Shared secret the worker appends to every render's webhook URL. Falls
+  // back to the legacy Shotstack-specific name for existing deployments.
+  renderWebhookSecret: required(
+    "RENDER_WEBHOOK_SECRET",
+    process.env.SHOTSTACK_WEBHOOK_SECRET ?? "dev-insecure-hook"
+  ),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
 
   // Admin allowlist (comma-separated). These emails can access /api/admin/*.

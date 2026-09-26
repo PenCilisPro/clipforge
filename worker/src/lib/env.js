@@ -29,7 +29,8 @@ export const env = {
   redisUrl: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
   // Keep pipeline jobs serial on the constrained service. Transcription and
   // poster extraction use FFmpeg; video clipping and final rendering happen
-  // remotely in Shotstack, so concurrent FFmpeg work is unnecessary here.
+  // remotely at the render provider, so concurrent FFmpeg work is
+  // unnecessary here.
   concurrency: Math.min(Number(process.env.WORKER_CONCURRENCY ?? 1), 1),
   maxClips: Number(process.env.MAX_CLIPS_PER_VIDEO ?? 6),
   sttLanguage: process.env.STT_LANGUAGE_CODE ?? "en-US",
@@ -52,10 +53,21 @@ export const env = {
   pexelsApiKey: process.env.PEXELS_API_KEY,
   pixabayApiKey: process.env.PIXABAY_API_KEY,
 
+  // Remote render provider. RENDER_PROVIDER pins one ("creatomate" |
+  // "shotstack"); unset auto-detects from the configured API key, preferring
+  // Creatomate (watermark-free on every plan — Shotstack's stage environment
+  // burns a watermark in and is only kept as a legacy fallback).
+  renderProvider: process.env.RENDER_PROVIDER,
+  creatomateApiKey: process.env.CREATOMATE_API_KEY,
+  // Legacy Shotstack client (kept for in-flight renders from before a swap).
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
-  // Required: renders complete via the Shotstack webhook → backend
-  // /webhooks/shotstack → finalize stage. Without it renders can't finish.
+  // Required: renders complete via the provider webhook → backend
+  // /webhooks/render → finalize stage. Without it renders can't finish.
+  // RENDER_WEBHOOK_* replace the Shotstack-specific names but fall back to
+  // them so existing deployments keep working untouched.
+  renderWebhookUrl: process.env.RENDER_WEBHOOK_URL ?? process.env.SHOTSTACK_WEBHOOK_URL,
+  renderWebhookSecret: process.env.RENDER_WEBHOOK_SECRET ?? process.env.SHOTSTACK_WEBHOOK_SECRET,
   shotstackWebhookUrl: process.env.SHOTSTACK_WEBHOOK_URL,
   shotstackWebhookSecret: process.env.SHOTSTACK_WEBHOOK_SECRET,
   encryptionKey: process.env.ENCRYPTION_KEY,
@@ -103,9 +115,9 @@ export function warnMissing() {
       names: ["PEXELS_API_KEY", "PIXABAY_API_KEY"],
       consequence: "AI B-roll insertion is disabled (clips render talking-head only)",
     },
-    { names: ["SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
+    { names: ["CREATOMATE_API_KEY", "SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
     {
-      names: ["SHOTSTACK_WEBHOOK_URL"],
+      names: ["RENDER_WEBHOOK_URL", "SHOTSTACK_WEBHOOK_URL"],
       consequence: "renders will submit but never complete (webhook-only design)",
     },
     { names: ["ENCRYPTION_KEY"], consequence: "social publishing will fail" },

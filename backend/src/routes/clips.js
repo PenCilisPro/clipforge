@@ -17,7 +17,7 @@ import { fetchCatalog } from "./music.js";
 const router = Router();
 
 // Per-user throttle for render-spawning endpoints: every re-render costs
-// Shotstack credits, and the global rate limiter alone permits ~120/min.
+// render-provider credits, and the global rate limiter alone permits ~120/min.
 // In-memory (per instance) — sufficient for the single-render-worker setup.
 const RENDER_WINDOW_MS = 60_000;
 const RENDER_MAX_PER_WINDOW = 10;
@@ -204,6 +204,8 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       status: "queued",
       error_message: null,
       storage_path: null,
+      render_id: null,
+      render_provider: null,
       shotstack_render_id: null,
     };
     if (body.caption_style) updates.caption_style = body.caption_style;
@@ -336,6 +338,8 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         status: "queued",
         error_message: null,
         storage_path: null,
+        render_id: null,
+        render_provider: null,
         shotstack_render_id: null,
         srt_override: body.srt_part1 || null,
         ...(body.broll_part1 !== undefined ? { broll_json: body.broll_part1 } : {}),
@@ -366,6 +370,13 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_shadow: clip.caption_shadow,
         caption_shadow_color: clip.caption_shadow_color,
         caption_shadow_size: clip.caption_shadow_size,
+        // Explicit nulls: recovery.js's stranded-clip query needs these to
+        // exist on every clip row (Firestore can't query absent fields).
+        storage_path: null,
+        render_id: null,
+        render_provider: null,
+        shotstack_render_id: null,
+        render_submitted_at: null,
         srt_override: body.srt_part2 || null,
         ...(body.broll_part2 !== undefined ? { broll_json: body.broll_part2 } : {}),
         status: "queued",
@@ -485,8 +496,9 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
     if (clipError || !clip) {
       return res.status(404).json({ error: "Clip not found" });
     }
-    // Shotstack now trims directly from the stored project source, so ready
-    // and failed clips can be regenerated without a temporary raw-clip file.
+    // The render provider now trims directly from the stored project source,
+    // so ready and failed clips can be regenerated without a temporary
+    // raw-clip file.
     const canRetry = clip.status === "ready" || clip.status === "failed";
     if (!canRetry) {
       return res
@@ -511,6 +523,8 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         // Clear the previous render so the render stage re-processes the clip
         // instead of treating it as already finalized.
         storage_path: null,
+        render_id: null,
+        render_provider: null,
         shotstack_render_id: null,
       })
       .eq("id", clip.id)

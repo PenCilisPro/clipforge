@@ -46,7 +46,7 @@ export default function PrivacyPage() {
             <h2 className="text-lg font-semibold text-foreground">Third-party processors</h2>
             <p className="mt-2">
               We rely on third parties to run ClipForge: Supabase (database,
-              auth, file storage), Railway (application hosting), Shotstack
+              auth, file storage), Railway (application hosting), Creatomate
               (video rendering), Google Cloud Speech-to-Text (transcription),
               z.ai (AI clip selection and B-roll planning), Pexels/Pixabay (stock
               footage) and Jamendo (background music). These providers process

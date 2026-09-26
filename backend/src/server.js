@@ -11,7 +11,7 @@ import meRoutes from "./routes/me.js";
 import projectRoutes from "./routes/projects.js";
 import clipRoutes from "./routes/clips.js";
 import scheduleRoutes from "./routes/schedule.js";
-import shotstackWebhook from "./routes/webhooks/shotstack.js";
+import renderWebhook from "./routes/webhooks/shotstack.js";
 import socialRoutes from "./routes/social.js";
 import adminRoutes from "./routes/admin.js";
 import feedbackRoutes from "./routes/feedback.js";
@@ -50,7 +50,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(morgan("tiny"));
 
 // Webhook receiver must come before any auth middleware.
-app.use(shotstackWebhook);
+app.use(renderWebhook);
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,

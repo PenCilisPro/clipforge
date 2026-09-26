@@ -12,7 +12,7 @@ Turn long-form videos (podcasts, YouTube videos, webinars) into short, viral-rea
 ┌────────────────────┐     ┌─────────────────────┐     ┌──────────────────────┐
 │ frontend (Next.js) │────▶│ backend (Express)   │────▶│ Redis + BullMQ       │
 │ landing + dashboard│     │ auth'd API routes   │     │ clipforge-pipeline   │
-│ Firebase Auth      │     │ Shotstack webhook   │     │ clipforge-publishing │
+│ Firebase Auth      │     │ render webhook      │     │ clipforge-publishing │
 └─────────┬──────────┘     │ social OAuth flows  │     └──────────┬───────────┘
           │                └─────────────────────┘                │
           │ Firestore live listeners (projects/clips/jobs/…)      ▼
@@ -21,7 +21,7 @@ Turn long-form videos (podcasts, YouTube videos, webinars) into short, viral-rea
 │ profiles · projects · clips · jobs ·               │   │ FFmpeg trim/thumb    │
 │ scheduled_posts · social_connections               │   │ Google STT           │
 │ Cloudflare R2 (file storage)                       │   │ z.ai GLM analysis    │
-└────────────────────────────────────────────────────┘   │ Shotstack render     │
+└────────────────────────────────────────────────────┘   │ Creatomate render    │
                                                          │ scheduled publishing │
                                                          └──────────────────────┘
 ```
@@ -35,12 +35,12 @@ security rules ([`firestore.rules`](firestore.rules)) replacing RLS.
 ### Pipeline (per project)
 
 1. **download** — RapidAPI downloader fetches the source URL → stored in the R2 `source-videos/` prefix (uploads skip this stage)
-2. **transcribe** — large browser uploads are joined once into a single streamed R2 source; FFmpeg extracts mono 16 kHz WAV → Google Speech-to-Text (enableWordTimeOffsets) → word-level transcript saved + credits deducted
+2. **transcribe** — FFmpeg extracts the audio in a single pass as raw mono 16 kHz PCM → fixed 55-second byte slices go to Google Speech-to-Text (enableWordTimeOffsets) one at a time → word-level transcript saved + credits deducted
 3. **analyze** — z.ai (Zhipu GLM, OpenAI-compatible API) returns strict JSON clip suggestions `{start, end, title, hook, virality_score, reason, hashtags}` → one `clips` doc per suggestion
-4. **render** (per clip) — the worker gives Shotstack a signed R2 source URL and trim offset; Shotstack cuts and renders the 1080×1920 clip in its cloud with the caption track. No full source download, local video re-encode, or temporary raw clip upload is needed for each clip. Completion uses the required webhook (SHOTSTACK_WEBHOOK_URL).
-5. **finalize** — the backend verifies the Shotstack callback; the worker streams the finished MP4 from Shotstack into R2 and creates its poster from the final output. The MP4 is optionally mirrored to Cloudflare Stream for playback.
+4. **render** (per clip) — the worker gives the render provider (Creatomate by default; watermark-free on every plan) a signed R2 source URL and trim offset; the provider cuts and renders the 1080×1920 clip in its cloud with the caption track. No full source download, local video re-encode, or temporary raw clip upload is needed for each clip. Completion uses the required webhook (RENDER_WEBHOOK_URL).
+5. **finalize** — the backend verifies the render callback; the worker streams the finished MP4 from the provider's CDN into R2 and creates its poster from the final output. The MP4 is optionally mirrored to Cloudflare Stream for playback.
 
-Large uploads go directly from the browser to R2 in 40 MB pieces; the API only signs each request. The worker uses one pipeline job at a time, single-threaded FFmpeg audio and thumbnail operations, and 128 MB Node heap caps for each Node process. This targets a 0.2 vCPU / 512 MB combined API/worker service, with lower throughput and longer queues at that CPU allocation. Transcription needs temporary disk space at least as large as the source file. Shotstack documents a 5 GB maximum per source file, so a 920 MB file is within its limit.
+Large uploads go directly from the browser to R2 as an S3 multipart upload (64 MB parts, presigned by the API and assembled natively inside R2), so no source-sized bytes ever pass through the API/worker service and the worker never reassembles or re-uploads the file. Uploads are capped at 1 GB (checked client-side and enforced on project creation). The R2 bucket's CORS config must expose the ETag header (`ExposeHeaders: ["ETag"]`) so the browser can read part ETags for `CompleteMultipartUpload` — without it the site silently falls back to the legacy 40 MB parts + manifest flow, which the worker still supports. The worker uses one pipeline job at a time, a single-pass single-threaded FFmpeg audio extraction (chunked STT slices are read from the PCM file by byte offset — ffmpeg never re-opens the source per chunk), and 128 MB Node heap caps for each Node process. This targets a 0.2 vCPU / 512 MB combined API/worker service, with lower throughput and longer queues at that CPU allocation. Transcription needs temporary disk space roughly the size of the source file plus ~115 MB per hour of audio. Transcribe jobs get their own ceiling via `TRANSCRIBE_TIMEOUT_MS` (default 120 min) so long sources are not killed and retried at the 40-min default. Rendering happens remotely from the source's signed R2 URL, so the 1 GB upload cap is independent of any local render limits.
 
 Scheduling: "Schedule" creates a `scheduled_posts` doc + a delayed BullMQ job; when it fires the worker uploads the clip via YouTube Data API / Meta Graph API / TikTok Content Posting API and marks the post `published` or `failed`.
 
@@ -51,8 +51,8 @@ Scheduling: "Schedule" creates a `scheduled_posts` doc + a delayed BullMQ job; w
 | Path | Service | Start command |
 |---|---|---|
 | `frontend/` | Next.js 14 (App Router) + Tailwind + shadcn/ui + Framer Motion | `npm run start` (after `npm run build`) |
-| `backend/` | Express API — job creation, Shotstack webhook, social OAuth | `npm run start` |
-| `worker/` | BullMQ consumer — FFmpeg, STT, z.ai GLM, Shotstack, publishing | `npm run start` |
+| `backend/` | Express API — job creation, render webhook, social OAuth | `npm run start` |
+| `worker/` | BullMQ consumer — FFmpeg, STT, z.ai GLM, Creatomate render, publishing | `npm run start` |
 | `firestore.rules` / `firestore.indexes.json` | Firestore security rules + composite indexes | deploy once |
 | `backend/scripts/migrate-supabase-to-firestore.mjs` | one-shot data migration from the old Supabase project | run once |
 
@@ -116,7 +116,7 @@ Requires a local **Redis** (`docker run -p 6379:6379 redis:7`) and **FFmpeg** (b
 | URL download | RapidAPI key + downloader endpoint (`RAPIDAPI_KEY`, `RAPIDAPI_HOST`, `RAPIDAPI_DOWNLOADER_URL`) |
 | Transcription | Google Cloud service-account JSON (`GOOGLE_APPLICATION_CREDENTIALS` path or `GOOGLE_CREDENTIALS_JSON` inline) |
 | AI clip detection | z.ai / Zhipu GLM (`ZAI_API_KEY`, optional `ZAI_API_BASE_URL`, `ZAI_MODEL`; default model `glm-4.5-flash` — free tier) |
-| Rendering | Shotstack (`SHOTSTACK_API_KEY`, `SHOTSTACK_ENV=stage\|v1`) |
+| Rendering | Creatomate (`CREATOMATE_API_KEY`; optional `RENDER_PROVIDER=creatomate\|shotstack`) — watermark-free on every plan |
 | Publishing | `YOUTUBE_CLIENT_ID/SECRET`, `META_APP_ID/SECRET` (IG + FB), `TIKTOK_CLIENT_KEY/SECRET` |
 
 ---
@@ -128,7 +128,7 @@ Create the services in the `official-clipforge` Northflank project from this rep
 | Service | Root directory | Notes |
 |---|---|---|
 | `clipforge-web` | `frontend` | Build args = the `NEXT_PUBLIC_*` vars (inlined at build time) |
-| `clipforge-api` | `backend` | Combined API + worker + bundled Redis; public port 4000 for OAuth callbacks and Shotstack webhooks. Set the service to 0.2 vCPU / 512 MB RAM and keep one replica for the constrained profile.
+| `clipforge-api` | `backend` | Combined API + worker + bundled Redis; public port 4000 for OAuth callbacks and render webhooks. Set the service to 0.2 vCPU / 512 MB RAM and keep one replica for the constrained profile.
 | Redis addon | — | Northflank Redis addon (or Upstash) → set `REDIS_URL` on the api service |
 
 Environment variables: create a **Secret Group** in the project with the vars from each `.env.example`, link it to the services, plus cross-links:
@@ -139,9 +139,10 @@ Environment variables: create a **Secret Group** in the project with the vars fr
   `https://<clipforge-api-domain>/api/social/<platform>/callback`
 - Firebase Auth → Settings → Authorized domains: add the `clipforge-web` domain
 - Cloudflare Stream (optional, clip playback delivery): worker + backend envs `CLOUDFLARE_ACCOUNT_ID` (or reuse `R2_ACCOUNT_ID`), `CLOUDFLARE_STREAM_API_TOKEN` (API token with Stream:Edit). Optional signed playback: `CLOUDFLARE_STREAM_SIGNING_KEY` + `CLOUDFLARE_STREAM_SIGNING_TOKEN` (Stream → Settings → Signed URLs) on both services — when unset, mirrored clips use unguessable-UID unsigned playback URLs
-- Shotstack webhook (**required** for render completion): worker env `SHOTSTACK_WEBHOOK_URL`
-  = `https://<clipforge-api-domain>/webhooks/shotstack`, with `SHOTSTACK_WEBHOOK_SECRET`
-  matching the backend's value
+- Render webhook (**required** for render completion): worker env `RENDER_WEBHOOK_URL`
+  = `https://<clipforge-api-domain>/webhooks/render`, with `RENDER_WEBHOOK_SECRET`
+  matching the backend's value (the legacy `SHOTSTACK_WEBHOOK_URL`/`SHOTSTACK_WEBHOOK_SECRET`
+  names are still accepted)
 
 `ENCRYPTION_KEY` must be **identical** on backend and worker (tokens are encrypted by the backend, decrypted by the worker).
 
@@ -174,4 +175,4 @@ row uuids are reused as Firebase uids so every foreign key stays valid.
 8. ✅ Schedule modal + calendar month view — reschedule/cancel, status pills (`scheduled` in brand orange)
 9. ✅ Delayed BullMQ publish jobs — YouTube Shorts (resumable upload), IG Reels (container flow), FB Reels, TikTok (PULL_FROM_URL); token refresh
 10. ✅ Credit system — `credits_remaining`, 1 credit per started minute, gate on project creation (Firestore transaction replaces the old SQL function)
-11. ✅ Caption customization — Classic / Karaoke / Bold Pop presets, Shotstack caption styles with `#FF5D1C` highlight default
+11. ✅ Caption customization — Classic / Karaoke / Bold Pop presets, cloud-rendered caption styles with `#FF5D1C` highlight default

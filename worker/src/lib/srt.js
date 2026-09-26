@@ -1,6 +1,6 @@
 /**
  * Transcript helpers — convert word-level Speech-to-Text output into
- * SRT captions and Shotstack caption-friendly data.
+ * SRT captions and render-provider-friendly caption data.
  */
 
 function formatSrtTime(seconds) {

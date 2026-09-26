@@ -31,14 +31,22 @@ const STAGES = {
 // queue deadlocks — recovery.js skips clips that BullMQ still considers live.
 const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS) || 40 * 60 * 1000;
 
-function withTimeout(stage) {
+// Transcription is the one stage whose work scales with source length: one
+// audio pass plus one STT round trip per 55 s of speech. A multi-hour video
+// legitimately outlasts the default ceiling, and killing it mid-flight makes
+// BullMQ retry from scratch — re-downloading a gigabyte-sized source each
+// time — so it gets its own generous limit.
+const TRANSCRIBE_TIMEOUT_MS =
+  Number(process.env.TRANSCRIBE_TIMEOUT_MS) || 120 * 60 * 1000;
+
+function withTimeout(stage, timeoutMs) {
   return async (job) => {
     return Promise.race([
       stage(job),
       new Promise((_, reject) => {
         const timer = setTimeout(
-          () => reject(new Error(`${job.name} (${job.id}) timed out after ${Math.round(JOB_TIMEOUT_MS / 60000)} min`)),
-          JOB_TIMEOUT_MS
+          () => reject(new Error(`${job.name} (${job.id}) timed out after ${Math.round(timeoutMs / 60000)} min`)),
+          timeoutMs
         );
         if (typeof timer.unref === "function") timer.unref();
       }),
@@ -52,7 +60,8 @@ const pipelineWorker = new Worker(
     const stage = STAGES[job.name];
     if (!stage) throw new Error(`Unknown pipeline stage: ${job.name}`);
     console.log(`[worker] ▶ ${job.name} (${job.id})`);
-    const result = await withTimeout(stage)(job);
+    const timeoutMs = job.name === "transcribe" ? TRANSCRIBE_TIMEOUT_MS : JOB_TIMEOUT_MS;
+    const result = await withTimeout(stage, timeoutMs)(job);
     console.log(`[worker] ✓ ${job.name} (${job.id})`);
     return result;
   },
