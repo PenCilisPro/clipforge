@@ -272,6 +272,12 @@ export function buildRenderSpec({
   };
 }
 
+// Creatomate hosts finished renders on Backblaze B2
+// (https://f002.backblazeb2.com/file/creatomate-<account>/...) rather than a
+// creatomate.com domain, so the B2 host is trusted only on their output paths.
+const TRUSTED_B2_HOST_RE = /^f\d{3}\.backblazeb2\.com$/i;
+const CREATOMATE_B2_PATH_RE = /^\/file\/creatomate-/i;
+
 /**
  * Render outputs may only be pulled from Creatomate-controlled hosts.
  * Used on every URL before the worker downloads a render (the webhook path
@@ -284,8 +290,12 @@ export function assertTrustedRenderUrl(rawUrl) {
   } catch {
     throw new Error("Creatomate render URL is malformed");
   }
-  if (parsed.protocol !== "https:" || !/(^|\.)creatomate\.com$/i.test(parsed.hostname)) {
-    throw new Error(`Refusing to download render from untrusted host: ${parsed.hostname}`);
+  const host = parsed.hostname;
+  const trusted =
+    /(^|\.)creatomate\.com$/i.test(host) ||
+    (TRUSTED_B2_HOST_RE.test(host) && CREATOMATE_B2_PATH_RE.test(parsed.pathname));
+  if (parsed.protocol !== "https:" || !trusted) {
+    throw new Error(`Refusing to download render from untrusted host: ${host}`);
   }
   return parsed.toString();
 }
