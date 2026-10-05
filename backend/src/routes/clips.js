@@ -49,7 +49,17 @@ const CAPTION_FONTS = [
 ];
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+// 9:16 layout for landscape sources: "cover" = zoom to fill (cropped),
+// "contain" = keep the whole frame (blurred zoomed background optional).
+const VIDEO_FITS = ["cover", "contain"];
+const layoutShape = {
+  video_fit: z.enum(VIDEO_FITS).optional(),
+  // Only meaningful with video_fit "contain": blurred zoomed background
+  // behind the untouched frame instead of black bars.
+  video_background_blur: z.boolean().optional(),
+};
 const effectShape = {
+  ...layoutShape,
   caption_stroke: z.boolean().optional(),
   caption_shadow: z.boolean().optional(),
   caption_stroke_color: z.string().regex(HEX_COLOR).optional(),
@@ -212,12 +222,16 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
     if (body.caption_font) updates.caption_font = body.caption_font;
     if (body.caption_stroke !== undefined) updates.caption_stroke = body.caption_stroke;
     if (body.caption_shadow !== undefined) updates.caption_shadow = body.caption_shadow;
+    if (body.video_background_blur !== undefined) {
+      updates.video_background_blur = body.video_background_blur;
+    }
     for (const key of [
       "caption_stroke_color",
       "caption_stroke_size",
       "caption_shadow_color",
       "caption_shadow_size",
       "caption_color",
+      "video_fit",
     ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
@@ -267,7 +281,8 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, srt_override, broll_json";
+  "caption_shadow, caption_shadow_color, caption_shadow_size, video_fit, video_background_blur, " +
+  "srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
 // referenced as storage:user-uploads/<uid>/broll/<file>.
@@ -370,6 +385,8 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_shadow: clip.caption_shadow,
         caption_shadow_color: clip.caption_shadow_color,
         caption_shadow_size: clip.caption_shadow_size,
+        video_fit: clip.video_fit,
+        video_background_blur: clip.video_background_blur,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
         // exist on every clip row (Firestore can't query absent fields).
         storage_path: null,
@@ -448,6 +465,8 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_shadow: clip.caption_shadow,
         caption_shadow_color: clip.caption_shadow_color,
         caption_shadow_size: clip.caption_shadow_size,
+        video_fit: clip.video_fit,
+        video_background_blur: clip.video_background_blur,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
         status: "queued",
@@ -518,6 +537,10 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_shadow_color ? { caption_shadow_color: body.caption_shadow_color } : {}),
         ...(body.caption_shadow_size ? { caption_shadow_size: body.caption_shadow_size } : {}),
         ...(body.caption_color ? { caption_color: body.caption_color } : {}),
+        ...(body.video_fit ? { video_fit: body.video_fit } : {}),
+        ...(body.video_background_blur !== undefined
+          ? { video_background_blur: body.video_background_blur }
+          : {}),
         status: "queued",
         error_message: null,
         // Clear the previous render so the render stage re-processes the clip

@@ -160,6 +160,8 @@ export default function ClipEditPage() {
           caption_shadow: found.caption_shadow ?? false,
           caption_shadow_color: found.caption_shadow_color ?? "#000000",
           caption_shadow_size: found.caption_shadow_size ?? 6,
+          video_fit: found.video_fit ?? "cover",
+          video_background_blur: found.video_background_blur ?? true,
         });
         setStartTime(String(Number(found.start_time)));
         setEndTime(String(Number(found.end_time)));

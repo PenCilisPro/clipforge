@@ -28,7 +28,7 @@ export async function processAnalyze(job) {
         `id, transcript_json, duration_seconds, clip_length_pref, clip_count_tier,
          caption_style, caption_font, caption_color, caption_stroke,
          caption_stroke_color, caption_stroke_size, caption_shadow,
-         caption_shadow_color, caption_shadow_size`
+         caption_shadow_color, caption_shadow_size, video_fit, video_background_blur`
       )
       .eq("id", projectId)
       .single();
@@ -47,6 +47,10 @@ export async function processAnalyze(job) {
       caption_shadow: project.caption_shadow ?? false,
       caption_shadow_color: project.caption_shadow_color ?? "#000000",
       caption_shadow_size: project.caption_shadow_size ?? 6,
+      // 9:16 layout for landscape sources (cover = zoomed fill, contain =
+      // full frame over a blurred zoomed background, toggleable per clip).
+      video_fit: project.video_fit === "contain" ? "contain" : "cover",
+      video_background_blur: project.video_background_blur ?? true,
     };
 
     const durationSeconds = Number(project.duration_seconds ?? 0);

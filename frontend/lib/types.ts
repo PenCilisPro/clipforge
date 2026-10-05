@@ -46,10 +46,21 @@ export interface Project {
   caption_shadow?: boolean;
   caption_shadow_color?: string;
   caption_shadow_size?: number;
+  // Project-level 9:16 layout defaults — seeded onto every clip.
+  video_fit?: VideoFit;
+  video_background_blur?: boolean;
   clips?: Clip[];
 }
 
 export type ClipStatus = "queued" | "rendering" | "ready" | "failed";
+
+/**
+ * How a landscape (16:9) source lands on the 9:16 canvas: "cover" zooms to
+ * fill (edges cropped); "contain" keeps the whole frame visible — over a
+ * blurred zoomed copy of the video when video_background_blur is on, else
+ * black bars.
+ */
+export type VideoFit = "cover" | "contain";
 
 export type CaptionStyle =
   | "classic"
@@ -103,6 +114,10 @@ export interface Clip {
   /** Caption text color — '#ffffff' keeps the template's own default. */
   caption_color: string;
   caption_font: CaptionFontKey;
+  /** 9:16 layout for landscape sources ("cover" = zoomed fill). */
+  video_fit: VideoFit;
+  /** With video_fit "contain": blurred zoomed background vs black bars. */
+  video_background_blur: boolean;
   srt_override: string | null;
   /** null = AI-planned at render, [] = explicitly off, otherwise [{start,end,src}] */
   broll_json: { start: number; end: number; src: string }[] | null;

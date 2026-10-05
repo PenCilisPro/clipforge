@@ -153,6 +153,11 @@ export async function processRender(job) {
       captionStrokeSize: Number(clip.caption_stroke_size) || 4,
       captionShadowColor: clip.caption_shadow_color ?? "#000000",
       captionShadowSize: Number(clip.caption_shadow_size) || 6,
+      // 9:16 layout: "cover" zooms a landscape source to fill the canvas
+      // (cropped); "contain" keeps the whole frame visible over a blurred
+      // zoomed copy of itself (plain black bars when the blur is off).
+      videoFit: clip.video_fit === "contain" ? "contain" : "cover",
+      videoBackgroundBlur: clip.video_background_blur !== false,
     };
 
     // Webhook completion is mandatory for the cloud providers: without it the

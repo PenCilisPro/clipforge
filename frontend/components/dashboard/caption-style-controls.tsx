@@ -2,7 +2,13 @@
 
 import { AnimatedCaptionPreview, CaptionPreview } from "@/components/dashboard/caption-preview";
 import { Label } from "@/components/ui/label";
-import { CAPTION_FONTS, CAPTION_STYLES, type CaptionFontKey, type CaptionStyle } from "@/lib/types";
+import {
+  CAPTION_FONTS,
+  CAPTION_STYLES,
+  type CaptionFontKey,
+  type CaptionStyle,
+  type VideoFit,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export interface CaptionStyleValue {
@@ -16,6 +22,10 @@ export interface CaptionStyleValue {
   caption_shadow: boolean;
   caption_shadow_color: string;
   caption_shadow_size: number;
+  /** 9:16 layout for landscape sources: "cover" = zoomed fill (cropped). */
+  video_fit: VideoFit;
+  /** With video_fit "contain": blurred zoomed background instead of black bars. */
+  video_background_blur: boolean;
 }
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyleValue = {
@@ -28,7 +38,34 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyleValue = {
   caption_shadow: false,
   caption_shadow_color: "#000000",
   caption_shadow_size: 6,
+  video_fit: "cover",
+  video_background_blur: true,
 };
+
+const VIDEO_FIT_OPTIONS: { key: VideoFit; label: string; description: string }[] = [
+  { key: "cover", label: "Zoom to fill", description: "Fills the frame — sides are cropped" },
+  { key: "contain", label: "Original size", description: "Whole video visible" },
+];
+
+/** Miniature 9:16 mock of how a 16:9 source lands on the vertical canvas. */
+function LayoutThumb({ fit, blur }: { fit: VideoFit; blur: boolean }) {
+  const gradient = "bg-[linear-gradient(135deg,#64748b,#1e293b_55%,#475569)]";
+  return (
+    <div className="relative mx-auto aspect-[9/16] w-14 overflow-hidden rounded border bg-black">
+      {fit === "contain" && blur && (
+        <div className={cn("absolute inset-0 scale-150 blur-[3px]", gradient)} />
+      )}
+      <div
+        className={cn(
+          gradient,
+          fit === "cover"
+            ? "absolute inset-0"
+            : "absolute inset-x-0 top-1/2 aspect-video -translate-y-1/2"
+        )}
+      />
+    </div>
+  );
+}
 
 /**
  * Full caption look controls: template, font, text color, stroke and shadow,
@@ -52,11 +89,50 @@ export function CaptionStyleControls({
     caption_shadow: shadow,
     caption_shadow_color: shadowColor,
     caption_shadow_size: shadowSize,
+    video_fit: videoFit,
+    video_background_blur: blur,
   } = value;
   const customColor = textColor.toLowerCase() !== "#ffffff";
 
   return (
     <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label className="text-xs">Video layout (16:9 → 9:16)</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {VIDEO_FIT_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => onChange({ video_fit: option.key })}
+              className={cn(
+                "rounded-lg border p-2 text-center transition-all hover:border-primary-500/60",
+                videoFit === option.key && "border-primary-500 ring-2 ring-primary-500/30"
+              )}
+            >
+              <LayoutThumb fit={option.key} blur={blur} />
+              <p className="mt-1.5 text-xs font-semibold">{option.label}</p>
+              <p className="text-[11px] leading-tight text-muted-foreground">
+                {option.description}
+              </p>
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            id="video-background-blur"
+            checked={blur}
+            onChange={(e) => onChange({ video_background_blur: e.target.checked })}
+            disabled={videoFit !== "contain"}
+            className="h-3.5 w-3.5 accent-[var(--primary)] disabled:opacity-40"
+          />
+          <Label htmlFor="video-background-blur" className="text-xs font-medium">
+            Blurred background
+          </Label>
+          <span className="text-muted-foreground">off = black bars</span>
+        </div>
+      </div>
+
       <div className="space-y-1.5">
         <Label className="text-xs">Live preview</Label>
         <AnimatedCaptionPreview

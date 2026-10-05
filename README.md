@@ -116,7 +116,7 @@ Requires a local **Redis** (`docker run -p 6379:6379 redis:7`) and **FFmpeg** (b
 | URL download | RapidAPI key + downloader endpoint (`RAPIDAPI_KEY`, `RAPIDAPI_HOST`, `RAPIDAPI_DOWNLOADER_URL`) |
 | Transcription | Google Cloud service-account JSON (`GOOGLE_APPLICATION_CREDENTIALS` path or `GOOGLE_CREDENTIALS_JSON` inline) |
 | AI clip detection | z.ai / Zhipu GLM (`ZAI_API_KEY`, optional `ZAI_API_BASE_URL`, `ZAI_MODEL`; default model `glm-4.5-flash` — free tier) |
-| Rendering | `RENDER_PROVIDER=local` — ffmpeg renders on the worker itself: no usage credits, no watermark (uses worker CPU; `RENDER_THREADS` raises parallelism). Or cloud: Creatomate (`CREATOMATE_API_KEY`) or Shotstack (`SHOTSTACK_API_KEY`) — metered per render |
+| Rendering | `RENDER_PROVIDER=local` — ffmpeg renders on the worker itself: no usage credits, no watermark (uses worker CPU; `RENDER_THREADS` raises parallelism; quality via `RENDER_PRESET`=fast default, `RENDER_CRF`=18 default, `RENDER_AUDIO_BITRATE`=192k). Or cloud: Creatomate (`CREATOMATE_API_KEY`; `RENDER_FRAME_RATE` up to 60) or Shotstack (`SHOTSTACK_API_KEY`) — metered per render |
 | Publishing | `YOUTUBE_CLIENT_ID/SECRET`, `META_APP_ID/SECRET` (IG + FB), `TIKTOK_CLIENT_KEY/SECRET` |
 
 ---
@@ -170,7 +170,7 @@ row uuids are reused as Firebase uids so every foreign key stays valid.
 3. ✅ Theme toggle — next-themes, persisted, navbar + footer + dashboard
 4. ✅ Project creation — paste URL or file upload (drag & drop → Cloudflare R2)
 5. ✅ Async pipeline — download → transcribe → analyze → render → finalize, live status via Firestore listeners (pipeline tracker with per-stage states)
-6. ✅ Clip gallery — 9:16 preview player, virality-score badge, hashtags, download, regenerate captions (3 style presets, brand-orange highlight)
+6. ✅ Clip gallery — 9:16 preview player, virality-score badge, hashtags, download, regenerate captions (3 style presets, brand-orange highlight), per-clip 9:16 layout choice (zoomed fill vs original size with optional blurred background)
 7. ✅ Social connections — OAuth connect/disconnect for YouTube, Instagram, TikTok, Facebook; AES-256-GCM encrypted tokens
 8. ✅ Schedule modal + calendar month view — reschedule/cancel, status pills (`scheduled` in brand orange)
 9. ✅ Delayed BullMQ publish jobs — YouTube Shorts (resumable upload), IG Reels (container flow), FB Reels, TikTok (PULL_FROM_URL); token refresh

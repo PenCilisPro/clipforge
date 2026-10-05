@@ -109,6 +109,32 @@ assert(
   "creatomate: every element carries a time"
 );
 
+// --- Creatomate "contain" layout: full 16:9 frame over a blurred backdrop ---
+const ctmContain = buildCreatomate({ ...PARAMS, videoFit: "contain", videoBackgroundBlur: true });
+const ctmBg = ctmContain.elements.find((e) => e.name === "Background-1");
+const ctmMain = ctmContain.elements.find((e) => e.name === "Video-1");
+assert(
+  ctmBg && ctmBg.track === 1 && ctmBg.fit === "cover" && ctmBg.blur_radius > 0 && ctmBg.volume === "0%",
+  "creatomate contain: muted blurred background layer on track 1"
+);
+assert(
+  ctmMain && ctmMain.track === 2 && ctmMain.fit === "contain",
+  "creatomate contain: main video letterboxed above the background"
+);
+assert(
+  ctmContain.elements.filter((e) => e.type === "text").every((t) => t.track === 5),
+  "creatomate contain: captions shifted to track 5"
+);
+const ctmNoBlur = buildCreatomate({ ...PARAMS, videoFit: "contain", videoBackgroundBlur: false });
+assert(
+  !ctmNoBlur.elements.some((e) => e.name === "Background-1"),
+  "creatomate contain (blur off): no background layer — black bars"
+);
+assert(
+  ctmNoBlur.elements.find((e) => e.name === "Video-1")?.fit === "contain",
+  "creatomate contain (blur off): main video still uses fit contain"
+);
+
 // --- Shotstack (legacy provider must still build) ---
 const ss = buildShotstack(PARAMS);
 assert(ss.output.format === "mp4" && ss.output.size.width === 1080, "shotstack: legacy builder intact");
@@ -120,6 +146,14 @@ assert(
   ss.timeline.tracks[0].clips.length === 6,
   "shotstack: caption track first (topmost) with 6 clips"
 );
+
+// Shotstack contain layout: no blur filter exists there, so the clip
+// letterboxes on the black timeline background.
+const ssContain = buildShotstack({ ...PARAMS, videoFit: "contain" });
+const ssMain = ssContain.timeline.tracks
+  .flatMap((t) => t.clips)
+  .find((c) => c.asset?.type === "video" && c.asset?.src === PARAMS.sourceVideoUrl);
+assert(ssMain?.fit === "contain", "shotstack contain: main video letterboxed (blur unsupported — black bars)");
 
 console.log(`\nResolved provider: ${resolveRenderProvider()} (CREATOMATE_API_KEY ${process.env.CREATOMATE_API_KEY ? "set" : "unset"}, SHOTSTACK_API_KEY ${process.env.SHOTSTACK_API_KEY ? "set" : "unset"})`);
 

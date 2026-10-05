@@ -40,7 +40,14 @@ export function buildEditJson({
   captionStrokeSize = 4,
   captionShadowColor = "#000000",
   captionShadowSize = 6,
+  // Frame layout on the 9:16 canvas: "cover" (= Shotstack fit "crop") zooms a
+  // landscape source to fill; "contain" keeps the whole frame letterboxed.
+  // NOTE: Shotstack has no blur filter, so videoBackgroundBlur is accepted
+  // for interface parity but degrades to black bars here.
+  videoFit = "cover",
+  videoBackgroundBlur = true,
 }) {
+  void videoBackgroundBlur;
   const videoTrack = {
     clips: [
       {
@@ -52,7 +59,7 @@ export function buildEditJson({
         },
         start: 0,
         length: durationSeconds,
-        fit: "crop",
+        fit: videoFit === "contain" ? "contain" : "crop",
         position: "center",
       },
     ],

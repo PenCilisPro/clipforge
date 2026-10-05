@@ -18,7 +18,9 @@ import crypto from "node:crypto";
  * and downloadRenderedClip exist so recovery.js and finalize.js treat local
  * clips like any other provider's.
  *
- * Visual parity with the cloud providers: 1080x1920 center-crop of the source,
+ * Visual parity with the cloud providers: 1080x1920 output, either a
+ * center-crop of the source (videoFit "cover") or the full frame letterboxed
+ * over a blurred zoomed copy of itself (videoFit "contain"),
  * caption cues as ASS subtitles with word-sync accenting (one dialogue event
  * per spoken word, the active word recolored — same scheme as the Creatomate
  * text elements), b-roll cutaways full-screen with fades, music bed at 15%,
@@ -32,6 +34,18 @@ const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
 const FONT_HOST_RE = /(^|\.)((cdn\.jsdelivr\.net)|(fonts\.gstatic\.com))$/i;
 
 const RENDER_THREADS = Math.max(1, Number(process.env.RENDER_THREADS) || 1);
+
+// Encode quality for the local provider. "fast" + CRF 18 is a clear sharpness
+// upgrade over the old veryfast/20 while staying within the 40-min job
+// ceiling on the constrained container (single-threaded, ~1.5-2x encode time).
+// Beefier workers can push RENDER_PRESET=medium|slow and RENDER_CRF=16.
+const X264_PRESETS = new Set([
+  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
+]);
+const requestedPreset = String(process.env.RENDER_PRESET ?? "").toLowerCase();
+const RENDER_PRESET = X264_PRESETS.has(requestedPreset) ? requestedPreset : "fast";
+const RENDER_CRF = Math.min(30, Math.max(12, Number(process.env.RENDER_CRF) || 18));
+const RENDER_AUDIO_BITRATE = String(process.env.RENDER_AUDIO_BITRATE ?? "").trim() || "192k";
 
 /** "#rrggbb" / "rgba(...)" → ASS &HAABBGGRR (alpha 00 = opaque, FF = clear). */
 function assColor(value) {
@@ -234,11 +248,42 @@ function fmt(n) {
 }
 
 /** Build the filter_complex graph (video chain; audio chain is appended). */
-function buildFilterGraph({ broll, durationSeconds, width, height, assFile, watermarkInput = null }) {
+function buildFilterGraph({
+  broll,
+  durationSeconds,
+  width,
+  height,
+  assFile,
+  watermarkInput = null,
+  videoFit = "cover",
+  videoBackgroundBlur = true,
+}) {
   const parts = [];
-  parts.push(
-    `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[base]`
-  );
+  // Lanczos resampling: bilinear (the default) visibly softens the 1080x1920
+  // scrub, especially when upscaling smaller sources.
+  if (videoFit === "contain") {
+    if (videoBackgroundBlur) {
+      // Zoomed + blurred (and slightly darkened) copy fills the 9:16 canvas;
+      // the untouched letterboxed frame is centered on top of it.
+      parts.push(
+        `[0:v]split=2[bgs][fgs];` +
+          `[bgs]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,` +
+          `crop=${width}:${height},gblur=sigma=24,eq=brightness=-0.07[bg];` +
+          `[fgs]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];` +
+          `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[base]`
+      );
+    } else {
+      // No blur: letterbox the untouched frame on plain black bars.
+      parts.push(
+        `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[base]`
+      );
+    }
+  } else {
+    parts.push(
+      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
+    );
+  }
   let prev = "base";
   broll.forEach((b, i) => {
     const start = Math.max(0, Number(b.start));
@@ -247,7 +292,7 @@ function buildFilterGraph({ broll, durationSeconds, width, height, assFile, wate
     const fade = Math.min(0.4, len / 2);
     parts.push(
       `[${i + 1}:v]trim=duration=${fmt(len)},setpts=PTS+${fmt(start)}/TB,` +
-        `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},` +
+        `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},` +
         `format=yuva420p,fade=t=in:st=${fmt(start)}:d=${fmt(fade)}:alpha=1,` +
         `fade=t=out:st=${fmt(start + len - fade)}:d=${fmt(fade)}:alpha=1[b${i}]`
     );
@@ -285,6 +330,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionStrokeSize = 4,
     captionShadowColor = "#000000",
     captionShadowSize = 6,
+    videoFit = "cover",
+    videoBackgroundBlur = true,
   } = spec;
 
   await ensureFont(captionFontKey);
@@ -332,7 +379,16 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
   }
 
   const graphFileRel = `graph-${path.basename(outputRel, ".mp4")}.txt`;
-  const graph = buildFilterGraph({ broll, durationSeconds, width, height, assFile: assRel, watermarkInput });
+  const graph = buildFilterGraph({
+    broll,
+    durationSeconds,
+    width,
+    height,
+    assFile: assRel,
+    watermarkInput,
+    videoFit,
+    videoBackgroundBlur,
+  });
   if (useMusic) {
     // One filtergraph file holds the video chain and the audio mix together
     // (audio never goes through CLI escaping — paths stay relative to cwd).
@@ -360,8 +416,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     args.push("-map", "0:a?");
   }
   args.push(
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "128k",
+    "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF), "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", RENDER_AUDIO_BITRATE,
     "-movflags", "+faststart",
     outputRel
   );

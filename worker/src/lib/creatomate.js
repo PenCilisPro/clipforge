@@ -15,7 +15,9 @@ const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
  * object as the body. No watermarks on any plan.
  *
  * LAYERING: higher track numbers render on top (the inverse of Shotstack).
- * Track 1 main video → 2 b-roll cutaways → 3 watermark → 4 captions.
+ * Cover layout: 1 main video → 2 b-roll → 3 watermark → 4 captions → 5 music.
+ * Contain layout (whole 16:9 frame visible) adds a blurred background copy
+ * on track 1 and shifts the rest up one.
  *
  * Captions are native text elements — stroke, drop shadow, and background
  * boxes are supported directly (no underlay-copy hacks). Custom TTFs load
@@ -30,8 +32,17 @@ const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
 // RENDER_STYLES there (shared with the local ffmpeg provider).
 
 const MAX_WORD_ELEMENTS = 400;
-const CAPTION_TRACK = 4;
+// Track plan for the standard cover layout (background blurred stacks shift
+// everything up by one — see buildRenderSpec).
+const COVER_TRACKS = { main: 1, broll: 2, watermark: 3, caption: 4, music: 5 };
 const FAILED_STATUSES = new Set(["failed", "cancelled", "canceled"]);
+
+// Encode quality: Creatomate's API exposes no bitrate/codec control — the
+// documented root properties are output_format / width / height / frame_rate /
+// fill_color / fonts only — so the frame rate is the available quality lever.
+// 30 fps stays the default; set RENDER_FRAME_RATE=60 for 60 fps sources
+// (smoother motion, longer renders).
+const RENDER_FRAME_RATE = Math.min(60, Math.max(1, Number(process.env.RENDER_FRAME_RATE) || 30));
 
 function captionStyleDef(style) {
   return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
@@ -65,12 +76,12 @@ function accentedCueText(cue, activeIndex, def) {
     .join(" ");
 }
 
-function captionElement(name, text, { start, length, style, textColor, family, stroke, shadow }) {
+function captionElement(name, text, { start, length, style, textColor, family, stroke, shadow, track }) {
   const def = captionStyleDef(style);
   return {
     type: "text",
     name,
-    track: CAPTION_TRACK,
+    track,
     time: Math.max(0, start),
     duration: Math.max(0.08, length),
     text,
@@ -130,28 +141,60 @@ export function buildRenderSpec({
   captionStrokeSize = 4,
   captionShadowColor = "#000000",
   captionShadowSize = 6,
+  // Frame layout on the 9:16 canvas: "cover" zooms a landscape source to
+  // fill (edges cropped); "contain" keeps the whole frame visible over a
+  // zoomed + blurred copy of itself (black bars when the blur is off).
+  videoFit = "cover",
+  videoBackgroundBlur = true,
 }) {
   const font = captionFont(captionFontKey);
   const def = captionStyleDef(captionStyle);
 
+  // The blurred backdrop needs its own track below the main video, so every
+  // layer above shifts up one track in contain mode.
+  const blurredBg = videoFit === "contain" && videoBackgroundBlur === true;
+  const tracks = blurredBg
+    ? { background: 1, main: 2, broll: 3, watermark: 4, caption: 5, music: 6 }
+    : COVER_TRACKS;
+
   const elements = [];
 
-  // Track 1 — main talking-head video. "cover" crops the landscape source
-  // into the 9:16 canvas (equivalent of Shotstack fit:"crop"); the explicit
-  // duration drives the composition length.
+  // Track 1 (contain + blur only) — the zoomed, blurred background copy that
+  // fills the canvas behind the untouched frame. Muted so only the main
+  // element carries audio.
+  if (blurredBg) {
+    elements.push({
+      type: "video",
+      name: "Background-1",
+      track: tracks.background,
+      time: 0,
+      duration: durationSeconds,
+      source: sourceVideoUrl,
+      trim_start: Math.max(0, sourceTrimSeconds),
+      trim_duration: durationSeconds,
+      fit: "cover",
+      volume: "0%",
+      blur_radius: 40,
+    });
+  }
+
+  // Main talking-head video. "cover" crops the landscape source into the
+  // 9:16 canvas (equivalent of Shotstack fit:"crop"); "contain" letterboxes
+  // the full frame (on the blurred background, or on the black fill_color).
+  // The explicit duration drives the composition length.
   elements.push({
     type: "video",
     name: "Video-1",
-    track: 1,
+    track: tracks.main,
     time: 0,
     duration: durationSeconds,
     source: sourceVideoUrl,
     trim_start: Math.max(0, sourceTrimSeconds),
     trim_duration: durationSeconds,
-    fit: "cover",
+    fit: videoFit === "contain" ? "contain" : "cover",
   });
 
-  // Track 2 — b-roll cutaways over the main video (muted, fade in/out).
+  // B-roll cutaways over the main video (muted, fade in/out).
   for (const [i, b] of brollClips.slice(0, 6).entries()) {
     const start = Math.max(0, Number(b.start));
     // Trim the last b-roll so it can't overrun the clip.
@@ -161,7 +204,7 @@ export function buildRenderSpec({
     elements.push({
       type: "video",
       name: `Broll-${i + 1}`,
-      track: 2,
+      track: tracks.broll,
       time: start,
       duration: length,
       source: b.src,
@@ -179,7 +222,7 @@ export function buildRenderSpec({
     elements.push({
       type: "image",
       name: "Watermark-1",
-      track: 3,
+      track: tracks.watermark,
       time: 0,
       duration: durationSeconds,
       source: watermarkUrl,
@@ -222,6 +265,7 @@ export function buildRenderSpec({
             family: font.family,
             stroke,
             shadow,
+            track: tracks.caption,
           })
         );
         continue;
@@ -240,6 +284,7 @@ export function buildRenderSpec({
             family: font.family,
             stroke,
             shadow,
+            track: tracks.caption,
           })
         );
       }
@@ -252,7 +297,7 @@ export function buildRenderSpec({
     elements.push({
       type: "audio",
       name: "Music-1",
-      track: 5,
+      track: tracks.music,
       time: 0,
       duration: null,
       loop: true,
@@ -265,7 +310,7 @@ export function buildRenderSpec({
     output_format: "mp4",
     width: 1080,
     height: 1920,
-    frame_rate: 30,
+    frame_rate: RENDER_FRAME_RATE,
     fill_color: "#000000",
     fonts: [{ family: font.family, weight: 400, style: "normal", source: font.src }],
     elements,

@@ -54,6 +54,10 @@ const captionDefaultsShape = {
   caption_shadow: z.boolean().default(false),
   caption_shadow_color: z.string().regex(HEX_COLOR).default("#000000"),
   caption_shadow_size: z.coerce.number().int().min(1).max(10).default(6),
+  // 9:16 layout for landscape sources: "cover" zooms to fill (cropped),
+  // "contain" keeps the whole frame over a blurred zoomed copy of the video.
+  video_fit: z.enum(["cover", "contain"]).default("cover"),
+  video_background_blur: z.boolean().default(true),
 };
 
 const createSchema = z
@@ -190,6 +194,8 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         caption_shadow: body.caption_shadow,
         caption_shadow_color: body.caption_shadow_color,
         caption_shadow_size: body.caption_shadow_size,
+        video_fit: body.video_fit,
+        video_background_blur: body.video_background_blur,
       })
       .select("*")
       .single();
