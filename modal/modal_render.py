@@ -237,14 +237,14 @@ def render_clip(payload: dict) -> dict:
 # --- HTTP surface ------------------------------------------------------------
 
 @app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
+@modal.web_endpoint(method="POST", docs=True)  # Or use modal.asgi_app
+def web_entry():
+    pass
+
+# Correct modern Modal ASGI definition:
+@app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
 @modal.asgi_app()
 def web():
-    """ASGI app for the worker's render-provider client.
-
-    Everything FastAPI-related happens inside this function: it is only ever
-    invoked inside the Modal container (to obtain the ASGI app), never locally
-    by `modal deploy` — see the import note at the top of this file.
-    """
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import FileResponse, JSONResponse
 
@@ -269,7 +269,6 @@ def web():
                 status_code=400, detail="spec needs sourceVideoUrl and durationSeconds"
             )
 
-        # Seed as queued so a /status poll before the container starts is truthful.
         status[render_id] = {"status": "queued", "error": None, "createdAt": time.time()}
         render_clip.spawn(
             {
@@ -277,8 +276,6 @@ def web():
                 "clipId": clip_id,
                 "spec": spec,
                 "webhookUrl": body.get("webhookUrl"),
-                # The render container never sees this request, so it learns its
-                # public download URL here for the completion callback.
                 "downloadUrl": f"{_public_base(request)}/download/{render_id}",
             }
         )
@@ -289,8 +286,6 @@ def web():
         _check_secret(request)
         record = status.get(render_id)
         if not record:
-            # Unknown id — report "rendering" so the worker's watchdog (which
-            # fails clips after 2 h) owns the outcome instead of a hard error.
             return JSONResponse({"status": "rendering", "error": None})
         return JSONResponse(
             {"status": record.get("status", "rendering"), "error": record.get("error")}
@@ -302,7 +297,6 @@ def web():
         record = status.get(render_id) or {}
         if record.get("status") != "done":
             raise HTTPException(status_code=409, detail="Render is not finished")
-        # The file was written by another container — reload before reading it.
         renders.reload()
         path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
         if not os.path.isfile(path):
@@ -310,5 +304,4 @@ def web():
         return FileResponse(path, media_type="video/mp4", filename=f"{render_id}.mp4")
 
     return web_app
-
 
