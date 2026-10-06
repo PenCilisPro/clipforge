@@ -31,6 +31,11 @@ function modalBaseUrl() {
   if (!raw) {
     throw new Error("MODAL_RENDER_URL is not configured — deploy the Modal app and set its web URL");
   }
+  if (/^https?:\/\/(?:www\.)?modal\.com/i.test(raw)) {
+    throw new Error(
+      `MODAL_RENDER_URL is pointing to "${raw}", which is the Modal web dashboard. It must be your deployed web endpoint ending in .modal.run (e.g. https://<workspace>--clipforge-render-web.modal.run)`
+    );
+  }
   return raw;
 }
 

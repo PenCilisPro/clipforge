@@ -150,8 +150,10 @@ export async function generateThumbnail(inputPath, outputPath, atSeconds = 1) {
     "-ss", String(Math.max(0, atSeconds)),
     "-i", inputPath,
     "-frames:v", "1",
-    "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
-    "-q:v", "3",
+    // Lanczos downscale + q:v 2: the old default scaler + q:v 3 made posters
+    // visibly soft in the dashboard grid.
+    "-vf", "scale=720:1280:force_original_aspect_ratio=increase:flags=lanczos,crop=720:1280",
+    "-q:v", "2",
     "-threads", "1",
     outputPath,
   ]);

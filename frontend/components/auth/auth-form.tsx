@@ -81,9 +81,10 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           password,
         });
         if (error) throw error;
-        // Land straight on the New Project page after login.
+        // Land straight on the New Project page after login. The dashboard is
+        // client-side (Firebase session in IndexedDB), so no refresh is needed
+        // — and refresh() this early after push() crashes the React tree.
         router.push("/dashboard/new");
-        router.refresh();
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Something went wrong");
@@ -101,9 +102,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       });
       if (error) throw error;
       // signInWithPopup resolves once Firebase has signed the user in;
-      // nothing else watches auth state on this page, so navigate now.
+      // nothing else watches auth state on this page, so navigate now (see
+      // handleSubmit for why there's no router.refresh() here).
       router.push("/dashboard/new");
-      router.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Google sign-in failed");
       setOauthLoading(false);

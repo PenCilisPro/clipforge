@@ -32,21 +32,28 @@ async function fetchBranding(): Promise<Branding> {
 }
 
 /**
- * Swap the browser-tab icon for the custom branding. The static Next.js icon
- * links (app/icon.svg) are removed first — with both in the head Chrome can
- * keep showing the built-in bolt even after a reload.
+ * Swap the browser-tab icon for the custom branding. The built-in icon links
+ * are repointed rather than removed: in the App Router those <link> nodes are
+ * React-managed metadata, and detaching them makes React throw
+ * "removeChild of null" on the next client navigation (e.g. after login).
  */
 function applyFavicon(faviconUrl: string) {
   if (!/^https?:\/\//i.test(faviconUrl) || appliedFavicon === faviconUrl) return;
   appliedFavicon = faviconUrl;
-  document
-    .querySelectorAll<HTMLLinkElement>('link[rel*="icon"]')
-    .forEach((el) => el.remove());
-  for (const rel of ["icon", "shortcut icon", "apple-touch-icon"]) {
-    const link = document.createElement("link");
-    link.rel = rel;
-    link.href = faviconUrl;
-    document.head.appendChild(link);
+  const existing = document.querySelectorAll<HTMLLinkElement>('link[rel*="icon"]');
+  if (existing.length > 0) {
+    existing.forEach((el) => {
+      el.href = faviconUrl;
+      el.removeAttribute("type");
+      el.removeAttribute("sizes");
+    });
+  } else {
+    for (const rel of ["icon", "shortcut icon", "apple-touch-icon"]) {
+      const link = document.createElement("link");
+      link.rel = rel;
+      link.href = faviconUrl;
+      document.head.appendChild(link);
+    }
   }
 }
 
@@ -54,12 +61,19 @@ function applyFavicon(faviconUrl: string) {
 function resetFavicon() {
   if (!appliedFavicon) return;
   appliedFavicon = null;
-  document.querySelectorAll<HTMLLinkElement>('link[rel*="icon"]').forEach((el) => el.remove());
-  const link = document.createElement("link");
-  link.rel = "icon";
-  link.type = "image/svg+xml";
-  link.href = "/icon.svg";
-  document.head.appendChild(link);
+  const links = document.querySelectorAll<HTMLLinkElement>('link[rel*="icon"]');
+  if (links.length > 0) {
+    links.forEach((el) => {
+      el.href = "/icon.svg";
+      el.type = "image/svg+xml";
+    });
+  } else {
+    const link = document.createElement("link");
+    link.rel = "icon";
+    link.type = "image/svg+xml";
+    link.href = "/icon.svg";
+    document.head.appendChild(link);
+  }
 }
 
 /** Custom logo uploaded from the admin page (falls back to the default mark). */
