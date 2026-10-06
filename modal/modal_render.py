@@ -237,18 +237,23 @@ def render_clip(payload: dict) -> dict:
 # --- HTTP surface ------------------------------------------------------------
 
 @app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
-@modal.web_endpoint(method="POST", docs=True)  # Or use modal.asgi_app
-def web_entry():
-    pass
-
-# Correct modern Modal ASGI definition:
-@app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
-@modal.asgi_app()
+@app.asgi_app()
 def web():
+    """ASGI app for the worker's render-provider client."""
     from fastapi import FastAPI, HTTPException, Request
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, JSONResponse
 
     web_app = FastAPI(title="ClipForge Modal render provider")
+
+    # Handle browser preflight OPTIONS requests
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @web_app.get("/health")
     def health() -> dict:
@@ -304,4 +309,3 @@ def web():
         return FileResponse(path, media_type="video/mp4", filename=f"{render_id}.mp4")
 
     return web_app
-
