@@ -38,3 +38,4 @@ temp/
 
 # accidental Windows temp-dump test videos at repo root
 UserstaratAppDataLocalTemp*.mp4
+__pycache__/

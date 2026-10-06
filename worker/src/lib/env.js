@@ -54,12 +54,18 @@ export const env = {
   pixabayApiKey: process.env.PIXABAY_API_KEY,
 
   // Render provider. RENDER_PROVIDER pins one ("creatomate" | "shotstack" |
-  // "local"); unset auto-detects — Creatomate when its key is set (watermark-
-  // free on every plan), else Shotstack (stage burns a watermark; legacy
-  // fallback only), else local ffmpeg on this machine (no usage limits, no
-  // watermark, uses worker CPU).
+  // "modal" | "local"); unset auto-detects — Creatomate when its key is set
+  // (watermark-free on every plan), else Shotstack (stage burns a watermark;
+  // legacy fallback only), else Modal when MODAL_RENDER_URL is set (serverless
+  // ffmpeg of this repo's own renderer — free-tier compute, no watermark),
+  // else local ffmpeg on this machine (no usage limits, no watermark, uses
+  // worker CPU).
   renderProvider: process.env.RENDER_PROVIDER,
   creatomateApiKey: process.env.CREATOMATE_API_KEY,
+  // Modal render app (modal/modal_render.py): the deployed web endpoint URL
+  // and the shared secret both sides send as X-Render-Secret.
+  modalRenderUrl: process.env.MODAL_RENDER_URL,
+  modalRenderSecret: process.env.MODAL_RENDER_SECRET,
   // Legacy Shotstack client (kept for in-flight renders from before a swap).
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
@@ -124,9 +130,27 @@ export function warnMissing() {
   // Cloud-render warnings only apply when a cloud provider is actually in
   // play — RENDER_PROVIDER=local (or no keys configured) renders with ffmpeg
   // on this machine and needs neither API keys nor a webhook.
-  const provider = String(process.env.RENDER_PROVIDER ?? "").trim().toLowerCase() ||
-    (process.env.CREATOMATE_API_KEY ? "creatomate" : process.env.SHOTSTACK_API_KEY ? "shotstack" : "local");
-  if (provider !== "local") {
+  const provider =
+    String(process.env.RENDER_PROVIDER ?? "").trim().toLowerCase() ||
+    (process.env.CREATOMATE_API_KEY
+      ? "creatomate"
+      : process.env.SHOTSTACK_API_KEY
+        ? "shotstack"
+        : process.env.MODAL_RENDER_URL
+          ? "modal"
+          : "local");
+  if (provider === "modal") {
+    optionalWarnings.push(
+      {
+        names: ["MODAL_RENDER_URL"],
+        consequence: "rendering will fail — deploy modal/modal_render.py and set its web URL",
+      },
+      {
+        names: ["RENDER_WEBHOOK_URL", "SHOTSTACK_WEBHOOK_URL"],
+        consequence: "renders will submit but never complete (webhook-only design)",
+      }
+    );
+  } else if (provider !== "local") {
     optionalWarnings.push(
       { names: ["CREATOMATE_API_KEY", "SHOTSTACK_API_KEY"], consequence: "rendering will fail" },
       {

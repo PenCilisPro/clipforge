@@ -116,8 +116,44 @@ Requires a local **Redis** (`docker run -p 6379:6379 redis:7`) and **FFmpeg** (b
 | URL download | RapidAPI key + downloader endpoint (`RAPIDAPI_KEY`, `RAPIDAPI_HOST`, `RAPIDAPI_DOWNLOADER_URL`) |
 | Transcription | Google Cloud service-account JSON (`GOOGLE_APPLICATION_CREDENTIALS` path or `GOOGLE_CREDENTIALS_JSON` inline) |
 | AI clip detection | z.ai / Zhipu GLM (`ZAI_API_KEY`, optional `ZAI_API_BASE_URL`, `ZAI_MODEL`; default model `glm-4.5-flash` — free tier) |
-| Rendering | `RENDER_PROVIDER=local` — ffmpeg renders on the worker itself: no usage credits, no watermark (uses worker CPU; `RENDER_THREADS` raises parallelism; quality via `RENDER_PRESET`=fast default, `RENDER_CRF`=18 default, `RENDER_AUDIO_BITRATE`=192k). Or cloud: Creatomate (`CREATOMATE_API_KEY`; `RENDER_FRAME_RATE` up to 60) or Shotstack (`SHOTSTACK_API_KEY`) — metered per render |
+| Rendering | `RENDER_PROVIDER=local` — ffmpeg renders on the worker itself: no usage credits, no watermark (uses worker CPU; `RENDER_THREADS` raises parallelism; quality via `RENDER_PRESET`=fast default, `RENDER_CRF`=18 default, `RENDER_AUDIO_BITRATE`=192k). Or cloud: **Modal** (`MODAL_RENDER_URL` + `MODAL_RENDER_SECRET` — free-tier serverless ffmpeg running this repo's own renderer, no watermark, see [modal/README.md](modal/README.md)), Creatomate (`CREATOMATE_API_KEY`; `RENDER_FRAME_RATE` up to 60) or Shotstack (`SHOTSTACK_API_KEY`) — the last two are metered per render |
 | Publishing | `YOUTUBE_CLIENT_ID/SECRET`, `META_APP_ID/SECRET` (IG + FB), `TIKTOK_CLIENT_KEY/SECRET` |
+
+### 6. Render provider (optional — how clips get encoded)
+
+Clips render on one of four swappable providers; the worker picks one from
+`RENDER_PROVIDER` (or auto-detects: Creatomate → Shotstack → Modal → local):
+
+| Provider | Watermark | Cost | Where |
+|---|---|---|---|
+| `local` | none | free | the worker box (needs real CPU) |
+| `modal` | none | **free tier — $30/month of compute** | Modal serverless, running *this repo's own* ffmpeg renderer |
+| `creatomate` | none | paid credits (50-credit trial) | Creatomate cloud |
+| `shotstack` | stage env burns one in | paid | legacy fallback only |
+
+**Modal setup** (the free, cloud, watermark-free option — full guide in
+[modal/README.md](modal/README.md)):
+
+```bash
+pip install --upgrade modal
+modal setup                                        # browser sign-in
+modal secret create clipforge-render MODAL_RENDER_SECRET=<random-string>
+modal deploy modal/modal_render.py                 # prints the web endpoint URL
+```
+
+Then in `worker/.env`:
+
+```ini
+RENDER_PROVIDER=modal
+MODAL_RENDER_URL=https://<workspace>--clipforge-render-web.modal.run
+MODAL_RENDER_SECRET=<the same random string>
+```
+
+`modal/modal_render.py` ships `worker/src/lib/localRender.js` into a Modal
+container and runs it, so Modal output is identical to `local` (same
+filtergraph, ASS captions, 9:16 cover/contain layouts, watermark, music) with
+the encode happening off your worker. Completion uses the existing render
+webhook plus the worker's status polling, so no pipeline code changes.
 
 ---
 

@@ -11,6 +11,11 @@
  */
 import { buildRenderSpec as buildCreatomate } from "../src/lib/creatomate.js";
 import { buildEditJson as buildShotstack } from "../src/lib/shotstack.js";
+import {
+  buildRenderSpec as buildModal,
+  assertTrustedRenderUrl as assertModalUrl,
+} from "../src/lib/modalRender.js";
+import * as modalProvider from "../src/lib/modalRender.js";
 import { resolveRenderProvider } from "../src/lib/renderProvider.js";
 
 const CUES = [
@@ -155,7 +160,49 @@ const ssMain = ssContain.timeline.tracks
   .find((c) => c.asset?.type === "video" && c.asset?.src === PARAMS.sourceVideoUrl);
 assert(ssMain?.fit === "contain", "shotstack contain: main video letterboxed (blur unsupported — black bars)");
 
-console.log(`\nResolved provider: ${resolveRenderProvider()} (CREATOMATE_API_KEY ${process.env.CREATOMATE_API_KEY ? "set" : "unset"}, SHOTSTACK_API_KEY ${process.env.SHOTSTACK_API_KEY ? "set" : "unset"})`);
+// --- Modal (serverless ffmpeg running this repo's own renderer) ---
+const md = buildModal(PARAMS);
+assert(md === PARAMS, "modal: spec passes through unchanged (same params as the local provider)");
+assert(
+  ["buildRenderSpec", "submitRender", "getRender", "downloadRenderedClip"].every(
+    (fn) => typeof modalProvider[fn] === "function"
+  ),
+  "modal: implements the full provider contract"
+);
+// env.js snapshots process.env at import time, so exercise whichever branch
+// this environment is in (set MODAL_RENDER_URL in the shell to test trusted
+// URLs: `MODAL_RENDER_URL=https://x node scripts/validate-render-spec.mjs`).
+const modalBase = String(process.env.MODAL_RENDER_URL ?? "").replace(/\/+$/, "");
+if (modalBase) {
+  assert(
+    assertModalUrl(`${modalBase}/download/modal-abc`) === `${modalBase}/download/modal-abc`,
+    "modal: own /download/ URL is trusted"
+  );
+  let rejected = false;
+  try {
+    assertModalUrl("https://evil.example.com/download/modal-abc");
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "modal: foreign download host is rejected");
+  rejected = false;
+  try {
+    assertModalUrl(`${modalBase}/status/modal-abc`);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "modal: non-/download/ path on the trusted host is rejected");
+} else {
+  let threw = false;
+  try {
+    assertModalUrl("https://evil.example.com/download/modal-abc");
+  } catch (err) {
+    threw = /not configured/.test(err.message);
+  }
+  assert(threw, "modal: unconfigured MODAL_RENDER_URL fails loudly instead of fetching anything");
+}
+
+console.log(`\nResolved provider: ${resolveRenderProvider()} (CREATOMATE_API_KEY ${process.env.CREATOMATE_API_KEY ? "set" : "unset"}, SHOTSTACK_API_KEY ${process.env.SHOTSTACK_API_KEY ? "set" : "unset"}, MODAL_RENDER_URL ${process.env.MODAL_RENDER_URL ? "set" : "unset"})`);
 
 // --- Optional live validation (free, no credits, nothing queued) ---
 if (process.env.CREATOMATE_API_KEY) {
