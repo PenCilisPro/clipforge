@@ -82,16 +82,3 @@ app.listen(env.port, () => {
   console.log(`[clipforge-api] listening on :${env.port}`);
   console.log(`[clipforge-api] CORS origins: ${env.frontendUrls.join(", ")} + *.code.run + *.vercel.app`);
 });
-const express = require('express');
-const cors = require('cors');
-const app = express();
-
-app.use(cors({
-  origin: ['https://clipforge-frontend-zeta.vercel.app'], //
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-render-secret'],
-  credentials: true
-}));
-
-// Handle preflight requests explicitly
-app.options('*', cors());
