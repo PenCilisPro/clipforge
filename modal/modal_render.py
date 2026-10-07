@@ -57,7 +57,7 @@ RENDERS_DIR = f"{VOLUME_MOUNT}/renders"
 # One clip is a single ffmpeg pass — 4 vCPU keeps a 60 s 1080x1920 render well
 # inside the free tier while still finishing in well under a minute.
 RENDER_CPU = 4.0
-RENDER_MEMORY_MB = 4096  # Bumps memory to 8GB to prevent FFmpeg OOM
+RENDER_MEMORY_MB = 8192  # Bumps memory to 8GB to prevent FFmpeg OOM
 RENDER_TIMEOUT_S = 25 * 60
 MAX_CONTAINERS = 4
 # Renders are deleted after the worker has downloaded them; 3 days is generous
