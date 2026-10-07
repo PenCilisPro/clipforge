@@ -91,7 +91,13 @@ export function probeMedia(filePath) {
  * MP4 once per 55 s of speech, saturating the 0.2 vCPU service for hours.
  */
 export async function extractRawPcm(inputPath, outputPath) {
+  // Remote inputs (presigned R2 URLs) get reconnect flags so one dropped
+  // HTTP range read doesn't sink a multi-hour extraction near the end.
+  const netFlags = /^https?:\/\//i.test(String(inputPath))
+    ? ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
+    : [];
   return runFfmpeg([
+    ...netFlags,
     "-threads", "1",
     "-filter_threads", "1",
     "-i", inputPath,
@@ -162,6 +168,22 @@ export async function generateThumbnail(inputPath, outputPath, atSeconds = 1) {
 export async function cleanup(...paths) {
   await Promise.all(
     paths.filter(Boolean).map((p) => fs.rm(p, { force: true, recursive: true }).catch(() => {}))
+  );
+}
+
+/**
+ * Wipe TMP_DIR contents (intended for worker startup). A crashed job leaves
+ * source videos / PCM / temp files behind, and the container only has ~1 GiB
+ * of ephemeral disk — filenames are per-job UUIDs, so nothing here is
+ * stateful and safe to delete.
+ */
+export async function sweepTmpDir() {
+  await ensureTmpDir();
+  const entries = await fs.readdir(TMP_DIR).catch(() => []);
+  await Promise.all(
+    entries.map((entry) =>
+      fs.rm(path.join(TMP_DIR, entry), { force: true, recursive: true }).catch(() => {})
+    )
   );
 }
 

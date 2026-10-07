@@ -4,7 +4,7 @@ import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../
 import { enqueuePipeline } from "../lib/queues.js";
 import { ensureTmpDir, tmpPath, cleanup, extractRawPcm, probeMedia } from "../lib/ffmpeg.js";
 import { fetchSourceVideo, isSplitSource, sourceStoragePaths } from "../lib/source.js";
-import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
+import { uploadFile as r2UploadFile, remove as r2Remove, presignGet, r2Key } from "../lib/r2.js";
 import { env } from "../lib/env.js";
 
 // The Google speech SDK is heavy; load it only when a transcription job
@@ -55,10 +55,27 @@ export async function processTranscribe(job) {
 
     await ensureTmpDir();
 
-    // 1. Pull source video out of storage (reassembles split uploads)
-    localVideo = tmpPath(`source-${projectId}.mp4`);
-    await fetchSourceVideo(project, localVideo);
-    if (isSplitSource(project.original_video_path)) {
+    // 1. Hand ffmpeg the shortest path to the audio. The container has only
+    //    ~1 GiB of ephemeral disk, so a source-sized MP4 must NOT land here:
+    //    - regular uploads: presign the R2 object and let ffprobe/ffmpeg
+    //      stream it over HTTP — the file never touches local disk at all;
+    //    - split uploads (legacy multipart path): the parts must be
+    //      reassembled locally, merged into one object, then processed.
+    let mediaSource; // local file path OR presigned https URL
+    if (!isSplitSource(project.original_video_path)) {
+      // Same ownership guard fetchSourceVideo enforces for downloads — the
+      // presigned URL would otherwise bypass it.
+      if (!String(project.original_video_path).startsWith(`${project.user_id}/`)) {
+        throw new Error("Source video path does not belong to the project owner");
+      }
+      // TTL covers the whole stage (extraction + chunked STT loop).
+      mediaSource = await presignGet(
+        r2Key("source-videos", project.original_video_path),
+        6 * 60 * 60
+      );
+    } else {
+      localVideo = tmpPath(`source-${projectId}.mp4`);
+      await fetchSourceVideo(project, localVideo);
       const previousPath = project.original_video_path;
       const canonicalPath = `${project.user_id}/${projectId}.mp4`;
       await r2UploadFile(`source-videos/${canonicalPath}`, localVideo, "video/mp4");
@@ -72,9 +89,10 @@ export async function processTranscribe(job) {
       await r2Remove(oldPaths.map((sourcePath) => `source-videos/${sourcePath}`)).catch((err) => {
         console.warn(`[transcribe] could not remove split source parts: ${err.message}`);
       });
+      mediaSource = localVideo;
     }
 
-    const probe = await probeMedia(localVideo).catch(() => null);
+    const probe = await probeMedia(mediaSource).catch(() => null);
     const hasAudio = (probe?.streams ?? []).some((stream) => stream.codec_type === "audio");
     if (!hasAudio) {
       throw new Error(
@@ -107,9 +125,10 @@ export async function processTranscribe(job) {
     // range (32 000 B/s × 55 s ≈ 1.7 MB, well under Google's 10 MiB inline
     // and 60 s limits) through a single reused buffer.
     pcmFile = tmpPath(`audio-${projectId}.pcm`);
-    await extractRawPcm(localVideo, pcmFile);
+    await extractRawPcm(mediaSource, pcmFile);
     // The source is no longer needed locally — render works off the R2
-    // object — so free its disk before the long transcription loop.
+    // object — so free its disk before the long transcription loop. (Only
+    // the split path ever had a local file; cleanup(null) is a no-op.)
     await cleanup(localVideo);
     localVideo = null;
 

@@ -88,14 +88,16 @@ export async function processAnalyze(job) {
       }
     }
 
-    // Persist clip rows
+    // Persist clip rows. Fetch the owner once — the per-insert lookup was an
+    // N+1 (one extra DB round trip per clip on the smallest CPU tier).
     const clipRows = [];
+    const projectUserId = await getProjectUser(projectId);
     for (const suggestion of suggestions) {
       const { data: clipRow, error: insertError } = await supabaseAdmin
         .from("clips")
         .insert({
           project_id: projectId,
-          user_id: (await getProjectUser(projectId)),
+          user_id: projectUserId,
           title: suggestion.title,
           hook_text: suggestion.hook,
           start_time: suggestion.start,

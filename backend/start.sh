@@ -7,10 +7,17 @@
 # backgrounded `redis && node worker &` chain never exits, so the worker node
 # process would never start and every queued clip would sit forever (this
 # exact bug shipped once — keep the daemonize flag).
+# maxmemory is mandatory, not optional: Redis shares one 512 MB container
+# with the API, the worker and transient ffmpeg processes, and an unbounded
+# queue store (dead letters, delayed publishing jobs, stalled-check state)
+# would eventually eat the container and OOM-kill everything. noeviction is
+# the only policy BullMQ supports — evicting job keys silently loses jobs.
 redis-server \
   --port 6379 \
   --save "" \
   --appendonly no \
+  --maxmemory 96mb \
+  --maxmemory-policy noeviction \
   --daemonize yes
 
 # Locate the worker source (Docker image copies it to /worker; a repo

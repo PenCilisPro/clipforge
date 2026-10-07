@@ -127,6 +127,12 @@ export async function searchBrollClip(keyword) {
   if (env.pexelsApiKey) url = await searchPexels(keyword);
   if (!url && env.pixabayApiKey) url = await searchPixabay(keyword);
 
+  // Bound the cache: keywords are LLM-generated and effectively unbounded,
+  // and this Map lives for the whole worker process lifetime. Evict oldest
+  // first (Map preserves insertion order).
+  while (brollCache.size >= 500) {
+    brollCache.delete(brollCache.keys().next().value);
+  }
   brollCache.set(keyword, { url, ts: Date.now() });
   return url;
 }

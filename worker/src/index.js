@@ -2,7 +2,7 @@ import { Worker } from "bullmq";
 import IORedis from "ioredis";
 
 import { env, warnMissing } from "./lib/env.js";
-import { ensureTmpDir } from "./lib/ffmpeg.js";
+import { ensureTmpDir, sweepTmpDir } from "./lib/ffmpeg.js";
 import { processDownload } from "./pipelines/download.js";
 import { processTranscribe } from "./pipelines/transcribe.js";
 import { processAnalyze } from "./pipelines/analyze.js";
@@ -74,9 +74,12 @@ const pipelineWorker = new Worker(
   }
 );
 
+// Sequential uploads: publishing streams clip bytes to Google/Meta/TikTok,
+// and parallel duplex streams multiply the worker's socket buffers and CPU
+// on a 0.2 vCPU / 512 MB service. Publishing later is free; OOM is not.
 const publishingWorker = new Worker("clipforge-publishing", processPublish, {
   connection,
-  concurrency: 2,
+  concurrency: 1,
 });
 
 for (const worker of [pipelineWorker, publishingWorker]) {
@@ -88,7 +91,10 @@ for (const worker of [pipelineWorker, publishingWorker]) {
   });
 }
 
+// Ephemeral disk is ~1 GiB and the worker supervise-loop restarts in place,
+// so a crashed job's leftovers persist — clear them before taking new work.
 await ensureTmpDir();
+await sweepTmpDir();
 startRecovery();
 
 console.log(
