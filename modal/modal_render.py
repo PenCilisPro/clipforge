@@ -57,7 +57,7 @@ RENDERS_DIR = f"{VOLUME_MOUNT}/renders"
 # One clip is a single ffmpeg pass — 4 vCPU keeps a 60 s 1080x1920 render well
 # inside the free tier while still finishing in well under a minute.
 RENDER_CPU = 4.0
-RENDER_MEMORY_MB = 8192  # Bumps memory to 8GB to prevent FFmpeg OOM
+RENDER_MEMORY_MB = 16384  # 16 GB RAM
 RENDER_TIMEOUT_S = 25 * 60
 MAX_CONTAINERS = 4
 # Renders are deleted after the worker has downloaded them; 3 days is generous
@@ -174,7 +174,9 @@ def render_clip(payload: dict) -> dict:
         json.dump(spec, handle)
 
     child_env = {**os.environ, "TMP_DIR": CONTAINER_TMP, "RENDER_THREADS": str(int(RENDER_CPU))}
-
+    "NODE_OPTIONS": "--max-old-space-size=12288",  # <-- Add this line
+        "RENDER_THREADS": "2",                         # <-- Add this line
+        "FFMPEG_THREADS": "2"
     try:
         proc = subprocess.run(
             ["node", "/app/render-runner.mjs", spec_path, clip_id],
