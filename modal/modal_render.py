@@ -174,9 +174,7 @@ def render_clip(payload: dict) -> dict:
         json.dump(spec, handle)
 
     child_env = {**os.environ, "TMP_DIR": CONTAINER_TMP, "RENDER_THREADS": str(int(RENDER_CPU))}
-    "NODE_OPTIONS": "--max-old-space-size=12288",  # <-- Add this line
-        "RENDER_THREADS": "2",                         # <-- Add this line
-        "FFMPEG_THREADS": "2"
+    
     try:
         proc = subprocess.run(
             ["node", "/app/render-runner.mjs", spec_path, clip_id],
