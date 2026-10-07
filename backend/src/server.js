@@ -23,6 +23,9 @@ import musicRoutes from "./routes/music.js";
 import brandingRoutes from "./routes/branding.js";
 import uploadRoutes from "./routes/uploads.js";
 
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err);
+});
 assertCriticalEnv();
 
 const app = express();
