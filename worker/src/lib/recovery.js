@@ -265,18 +265,45 @@ export function startRecovery() {
     reenqueueStrandedRenders(10 * 60 * 1000).catch((e) =>
       console.error("[recovery] startup pass failed:", e.message)
     );
-    resumeStrandedPipelines().catch((e) =>
-      console.error("[recovery] startup pipeline-resume pass failed:", e.message)
-    );
-  }, 15_000);
+    // Quota backoff: if Firestore says RESOURCE_EXHAUSTED, skip passes for 10 min
+let quotaCoolDownUntil = 0;
 
-  const timer = setInterval(() => {
-    reenqueueStrandedRenders(30 * 60 * 1000).catch((e) =>
-      console.error("[recovery] periodic pass failed:", e.message)
-    );
-    resumeStrandedPipelines().catch((e) =>
-      console.error("[recovery] pipeline-resume pass failed:", e.message)
-    );
+function safePass(name, fn) {
+  return async () => {
+    if (Date.now() < quotaCoolDownUntil) return;
+    try {
+      await fn();
+    } catch (e) {
+      if (String(e).includes("RESOURCE_EXHAUSTED")) {
+        quotaCoolDownUntil = Date.now() + 10 * 60_000;
+        console.error(`[recovery] ${name}: quota exceeded — pausing recovery for 10 min`);
+      }
+      console.error(`[recovery] ${name} failed:`, e.message);
+    }
+  };
+}
+
+// Startup pass: run every 15s but STOP after the first success —
+// it only exists to catch work stranded by a restart.
+let startupDone = false;
+const startupTimer = setInterval(() => {
+  if (startupDone) return clearInterval(startupTimer);
+  safePass("startup pipeline-resume", resumeStrandedPipelines)().then(() => {
+    startupDone = true;
+    clearInterval(startupTimer);
+  });
+}, 15_000);
+
+const timer = setInterval(() => {
+  const passes = [
+    ["periodic", () => reenqueueStrandedRenders(30 * 60 * 1000)],
+    ["pipeline-resume", resumeStrandedPipelines],
+    ["render-poll", pollSubmittedRenders],
+    // keep your webhook-timeout pass here too:
+    // ["webhook-timeout", checkWebhookTimeouts],
+  ];
+  for (const [name, fn] of passes) safePass(name, fn)();
+}, 300_000); // ← every 5 minutes instead of every minute
     pollSubmittedRenders().catch((e) =>
       console.error("[recovery] render-poll pass failed:", e.message)
     );
