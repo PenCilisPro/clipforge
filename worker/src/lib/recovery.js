@@ -105,14 +105,13 @@ const PIPELINE_STRANDED_AFTER_MS = 90 * 1000;
 
 async function resumeStrandedPipelines() {
   // Single-field "in" query (no composite index needed); filter the rest in JS.
+    // status filter MUST be server-side: the shim fetches unfiltered queries
+  // up to 2000 docs, and the jobs collection grows forever — that alone
+  // burned the daily Firestore quota with zero users.
   const { data: jobRows, error } = await supabaseAdmin
     .from("jobs")
     .select("id, project_id, job_type, status, created_at")
-    .in("job_type", ["download", "transcribe", "analyze"]);
-  if (error) {
-    console.error("[recovery] pipeline-jobs query failed:", error.message);
-    return;
-  }
+    .in("status", ["queued", "active"]);
   const stranded = (jobRows ?? []).filter(
     (j) =>
       ["queued", "active"].includes(j.status) &&
