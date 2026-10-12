@@ -237,7 +237,7 @@ def render_clip(payload: dict) -> dict:
 # --- HTTP surface ------------------------------------------------------------
 
 @app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
-@modal.web_endpoint(method="POST", docs=True)  # Or use modal.asgi_app
+@modal.fastapi_endpoint(method="POST", docs=True)
 def web_entry():
     pass
 
