@@ -44,11 +44,11 @@ export function runFfmpeg(args, { cwd } = {}) {
       proc.kill("SIGKILL");
       reject(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60000)} min: ${stderr.slice(-400)}`));
     }, FFMPEG_TIMEOUT_MS);
-    proc.on("close", (code, signal) => {
+        proc.on("close", (code, signal) => {
       clearTimeout(timer);
       code === 0
         ? resolve()
-                : code === null
+        : code === null
           ? reject(new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`))
           : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
     });
