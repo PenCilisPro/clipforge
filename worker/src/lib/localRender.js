@@ -460,7 +460,7 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   try {
     await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true });
   } catch (err) {
-    if (/SIGKILL|out of memory/i.test(err.message)) {
+        if (/SIGKILL/i.test(err.message)) {
       console.warn("[local-render] OOM-killed — retrying at 720x1280 with a lighter encode");
       await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
       await renderOnce(spec, outputRel, { width: 720, height: 1280, withMusic: true });
