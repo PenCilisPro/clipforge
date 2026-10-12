@@ -7,7 +7,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // Always use the bundled static binaries — never a user/env-supplied path.
-const FFMPEG_PATH = ffmpegStatic;
+const FFMPEG_PATH = process.env.FFMPEG_PATH_OVERRIDE || ffmpegStatic;
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
 
