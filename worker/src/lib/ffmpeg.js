@@ -47,8 +47,8 @@ export function runFfmpeg(args, { cwd } = {}) {
       clearTimeout(timer);
       code === 0
         ? resolve()
-        : code === null
-          ? reject(new Error(`ffmpeg was killed by signal ${signal} (likely out of memory)`))
+                : code === null
+          ? reject(new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`))
           : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
     });
     proc.on("error", (err) => {
