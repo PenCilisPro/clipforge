@@ -265,10 +265,17 @@ function buildFilterGraph({
     if (videoBackgroundBlur) {
       // Zoomed + blurred (and slightly darkened) copy fills the 9:16 canvas;
       // the untouched letterboxed frame is centered on top of it.
+            // Blur is computed at 1/8 resolution then upscaled: gblur sigma=24 at
+      // full 1080x1920 is so slow the split's other branch queues frames
+      // unboundedly and OOM-kills the container (and gblur slice-threading
+      // has a known SIGSEGV). Same soft-blur look, ~50x faster, stable.
+      const bw = Math.round(width / 8);
+      const bh = Math.round(height / 8);
       parts.push(
         `[0:v]split=2[bgs][fgs];` +
-          `[bgs]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,` +
-          `crop=${width}:${height},gblur=sigma=24,eq=brightness=-0.07[bg];` +
+          `[bgs]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=lanczos,` +
+          `crop=${bw}:${bh},boxblur=luma_radius=6:luma_power=2:chroma_radius=6:chroma_power=2,` +
+          `eq=brightness=-0.07,scale=${width}:${height}:flags=bilinear[bg];` +
           `[fgs]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];` +
           `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[base]`
       );
