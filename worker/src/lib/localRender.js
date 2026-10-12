@@ -405,8 +405,8 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i
   }
 
   const args = [
-    "-threads", String(RENDER_THREADS),
-    "-filter_threads", String(RENDER_THREADS),
+   "-threads", String(Math.min(RENDER_THREADS, 4)),
+    "-filter_threads", "2",
     ...inputs,
     "-t", fmt(durationSeconds),
     "-filter_complex_script", graphFileRel,
