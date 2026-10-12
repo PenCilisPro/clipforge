@@ -112,9 +112,9 @@ async function resumeStrandedPipelines() {
     .from("jobs")
     .select("id, project_id, job_type, status, created_at")
     .in("status", ["queued", "active"]);
-  const stranded = (jobRows ?? []).filter(
+    const stranded = (jobRows ?? []).filter(
     (j) =>
-      ["queued", "active"].includes(j.status) &&
+      ["download", "transcribe", "analyze"].includes(j.job_type) &&
       j.created_at &&
       Date.now() - new Date(j.created_at).getTime() > PIPELINE_STRANDED_AFTER_MS
   );
