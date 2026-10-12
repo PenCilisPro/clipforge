@@ -417,8 +417,10 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i
   } else {
     args.push("-map", "0:a?");
   }
-  args.push(
-    "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF), "-pix_fmt", "yuv420p",
+    args.push(
+    "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF),
+    "-x264-params", "rc-lookahead=20",
+    "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", RENDER_AUDIO_BITRATE,
     "-movflags", "+faststart",
     outputRel
