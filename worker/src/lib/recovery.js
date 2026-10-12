@@ -311,5 +311,9 @@ const timer = setInterval(() => {
       console.error("[recovery] webhook-timeout pass failed:", e.message)
     );
   }, 60 * 1000);
-  timer.unref?.();
+const timer = setInterval(() => {
+  // ... the passes ...
+}, 300_000);
+
+timer.unref?.();        // ← line 314 must have a matching const timer above it
 }
