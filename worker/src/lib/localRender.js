@@ -361,7 +361,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
 
   // -ss before -i is frame-accurate here because the output is re-encoded.
   const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", String(sourceVideoUrl)];
-  for (const b of broll) inputs.push("-i", String(b.src));
+// -ss before -i is frame-accurate here (output is re-encoded) and stops the
+// overlay queue from buffering the b-roll from t=0.
+for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", String(b.src));
 
   let watermarkInput = null;
   let wmLocalPath = null;
