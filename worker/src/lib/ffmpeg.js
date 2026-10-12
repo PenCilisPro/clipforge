@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 
 // Distro ffmpeg inside Modal (override), static binary everywhere else.
 const FFMPEG_PATH = process.env.FFMPEG_PATH_OVERRIDE || ffmpegStatic;
+console.log("[ffmpeg] using binary:", FFMPEG_PATH);
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
 console.log("[ffmpeg] using binary:", FFMPEG_PATH);
