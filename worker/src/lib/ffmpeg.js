@@ -6,10 +6,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 
-// Always use the bundled static binaries — never a user/env-supplied path.
+// Distro ffmpeg inside Modal (override), static binary everywhere else.
 const FFMPEG_PATH = process.env.FFMPEG_PATH_OVERRIDE || ffmpegStatic;
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
+console.log("[ffmpeg] using binary:", FFMPEG_PATH);
 
 export const TMP_DIR = process.env.TMP_DIR ?? "/tmp/clipforge";
 
