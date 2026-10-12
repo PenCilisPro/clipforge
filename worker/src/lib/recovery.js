@@ -316,4 +316,3 @@ const timer = setInterval(() => {
 }, 300_000);
 
 timer.unref?.();        // ← line 314 must have a matching const timer above it
-}
