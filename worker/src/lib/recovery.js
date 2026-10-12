@@ -16,7 +16,7 @@ import { getRender } from "./renderProvider.js";
  *      reached the render provider (no shotstack_render_id — the legacy
  *      render-id field every clip row carries) and aren't already waiting
  *      in the queue;
- *   2. every minute — re-enqueues clips stuck that way for over 30
+ *   2. every 5 minutes — re-enqueues clips stuck that way for over 30
  *      minutes (covers a hung/dead worker tick), and fails clips whose
  *      render was submitted but whose webhook never arrived within
  *      2 hours, so the UI stops showing an endless spinner.
@@ -90,15 +90,15 @@ async function reenqueueStrandedRenders(maxAgeMs) {
 
 /**
  * Re-enqueue lost pipeline stages (download/transcribe/analyze). The queue is
- * ephemeral — a deploy or container restart wipes Redis while the public.jobs
- * row stays "queued"/"active" in Firestore, so the project spins at
+ * ephemeral — a deploy or container restart wipes Redis while the jobs row
+ * stays "queued"/"active" in Postgres, so the project spins at
  * "Processing" forever. Stranded render-stage clips are covered by
  * reenqueueStrandedRenders; this covers the pre-render stages.
  *
  * The age floor is deliberately short (90s): we only re-enqueue jobs that are
  * NOT live in BullMQ (checked below), so a young threshold is safe — a job
  * that's still queued in Redis is skipped, and a lost job gets picked up
- * within a minute or two instead of leaving the project at "pending" for 10+
+ * within a few minutes instead of leaving the project at "pending" for 10+
  * minutes.
  */
 const PIPELINE_STRANDED_AFTER_MS = 90 * 1000;
@@ -259,60 +259,38 @@ async function pollSubmittedRenders() {
 }
 
 export function startRecovery() {
-  // Startup: short delay so redis/supabase connections are warm. Age floor of
-  // 10 minutes skips clips enqueued moments before a routine restart.
+  // Startup pass: runs ONCE, 60s after boot (redis/supabase connections warm).
+  // 10-minute age floor skips clips enqueued moments before a routine restart.
   setTimeout(() => {
     reenqueueStrandedRenders(10 * 60 * 1000).catch((e) =>
       console.error("[recovery] startup pass failed:", e.message)
     );
-    // Quota backoff: if Firestore says RESOURCE_EXHAUSTED, skip passes for 10 min
-let quotaCoolDownUntil = 0;
+    resumeStrandedPipelines().catch((e) =>
+      console.error("[recovery] startup pipeline-resume pass failed:", e.message)
+    );
+    pollSubmittedRenders().catch((e) =>
+      console.error("[recovery] startup render-poll pass failed:", e.message)
+    );
+    failLostWebhookRenders().catch((e) =>
+      console.error("[recovery] startup webhook-timeout pass failed:", e.message)
+    );
+  }, 60 * 1000);
 
-function safePass(name, fn) {
-  return async () => {
-    if (Date.now() < quotaCoolDownUntil) return;
-    try {
-      await fn();
-    } catch (e) {
-      if (String(e).includes("RESOURCE_EXHAUSTED")) {
-        quotaCoolDownUntil = Date.now() + 10 * 60_000;
-        console.error(`[recovery] ${name}: quota exceeded — pausing recovery for 10 min`);
-      }
-      console.error(`[recovery] ${name} failed:`, e.message);
-    }
-  };
-}
-
-// Startup pass: run every 15s but STOP after the first success —
-// it only exists to catch work stranded by a restart.
-let startupDone = false;
-const startupTimer = setInterval(() => {
-  if (startupDone) return clearInterval(startupTimer);
-  safePass("startup pipeline-resume", resumeStrandedPipelines)().then(() => {
-    startupDone = true;
-    clearInterval(startupTimer);
-  });
-}, 15_000);
-
-const timer = setInterval(() => {
-  const passes = [
-    ["periodic", () => reenqueueStrandedRenders(30 * 60 * 1000)],
-    ["pipeline-resume", resumeStrandedPipelines],
-    ["render-poll", pollSubmittedRenders],
-    // keep your webhook-timeout pass here too:
-    // ["webhook-timeout", checkWebhookTimeouts],
-  ];
-  for (const [name, fn] of passes) safePass(name, fn)();
-}, 300_000); // ← every 5 minutes instead of every minute
+  // Main loop: every 5 minutes (was 1 minute — cuts DB read burn ~5x).
+  const timer = setInterval(() => {
+    reenqueueStrandedRenders(30 * 60 * 1000).catch((e) =>
+      console.error("[recovery] periodic pass failed:", e.message)
+    );
+    resumeStrandedPipelines().catch((e) =>
+      console.error("[recovery] pipeline-resume pass failed:", e.message)
+    );
     pollSubmittedRenders().catch((e) =>
       console.error("[recovery] render-poll pass failed:", e.message)
     );
     failLostWebhookRenders().catch((e) =>
       console.error("[recovery] webhook-timeout pass failed:", e.message)
     );
-  }, 60 * 1000);
-const timer = setInterval(() => {
-  // ... the passes ...
-}, 300_000);
+  }, 300_000);
 
-timer.unref?.();        // ← line 314 must have a matching const timer above it
+  timer.unref?.();
+}
