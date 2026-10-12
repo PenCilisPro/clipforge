@@ -173,7 +173,7 @@ def render_clip(payload: dict) -> dict:
     with open(spec_path, "w", encoding="utf-8") as handle:
         json.dump(spec, handle)
 
-        child_env = {**os.environ, "TMP_DIR": CONTAINER_TMP, "RENDER_THREADS": str(int(RENDER_CPU)),
+            child_env = {**os.environ, "TMP_DIR": CONTAINER_TMP, "RENDER_THREADS": str(int(RENDER_CPU)),
                  "FFMPEG_PATH_OVERRIDE": "/usr/bin/ffmpeg"}
     
     try:
