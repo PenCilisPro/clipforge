@@ -68,7 +68,7 @@ RENDER_MAX_AGE_S = 3 * 24 * 3600
 # added so Modal can serve the web endpoints from the same image.
 image = (
     modal.Image.from_registry("node:20-bookworm-slim", add_python="3.13")
-    .apt_install("ca-certificates", "curl", "ffmpeg")
+        .apt_install("ca-certificates", "curl", "ffmpeg")
     .pip_install("fastapi[standard]")
     .add_local_file(str(APP_DIR / "package.json"), "/app/package.json", copy=True)
     .run_commands("cd /app && npm install --omit=dev --no-fund --no-audit")
