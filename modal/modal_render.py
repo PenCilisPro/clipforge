@@ -217,8 +217,6 @@ def render_clip(payload: dict) -> dict:
             status[render_id] = {"status": "failed", "error": message, "createdAt": time.time()}
             _notify(webhook_url, {"id": render_id, "status": "failed", "error_message": message})
             raise RuntimeError(message)
-        output_path = candidate
-
         stored_path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
     # /tmp and the Volume are different filesystems — rename (os.replace)
     # fails with EXDEV; shutil.move copies across the boundary instead.
