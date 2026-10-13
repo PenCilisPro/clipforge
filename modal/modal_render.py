@@ -31,6 +31,7 @@ import os
 import subprocess
 import time
 import urllib.request
+import shutil
 from pathlib import Path
 
 # NOTE: FastAPI is deliberately NOT imported at module level. `modal deploy`
@@ -218,8 +219,10 @@ def render_clip(payload: dict) -> dict:
             raise RuntimeError(message)
         output_path = candidate
 
-    stored_path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
-    os.replace(output_path, stored_path)
+        stored_path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
+    # /tmp and the Volume are different filesystems — os.replace (rename)
+    # fails with EXDEV; shutil.move copies across the boundary instead.
+    shutil.move(output_path, stored_path)
     renders.commit()  # make the finished file visible to the /download container
 
     status[render_id] = {
