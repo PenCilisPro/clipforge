@@ -217,7 +217,7 @@ def render_clip(payload: dict) -> dict:
             status[render_id] = {"status": "failed", "error": message, "createdAt": time.time()}
             _notify(webhook_url, {"id": render_id, "status": "failed", "error_message": message})
             raise RuntimeError(message)
-        stored_path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
+    stored_path = os.path.join(RENDERS_DIR, f"{render_id}.mp4")
     # /tmp and the Volume are different filesystems — rename (os.replace)
     # fails with EXDEV; shutil.move copies across the boundary instead.
     shutil.move(output_path, stored_path)
@@ -248,7 +248,13 @@ def web_entry():
     pass
 
 # Correct modern Modal ASGI definition:
-@app.function(image=image, secrets=[render_secret], timeout=150, max_containers=8)
+@app.function(
+    image=image,
+    secrets=[render_secret],
+    timeout=150,
+    max_containers=8,
+    volumes={VOLUME_MOUNT: renders},
+)
 @modal.asgi_app()
 def web():
     from fastapi import FastAPI, HTTPException, Request
