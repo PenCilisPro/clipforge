@@ -1,4 +1,5 @@
-import { RENDER_STYLES, captionFont } from "./captions.js";
+import { RENDER_STYLES, captionFont, resolveCaptionFontSize } from "./captions.js";
+import { aspectDimensions } from "./canvas.js";
 import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } from "./ffmpeg.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -110,6 +111,8 @@ export function buildAssSubtitles({
   captionStrokeSize = 4,
   captionShadowColor = "#000000",
   captionShadowSize = 6,
+  captionPosition = "bottom",
+  captionSize = 0,
   width = 1080,
   height = 1920,
 }) {
@@ -133,8 +136,16 @@ export function buildAssSubtitles({
   const shadow = boxed ? 0 : shadowOn ? Math.min(Number(captionShadowSize) || 6, 12) : 3;
   const backColour = boxed ? assColor(def.background) : shadowColor;
 
+  // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
+  // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
+  // (matching the cloud providers' 8% offset); centered captions use 0.
+  const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
+  const alignment = captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
+  const marginV =
+    captionPosition === "middle" ? 0 : Math.round(height * 0.08);
+
   const fspPx = def.letterSpacingPct
-    ? Math.round((parseFloat(def.letterSpacingPct) / 100) * def.fontSize * 10) / 10
+    ? Math.round((parseFloat(def.letterSpacingPct) / 100) * fontSize * 10) / 10
     : 0;
   const fspTag = fspPx > 0 ? `{\\fsp${fspPx}}` : "";
   const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
@@ -150,9 +161,9 @@ export function buildAssSubtitles({
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Alignment 2 = bottom-center; MarginV pins the box 8% above the bottom,
-    // matching the cloud providers' y:92% bottom anchor.
-    `Style: Cap,${font.family},${def.fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},2,60,60,${Math.round(height * 0.08)},1`,
+    // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
+    // block inside the edge, matching the cloud providers' placement.
+    `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -339,6 +350,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionShadowSize = 6,
     videoFit = "cover",
     videoBackgroundBlur = true,
+    captionPosition = "bottom",
+    captionSize = 0,
+    outputAspect = "9:16",
   } = spec;
 
   await ensureFont(captionFontKey);
@@ -356,6 +370,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionStrokeSize,
       captionShadowColor,
       captionShadowSize,
+      captionPosition,
+      captionSize,
       width,
       height,
     }),
@@ -457,17 +473,23 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const outputRel = `render-${renderId}.mp4`;
   await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
 
+  // Canvas dims follow the clip's output aspect; the OOM fallback re-encodes
+  // at 2/3 linear scale (1080x1920 → 720x1280 historically).
+  const { width, height } = aspectDimensions(spec.outputAspect);
+  const retryWidth = Math.round(width / 1.5 / 2) * 2;
+  const retryHeight = Math.round(height / 1.5 / 2) * 2;
+
   try {
     await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true });
   } catch (err) {
         if (/SIGKILL/i.test(err.message)) {
-      console.warn("[local-render] OOM-killed — retrying at 720x1280 with a lighter encode");
+      console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
       await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
-      await renderOnce(spec, outputRel, { width: 720, height: 1280, withMusic: true });
+      await renderOnce(spec, outputRel, { width: retryWidth, height: retryHeight, withMusic: true });
     } else if (spec.musicTrack?.url && /amix|0:a|Stream map/i.test(err.message)) {
       console.warn("[local-render] audio mix failed (source may have no audio track) — retrying without music");
       await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
-      await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: false });
+      await renderOnce(spec, outputRel, { width, height, withMusic: false });
     } else {
       throw err;
     }

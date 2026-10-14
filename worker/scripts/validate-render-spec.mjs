@@ -152,7 +152,47 @@ assert(
   "shotstack: caption track first (topmost) with 6 clips"
 );
 
-// Shotstack contain layout: no blur filter exists there, so the clip
+// --- New editor features: caption position/size + output aspect ---
+const POSITION_PARAMS = { ...PARAMS, captionPosition: "top", captionSize: 90, outputAspect: "16:9" };
+
+const ctmPos = buildCreatomate(POSITION_PARAMS);
+assert(
+  ctmPos.width === 1920 && ctmPos.height === 1080,
+  "creatomate: 16:9 output aspect → 1920x1080 canvas"
+);
+const ctmTexts = ctmPos.elements.filter((e) => e.type === "text");
+assert(
+  ctmTexts.every((t) => t.font_size === 90 && t.y === "8%" && t.y_anchor === "0%"),
+  "creatomate: caption size override + top placement on every text element"
+);
+const ctmMid = buildCreatomate({ ...PARAMS, captionPosition: "middle" });
+assert(
+  ctmMid.elements
+    .filter((e) => e.type === "text")
+    .every((t) => t.y === "50%" && t.y_anchor === "50%"),
+  "creatomate: middle placement centers captions"
+);
+const ctmSquare = buildCreatomate({ ...PARAMS, outputAspect: "1:1" });
+assert(
+  ctmSquare.width === 1080 && ctmSquare.height === 1080,
+  "creatomate: 1:1 output aspect → 1080x1080 canvas"
+);
+
+const ssPos = buildShotstack(POSITION_PARAMS);
+const ssPosCaption = ssPos.timeline.tracks
+  .flatMap((t) => t.clips)
+  .find((c) => c.asset?.type === "html");
+assert(
+  ssPos.output.size.width === 1920 && ssPos.output.size.height === 1080,
+  "shotstack: 16:9 output aspect → 1920x1080 canvas"
+);
+assert(
+  ssPosCaption?.position === "top" &&
+    /font-size:90px/.test(ssPosCaption?.asset?.html ?? ""),
+  "shotstack: top placement + scaled inline font-size"
+);
+
+// --- Shotstack contain layout: no blur filter exists there, so the clip
 // letterboxes on the black timeline background.
 const ssContain = buildShotstack({ ...PARAMS, videoFit: "contain" });
 const ssMain = ssContain.timeline.tracks

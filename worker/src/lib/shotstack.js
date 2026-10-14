@@ -1,5 +1,6 @@
 import { env } from "./env.js";
 import { captionTrackClips, captionUnderlayClips, captionFont } from "./captions.js";
+import { aspectDimensions } from "./canvas.js";
 
 const BASE_URL = () =>
   env.shotstackEnv === "v1"
@@ -40,7 +41,13 @@ export function buildEditJson({
   captionStrokeSize = 4,
   captionShadowColor = "#000000",
   captionShadowSize = 6,
-  // Frame layout on the 9:16 canvas: "cover" (= Shotstack fit "crop") zooms a
+  // Vertical caption placement (top | middle | bottom) + px font size
+  // (0 = template default). Mirrored across every provider via captions.js.
+  captionPosition = "bottom",
+  captionSize = 0,
+  // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
+  outputAspect = "9:16",
+  // Frame layout on the canvas: "cover" (= Shotstack fit "crop") zooms a
   // landscape source to fill; "contain" keeps the whole frame letterboxed.
   // NOTE: Shotstack has no blur filter, so videoBackgroundBlur is accepted
   // for interface parity but degrades to black bars here.
@@ -48,6 +55,7 @@ export function buildEditJson({
   videoBackgroundBlur = true,
 }) {
   void videoBackgroundBlur;
+  const { width, height } = aspectDimensions(outputAspect);
   const videoTrack = {
     clips: [
       {
@@ -72,6 +80,8 @@ export function buildEditJson({
     fontKey: captionFontKey,
     style: captionStyle,
     textColor: captionTextColor,
+    position: captionPosition,
+    size: captionSize,
   });
   if (captionClips.length > 0) {
     tracks.push({ clips: captionClips });
@@ -97,6 +107,8 @@ export function buildEditJson({
         dx,
         dy,
         color: captionStrokeColor,
+        position: captionPosition,
+        size: captionSize,
       });
       if (clips.length > 0) tracks.push({ clips });
     }
@@ -110,6 +122,8 @@ export function buildEditJson({
       dy: offset,
       color: captionShadowColor,
       opacity: 0.55,
+      position: captionPosition,
+      size: captionSize,
     });
     if (clips.length > 0) tracks.push({ clips });
   }
@@ -167,7 +181,7 @@ export function buildEditJson({
     },
     output: {
       format: "mp4",
-      size: { width: 1080, height: 1920 },
+      size: { width, height },
       fps: 30,
     },
   };

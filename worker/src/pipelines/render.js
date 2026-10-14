@@ -158,6 +158,11 @@ export async function processRender(job) {
       // zoomed copy of itself (plain black bars when the blur is off).
       videoFit: clip.video_fit === "contain" ? "contain" : "cover",
       videoBackgroundBlur: clip.video_background_blur !== false,
+      // Caption placement (top/middle/bottom) + explicit px size (0 =
+      // template default), and the output canvas aspect from the editor.
+      captionPosition: clip.caption_position ?? "bottom",
+      captionSize: Number(clip.caption_size) || 0,
+      outputAspect: clip.output_aspect ?? "9:16",
     };
 
     // Webhook completion is mandatory for the cloud providers: without it the

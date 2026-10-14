@@ -61,6 +61,15 @@ export function DashboardShell({
   const pathname = usePathname();
   const navItems = isAdminEmail(user.email) ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
 
+  // The clip editor is a full-screen, distraction-free workspace (like the
+  // big streaming platforms' editors): render it without the dashboard
+  // sidebar/header, with its own dark chrome.
+  const isClipEditor =
+    /^\/dashboard\/projects\/[^/]+\/clips\/[^/]+\/?$/.test(pathname ?? "");
+  if (isClipEditor) {
+    return <div className="min-h-screen bg-[#101013] text-[#f4f4f5]">{children}</div>;
+  }
+
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}

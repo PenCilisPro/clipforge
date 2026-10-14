@@ -68,6 +68,12 @@ const effectShape = {
   caption_shadow_size: z.coerce.number().int().min(1).max(10).optional(),
   // Caption text color ('#ffffff' = keep the template's own default).
   caption_color: z.string().regex(HEX_COLOR).optional(),
+  // Vertical caption placement on the canvas.
+  caption_position: z.enum(["top", "middle", "bottom"]).optional(),
+  // Explicit caption font size in px; 0 = template default.
+  caption_size: z.coerce.number().int().min(0).max(200).optional(),
+  // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
+  output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
 
 const regenerateSchema = z.object({
@@ -77,6 +83,8 @@ const regenerateSchema = z.object({
 });
 
 const editSchema = z.object({
+  // Display name (also used as the suggested download file name).
+  title: z.string().trim().max(200).optional(),
   caption_style: z.enum(CAPTION_STYLES).optional(),
   caption_font: z.enum(CAPTION_FONTS).optional(),
   ...effectShape,
@@ -218,6 +226,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       render_provider: null,
       shotstack_render_id: null,
     };
+    if (body.title !== undefined) updates.title = body.title;
     if (body.caption_style) updates.caption_style = body.caption_style;
     if (body.caption_font) updates.caption_font = body.caption_font;
     if (body.caption_stroke !== undefined) updates.caption_stroke = body.caption_stroke;
@@ -231,6 +240,9 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_shadow_color",
       "caption_shadow_size",
       "caption_color",
+      "caption_position",
+      "caption_size",
+      "output_aspect",
       "video_fit",
     ]) {
       if (body[key] !== undefined) updates[key] = body[key];
@@ -281,7 +293,8 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, video_fit, video_background_blur, " +
+  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, output_aspect, " +
+  "video_fit, video_background_blur, " +
   "srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
@@ -385,6 +398,9 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_shadow: clip.caption_shadow,
         caption_shadow_color: clip.caption_shadow_color,
         caption_shadow_size: clip.caption_shadow_size,
+        caption_position: clip.caption_position,
+        caption_size: clip.caption_size,
+        output_aspect: clip.output_aspect,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
@@ -465,6 +481,9 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_shadow: clip.caption_shadow,
         caption_shadow_color: clip.caption_shadow_color,
         caption_shadow_size: clip.caption_shadow_size,
+        caption_position: clip.caption_position,
+        caption_size: clip.caption_size,
+        output_aspect: clip.output_aspect,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
         srt_override: clip.srt_override,
@@ -537,6 +556,9 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_shadow_color ? { caption_shadow_color: body.caption_shadow_color } : {}),
         ...(body.caption_shadow_size ? { caption_shadow_size: body.caption_shadow_size } : {}),
         ...(body.caption_color ? { caption_color: body.caption_color } : {}),
+        ...(body.caption_position ? { caption_position: body.caption_position } : {}),
+        ...(body.caption_size !== undefined ? { caption_size: body.caption_size } : {}),
+        ...(body.output_aspect ? { output_aspect: body.output_aspect } : {}),
         ...(body.video_fit ? { video_fit: body.video_fit } : {}),
         ...(body.video_background_blur !== undefined
           ? { video_background_blur: body.video_background_blur }

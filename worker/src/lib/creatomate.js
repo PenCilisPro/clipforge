@@ -1,5 +1,6 @@
 import { env } from "./env.js";
-import { captionFont, RENDER_STYLES } from "./captions.js";
+import { captionFont, RENDER_STYLES, resolveCaptionFontSize } from "./captions.js";
+import { aspectDimensions } from "./canvas.js";
 
 const API_BASE = "https://api.creatomate.com/v2";
 const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
@@ -76,8 +77,16 @@ function accentedCueText(cue, activeIndex, def) {
     .join(" ");
 }
 
-function captionElement(name, text, { start, length, style, textColor, family, stroke, shadow, track }) {
+function captionElement(name, text, { start, length, style, textColor, family, stroke, shadow, track, position = "bottom", sizeOverride = 0 }) {
   const def = captionStyleDef(style);
+  // Vertical placement: bottom = 8% above the bottom edge (the historical
+  // default), top = 8% below the top edge, middle = centered. y_anchor pins
+  // the box's edge so lines wrapping upward keep it in place.
+  const placement = {
+    bottom: { y: "92%", y_anchor: "100%" },
+    top: { y: "8%", y_anchor: "0%" },
+    middle: { y: "50%", y_anchor: "50%" },
+  }[position] ?? { y: "92%", y_anchor: "100%" };
   return {
     type: "text",
     name,
@@ -86,7 +95,7 @@ function captionElement(name, text, { start, length, style, textColor, family, s
     duration: Math.max(0.08, length),
     text,
     font_family: family,
-    font_size: def.fontSize,
+    font_size: resolveCaptionFontSize(style, sizeOverride),
     fill_color: resolveTextColor(style, textColor),
     ...(def.uppercase ? { text_transform: "uppercase" } : {}),
     ...(def.letterSpacingPct ? { letter_spacing: def.letterSpacingPct } : {}),
@@ -94,8 +103,7 @@ function captionElement(name, text, { start, length, style, textColor, family, s
     // Bottom-anchored like Shotstack's position:"bottom" + offset y:0.08 —
     // the box's bottom edge stays pinned as lines wrap and grow upward.
     x: "50%",
-    y: "92%",
-    y_anchor: "100%",
+    ...placement,
     width: "90%",
     x_alignment: "50%",
     ...(def.background
@@ -141,7 +149,13 @@ export function buildRenderSpec({
   captionStrokeSize = 4,
   captionShadowColor = "#000000",
   captionShadowSize = 6,
-  // Frame layout on the 9:16 canvas: "cover" zooms a landscape source to
+  // Vertical caption placement (top | middle | bottom) + px font size
+  // (0 = template default). Mirrored across every provider via captions.js.
+  captionPosition = "bottom",
+  captionSize = 0,
+  // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
+  outputAspect = "9:16",
+  // Frame layout on the canvas: "cover" zooms a landscape source to
   // fill (edges cropped); "contain" keeps the whole frame visible over a
   // zoomed + blurred copy of itself (black bars when the blur is off).
   videoFit = "cover",
@@ -149,6 +163,7 @@ export function buildRenderSpec({
 }) {
   const font = captionFont(captionFontKey);
   const def = captionStyleDef(captionStyle);
+  const { width, height } = aspectDimensions(outputAspect);
 
   // The blurred backdrop needs its own track below the main video, so every
   // layer above shifts up one track in contain mode.
@@ -266,6 +281,8 @@ export function buildRenderSpec({
             stroke,
             shadow,
             track: tracks.caption,
+            position: captionPosition,
+            sizeOverride: captionSize,
           })
         );
         continue;
@@ -285,6 +302,8 @@ export function buildRenderSpec({
             stroke,
             shadow,
             track: tracks.caption,
+            position: captionPosition,
+            sizeOverride: captionSize,
           })
         );
       }
@@ -308,8 +327,8 @@ export function buildRenderSpec({
 
   return {
     output_format: "mp4",
-    width: 1080,
-    height: 1920,
+    width,
+    height,
     frame_rate: RENDER_FRAME_RATE,
     fill_color: "#000000",
     fonts: [{ family: font.family, weight: 400, style: "normal", source: font.src }],

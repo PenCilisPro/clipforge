@@ -112,6 +112,46 @@ export function captionFont(key) {
 }
 
 /**
+ * Resolve the caption font size in px: an explicit clip-level size
+ * (clips.caption_size, 0 = template default) wins over the template's own
+ * size. Used by every provider so the editor's SIZE control renders
+ * consistently.
+ */
+export function resolveCaptionFontSize(style, sizeOverride) {
+  const def = RENDER_STYLES[style] ?? RENDER_STYLES.classic;
+  const size = Number(sizeOverride);
+  if (Number.isFinite(size) && size > 0) return Math.min(Math.round(size), 200);
+  return def.fontSize;
+}
+
+/**
+ * Vertical caption placement → per-provider geometry, shared so all three
+ * render providers land the caption block in the same spot:
+ *   bottom: 8% above the bottom edge (the historical default)
+ *   top:    8% below the top edge
+ *   middle: vertically centered
+ */
+export function captionPlacement(position) {
+  switch (position) {
+    case "top":
+      return { anchor: "top", offset: 0.08 };
+    case "middle":
+      return { anchor: "center", offset: 0 };
+    default:
+      return { anchor: "bottom", offset: 0.08 };
+  }
+}
+
+/**
+ * Scale the inline `font-size:NNpx` declarations in a caption template's HTML
+ * to the resolved size. The templates hardcode their px sizes; regex
+ * substitution keeps them the single source of typography truth.
+ */
+export function applyCaptionSize(html, fontSize) {
+  return String(html).replace(/font-size:\s*\d+px/g, `font-size:${Math.round(fontSize)}px`);
+}
+
+/**
  * px geometry of the caption templates on the 1080-wide canvas, shared by the
  * cloud renderer (Creatomate text elements) and the local ffmpeg provider
  * (ASS styles). The HTML templates in STYLES above were tuned for Shotstack's
@@ -364,27 +404,29 @@ const MAX_WORD_CLIPS = 400;
  * to the frame (0-1); dx/dy shift the copy so stacked tracks form an outline
  * or drop shadow.
  */
-export function captionUnderlayClips(cues, { fontKey, style, dx = 0, dy = 0, color = "#000000", opacity }) {
+export function captionUnderlayClips(cues, { fontKey, style, dx = 0, dy = 0, color = "#000000", opacity, position = "bottom", size = 0 }) {
   if (!Array.isArray(cues) || cues.length === 0) return [];
   const family = captionFont(fontKey).family;
   const def = STYLES[style] ?? STYLES.classic;
+  const fontSize = resolveCaptionFontSize(style, size);
+  const placement = captionPlacement(position);
 
   const offset = {};
   if (dx) offset.x = Math.round(dx * 10000) / 10000;
-  const baseY = 0.08 + dy;
-  offset.y = Math.round(baseY * 10000) / 10000;
+  const baseY = placement.offset + dy;
+  if (baseY || dx) offset.y = Math.round(baseY * 10000) / 10000;
 
   return cues.slice(0, 150).map((cue) => ({
     asset: {
       type: "html",
-      html: def.underlay(family, escapeHtml(cue.text), color),
+      html: applyCaptionSize(def.underlay(family, escapeHtml(cue.text), color), fontSize),
       width: 980,
       height: 260,
     },
     start: Math.max(0, Number(cue.start) || 0),
     length: Math.max(0.3, Number(cue.end) - Number(cue.start)),
-    position: "bottom",
-    offset,
+    position: placement.anchor,
+    ...(Object.keys(offset).length > 0 ? { offset } : {}),
     ...(opacity != null ? { opacity } : {}),
   }));
 }
@@ -394,23 +436,28 @@ export function captionUnderlayClips(cues, { fontKey, style, dx = 0, dy = 0, col
  * per word with the spoken word accented (word-sync highlight); cues without
  * timings render as one static clip each. Returns [] when there are no cues.
  */
-export function captionTrackClips(cues, { fontKey, style, textColor }) {
+export function captionTrackClips(cues, { fontKey, style, textColor, position = "bottom", size = 0 }) {
   if (!Array.isArray(cues) || cues.length === 0) return [];
   const family = captionFont(fontKey).family;
   const def = STYLES[style] ?? STYLES.classic;
   const tc = templateTextColor(style, textColor);
+  const fontSize = resolveCaptionFontSize(style, size);
+  const placement = captionPlacement(position);
 
   const cueHtml = (cue, activeIndex) => {
     const words =
       Array.isArray(cue.words) && cue.words.length > 0
         ? cue.words.map((w) => escapeHtml(w.text))
         : escapeHtml(cue.text).split(/\s+/);
-    return def.render(
-      family,
-      words
-        .map((word, i) => (i === activeIndex ? `<span style="${def.accent}">${word}</span>` : word))
-        .join(" "),
-      tc
+    return applyCaptionSize(
+      def.render(
+        family,
+        words
+          .map((word, i) => (i === activeIndex ? `<span style="${def.accent}">${word}</span>` : word))
+          .join(" "),
+        tc
+      ),
+      fontSize
     );
   };
 
@@ -418,8 +465,8 @@ export function captionTrackClips(cues, { fontKey, style, textColor }) {
     asset: { type: "html", html, width: 980, height: 260 },
     start: Math.max(0, start),
     length: Math.max(0.08, length),
-    position: "bottom",
-    offset: { y: 0.08 },
+    position: placement.anchor,
+    ...(placement.offset ? { offset: { y: placement.offset } } : {}),
   });
 
   const usableCues = cues.slice(0, 400);

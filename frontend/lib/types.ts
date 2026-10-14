@@ -118,6 +118,12 @@ export interface Clip {
   video_fit: VideoFit;
   /** With video_fit "contain": blurred zoomed background vs black bars. */
   video_background_blur: boolean;
+  /** Vertical caption placement on the canvas. */
+  caption_position?: "top" | "middle" | "bottom";
+  /** Explicit caption font size in px; 0/undefined = template default. */
+  caption_size?: number;
+  /** Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square). */
+  output_aspect?: "9:16" | "16:9" | "1:1";
   srt_override: string | null;
   /** null = AI-planned at render, [] = explicitly off, otherwise [{start,end,src}] */
   broll_json: { start: number; end: number; src: string }[] | null;
