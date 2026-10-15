@@ -114,7 +114,18 @@ export function ClipTimeline({
 
   return (
     <div
-      ref={scrollRef}
+            ref={scrollRef}
+      onWheel={(e) => {
+        // Vertical wheel input pans the timeline horizontally — natural for
+        // a track wider than the viewport. Shift+wheel already does this
+        // natively; this makes plain wheel do it too (unless the user is
+        // zooming via ctrl+wheel).
+        if (e.shiftKey || e.ctrlKey) return;
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          scrollRef.current?.scrollBy({ left: e.deltaY });
+          e.preventDefault();
+        }
+      }}
       className="overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <div className="relative select-none" style={{ width }}>
