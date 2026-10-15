@@ -108,13 +108,17 @@ function toFilter(field, op, value, foreignTable) {
   }
 }
 
-/** Parse `a,b` / `*, clips(title)` / `clips(count)` select strings. */
+/** Parse `a,b` / `*, clips(count)` / `projects(a, b)` select strings.
+ *  Embed blocks may contain commas — scan for `relation(...)` with a global
+ *  regex instead of naively splitting on commas (which breaks multi-column
+ *  embeds: `projects(a, b)` was silently dropped). */
 function parseSelect(selectStr) {
   if (!selectStr) return { embeds: [] };
   const embeds = [];
-  for (const part of selectStr.split(",").map((s) => s.trim())) {
-    const m = part.match(/^([a-zA-Z0-9_]+)\((.*)\)$/);
-    if (m && m[2] !== undefined) embeds.push({ relation: m[1], arg: m[2].trim() });
+  const re = /([a-zA-Z0-9_]+)\s*\(([^()]*)\)/g;
+  let m;
+  while ((m = re.exec(selectStr)) !== null) {
+    embeds.push({ relation: m[1], arg: m[2].trim() });
   }
   return { embeds };
 }
