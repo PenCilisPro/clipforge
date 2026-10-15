@@ -3,8 +3,8 @@
 /**
  * Full-screen clip editor (StreamPal-style dark workspace).
  *
- * Layout: top bar (name + Render & save) Â· video preview with safe zones and
- * a live caption overlay Â· right panel with Frame / Text / Brand tabs Â·
+ * Layout: top bar (name + Render & save) · video preview with safe zones and
+ * a live caption overlay · right panel with Frame / Text / Brand tabs ·
  * toolbar + trim timeline at the bottom.
  *
  * "Render & save" POSTs the same /api/clips/:id/edit payload the pipeline
@@ -171,7 +171,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         if (found.srt_override) setCues(parseSrt(found.srt_override));
 
         // Source video powers both the preview and the timeline (split
-        // uploads: null â€” the timeline still works via the clip duration).
+        // uploads: null — the timeline still works via the clip duration).
         try {
           const src = await apiFetch<{
             video_url: string | null;
@@ -181,7 +181,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           setSourceVideoUrl(src.video_url);
           setSourceDuration(src.duration ?? 0);
         } catch {
-          // Non-fatal â€” trimming still works from the clip's own window.
+          // Non-fatal — trimming still works from the clip's own window.
         }
 
         // Manual overrides show up directly; otherwise fetch the stored SRT.
@@ -195,7 +195,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               if (res.ok) setCues(parseSrt(await res.text()));
             }
           } catch {
-            // Captions stay empty â€” the Text tab offers auto-fill.
+            // Captions stay empty — the Text tab offers auto-fill.
           }
         }
       } catch (err) {
@@ -205,6 +205,24 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       }
     })();
   }, [projectId, clipId]);
+
+  // ---------- AUTO-CAPTIONS ----------
+  // When no override and no stored SRT loaded, auto-fill from the transcript
+  // so the overlay always has captions (mirrors the auto-fill button).
+  useEffect(() => {
+    if (loading) return;
+    if (cues.length > 0) return;
+    if (!project?.transcript_json?.words?.length) return;
+    if (!endTime || endTime <= startTime) return;
+    const words = project.transcript_json.words;
+    const next = cuesFromTranscript(words, startTime, endTime);
+    if (next.length > 0) {
+      setCues(next);
+      setResetSrt(false);
+    }
+    // Runs once after load (and again only if cues are cleared intentionally).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, cues.length, startTime, endTime]);
 
   // Preview: play the SOURCE video so trim edits are visible live.
   // Lock playback to the trim window and keep the timeline playhead in sync.
@@ -221,6 +239,27 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     video.addEventListener("timeupdate", tick);
     return () => video.removeEventListener("timeupdate", tick);
   }, [startTime, endTime, clipDuration]);
+
+  // ---------- SEEK TO CLIP START ON LOAD ----------
+  // The preview video starts at the clip's first frame (CapCut-style), not
+  // at the original video's 0:00.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (loading || !video || !sourceVideoUrl) return;
+    if (!endTime || endTime <= startTime) return;
+    const seek = () => {
+      if (video.readyState >= 1) {
+        video.currentTime = startTime;
+      } else {
+        video.addEventListener("loadedmetadata", () => {
+          video.currentTime = startTime;
+        }, { once: true });
+      }
+    };
+    seek();
+    // Re-seek once when the source URL arrives / clip data changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, sourceVideoUrl, startTime]);
 
   // Track preview box width for the caption overlay's px-accurate scaling.
   useEffect(() => {
@@ -362,7 +401,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         method: "POST",
         body: { at, srt_part1: cuesToSrtText(part1), srt_part2: cuesToSrtText(part2) },
       });
-      toast.success("Clip split â€” both parts are re-rendering");
+      toast.success("Clip split — both parts are re-rendering");
       router.push(`/dashboard/projects/${projectId}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to split clip");
@@ -375,7 +414,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setSaving(true);
     try {
       await apiFetch(`/api/clips/${clip.id}/duplicate`, { method: "POST" });
-      toast.success("Clip duplicated â€” rendering the copy");
+      toast.success("Clip duplicated — rendering the copy");
       router.push(`/dashboard/projects/${projectId}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to duplicate clip");
@@ -390,7 +429,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       toast.error("Clip must be at least 3 seconds long");
       return;
     }
-    // Caption times are clip-relative â€” lines outside the trim window are
+    // Caption times are clip-relative — lines outside the trim window are
     // dropped (the pipeline regenerates captions when the override is empty).
     const winLen = endTime - startTime;
     const inWindow = cues.filter((c) => c.end > 0.05 && c.start < winLen - 0.05);
@@ -398,7 +437,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     if (!resetSrt) {
       for (const cue of inWindow) {
         if (!cue.text.trim()) {
-          toast.error("Caption lines can't be empty â€” delete the line instead");
+          toast.error("Caption lines can't be empty — delete the line instead");
           return;
         }
       }
@@ -426,15 +465,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           start_time: startTime,
           end_time: endTime,
           ...(resetSrt
-            ? { srt_content: "" } // clear override â†’ pipeline regenerates
+            ? { srt_content: "" } // clear override → pipeline regenerates
             : inWindow.length > 0
               ? { srt_content: cuesToSrtText(inWindow) }
               : cues.length > 0
                 ? { srt_content: "" } // every line drifted out of the window
-                : {}),
+                : { srt_content: cuesToSrtText(cues) }),
         },
       });
-      toast.success("Saved â€” re-render started", {
+      toast.success("Saved — re-render started", {
         description:
           dropped > 0
             ? `${dropped} caption line${dropped === 1 ? "" : "s"} outside the trim window will be regenerated.`
@@ -471,7 +510,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   /** Caption font size scaled from the 1080px canvas to the preview box. */
   const previewFontSize = useMemo(() => {
-    const canvasSize = size > 0 ? size : 60; // template default â‰ˆ 60px
+    const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
     const scale = previewWidth > 0 ? previewWidth / dims.w : 0.25;
     return canvasSize * scale;
   }, [size, previewWidth, dims.w]);
@@ -482,7 +521,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       <div className="flex h-screen items-center justify-center bg-[#101013] text-zinc-400">
         <div className="flex items-center gap-3 text-sm">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white/80" />
-          Loading editorâ€¦
+          Loading editor…
         </div>
       </div>
     );
@@ -530,13 +569,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             />
             <div className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-500">
               <span className="max-w-56 truncate">{sourceName}</span>
-              <span>Â·</span>
+              <span>·</span>
               <span>
-                {dims.w} Ã— {dims.h}
+                {dims.w} × {dims.h}
               </span>
-              <span>Â·</span>
+              <span>·</span>
               <span>{formatShort(clipDuration)}</span>
-              <span>Â·</span>
+              <span>·</span>
               <Link
                 href={`/dashboard/projects/${projectId}`}
                 className="text-primary-400 hover:text-primary-300"
@@ -552,7 +591,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             disabled={saving}
             className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-zinc-200 disabled:opacity-60"
           >
-            {saving ? "Savingâ€¦" : "Render & save"}
+            {saving ? "Saving…" : "Render & save"}
           </button>
           <button
             onClick={toggleFullscreen}
@@ -571,7 +610,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         <section className="flex min-w-0 flex-1 flex-col px-5">
           <div className="flex items-center justify-between pb-2 text-xs text-zinc-400">
             <span className="tabular-nums">
-              {aspect} Â· {dims.w} Ã— {dims.h}
+              {aspect} · {dims.w} × {dims.h}
             </span>
             <label className="flex cursor-pointer items-center gap-2">
               <span>Safe zones</span>
@@ -616,6 +655,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     "h-full w-full",
                     videoFit === "contain" ? "object-contain" : "object-cover"
                   )}
+                  onLoadedMetadata={(e) => {
+                    // Start the preview at the clip's first frame.
+                    e.currentTarget.currentTime = startTime;
+                  }}
                   onPlay={() => setPlaying(true)}
                   onPause={() => setPlaying(false)}
                   onClick={togglePlay}
@@ -623,7 +666,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-zinc-500">
                   <Scissors className="h-5 w-5" />
-                  Preview isn't available for split uploads â€” trimming still works below
+                  Preview isn't available for split uploads — trimming still works below
                 </div>
               )}
 
@@ -1117,7 +1160,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     <button
                       role="switch"
                       aria-checked={shadow}
-                      onClick={() => setShadow((v) => !v)}
+                      onClick={() => setStroke((v) => !v)}
                       className={cn(
                         "relative h-5 w-9 rounded-full transition-colors",
                         shadow ? "bg-primary-500" : "bg-zinc-700"
@@ -1218,30 +1261,29 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           >
             <ZoomIn className="h-4 w-4" />
           </button>
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-            Clip · {formatShort(clipDuration)}
+          <span className="text-xs tabular-nums text-zinc-500">
+            CLIP · {formatShort(clipDuration)}
           </span>
         </div>
       </div>
 
       {/* ---------- Timeline ---------- */}
-      <div className="border-t border-white/10 bg-[#0c0c0e] px-2 pb-1">
+      <div className="border-t border-white/10 bg-[#0d0d0f] px-2 pb-2">
         <ClipTimeline
-          duration={endTime - startTime}
-          start={0}
-          end={endTime - startTime}
-          onTrim={(s, e) => { setStartTime(s + startTime); setEndTime(e + startTime); }}
-          playhead={playheadSource - startTime}
-          onScrub={(t) => setPlayheadSource(t + startTime)}
+          duration={timelineDuration}
+          start={startTime}
+          end={endTime}
+          playhead={playheadSource}
+          onScrub={scrub}
+          onTrim={trim}
+          onTrimCommit={undefined}
           pxPerSec={zoom}
-          minSeconds={MIN_CLIP_SECONDS}
         />
-        <div className="flex items-center justify-between px-3 pb-1.5 text-[10px] text-zinc-600">
-          <span>Source · drag edges to set each piece, gaps are dropped</span>
-          <span>Render & save sends your edit to the render pipeline</span>
-        </div>
+      </div>
+      <div className="flex items-center justify-between px-5 py-1.5 text-[10px] text-zinc-600">
+        <span>Source · drag edges to set each piece, gaps are dropped</span>
+        <span>Editing runs on your device · larger clips take longer · the result is saved to your uploaded clips</span>
       </div>
     </div>
   );
 }
-
