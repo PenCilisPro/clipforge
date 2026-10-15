@@ -6,7 +6,7 @@
  * playhead you can scrub. All times are SOURCE-video seconds (the trim
  * window selects the piece of the original that renders).
  */
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { clamp, formatTimecode, rulerTickStep } from "@/lib/timeline";
 
@@ -54,6 +54,22 @@ export function ClipTimeline({
   durationRef.current = duration > 0 ? duration : Math.max(end, 1);
 
   const width = Math.max(durationRef.current * pxPerSec, 200);
+
+  // Wheel = horizontal pan. Native listener with passive:false so
+  // preventDefault actually works (React binds wheel as passive).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.ctrlKey) return;
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        el.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const timeAt = useCallback(
     (clientX: number) => {
@@ -114,18 +130,7 @@ export function ClipTimeline({
 
   return (
     <div
-            ref={scrollRef}
-      onWheel={(e) => {
-        // Vertical wheel input pans the timeline horizontally — natural for
-        // a track wider than the viewport. Shift+wheel already does this
-        // natively; this makes plain wheel do it too (unless the user is
-        // zooming via ctrl+wheel).
-        if (e.shiftKey || e.ctrlKey) return;
-        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-          scrollRef.current?.scrollBy({ left: e.deltaY });
-          e.preventDefault();
-        }
-      }}
+      ref={scrollRef}
       className="overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <div className="relative select-none" style={{ width }}>
