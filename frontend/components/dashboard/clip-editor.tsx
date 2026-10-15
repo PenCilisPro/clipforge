@@ -1292,17 +1292,17 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
       {/* ---------- Timeline ---------- */}
       <div className="border-t border-white/10 bg-[#0d0d0f] px-2 pb-2">
-        <ClipTimeline
+  <ClipTimeline
     duration={clipDuration}
-    start={0}
-    end={clipDuration}
-    playhead={playheadSource - startTime}
-    onScrub={(t) => scrub(t + startTime)}
+    runway={120}
+    playhead={clipTime}
     onTrim={(s, e) => trim(s + startTime, e + startTime)}
     onTrimCommit={undefined}
+    onScrub={(t) => scrub(t + startTime)}
     pxPerSec={zoom}
-/>
-      </div>
+    maxDuration={sourceDuration - startTime || undefined}
+  />
+</div>
       <div className="flex items-center justify-between px-5 py-1.5 text-[10px] text-zinc-600">
         <span>Source · drag edges to set each piece, gaps are dropped</span>
         <span>Editing runs on your device · larger clips take longer · the result is saved to your uploaded clips</span>
