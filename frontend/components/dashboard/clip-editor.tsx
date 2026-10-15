@@ -236,7 +236,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setClipTime(clamp(video.currentTime - startTime, 0, clipDuration));
       setPlayheadSource(clamp(video.currentTime, startTime, endTime));
     };
-    video.addEventListener("timeupdate", tick);
+        video.addEventListener("timeupdate", tick);
     return () => video.removeEventListener("timeupdate", tick);
   }, [startTime, endTime, clipDuration]);
 
@@ -288,6 +288,29 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   }, [volume, muted]);
 
   // ---------- Handlers ----------
+    // Fresh-window refs: the tick always reads current values, and the
+  // ref-callback binding survives video element replacement.
+  const windowRef = useRef({ start: 0, end: 0, dur: 0 });
+  windowRef.current = { start: startTime, end: endTime, dur: clipDuration };
+
+  const handleTimeUpdate = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const { start, end, dur } = windowRef.current;
+    if (video.currentTime < start - 0.05 || video.currentTime >= end) {
+      video.currentTime = start;
+    }
+    setClipTime(clamp(video.currentTime - start, 0, dur));
+    setPlayheadSource(clamp(video.currentTime, start, end));
+  };
+
+  const videoRefCallback = (el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el) {
+      // (re)bind on every element swap — old listeners die with the old node
+      el.addEventListener("timeupdate", handleTimeUpdate);
+    }
+  };
   const scrub = useCallback(
     (t: number) => {
       const clamped = clamp(t, startTime, endTime);
@@ -648,7 +671,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             >
               {previewSrc ? (
                 <video
-                  ref={videoRef}
+                  ref={videoRefCallback}
                   src={previewSrc}
                   playsInline
                   className={cn(
