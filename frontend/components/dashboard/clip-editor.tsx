@@ -669,23 +669,41 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 height: "100%",
               }}
             >
-              {previewSrc ? (
-                <video
-                  ref={videoRefCallback}
-                  src={previewSrc}
-                  playsInline
-                  className={cn(
-                    "h-full w-full",
-                    videoFit === "contain" ? "object-contain" : "object-cover"
+                            {previewSrc ? (
+                <>
+                  {/* Blurred backdrop for "Blur fill" — mimics the render's
+                      boxblur+scale backdrop so the preview matches the output */}
+                  {videoFit === "contain" && blur && (
+                    <video
+                      src={previewSrc}
+                      playsInline
+                      muted
+                      aria-hidden
+                      className="absolute inset-0 h-full w-full scale-125 object-cover blur-2xl brightness-[0.93]"
+                      onLoadedMetadata={(e) => {
+                        e.currentTarget.currentTime = startTime;
+                      }}
+                      onTimeUpdate={(e) => {
+                        e.currentTarget.currentTime = videoRef.current?.currentTime ?? 0;
+                      }}
+                    />
                   )}
-                  onLoadedMetadata={(e) => {
-                    // Start the preview at the clip's first frame.
-                    e.currentTarget.currentTime = startTime;
-                  }}
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  onClick={togglePlay}
-                />
+                  <video
+                    ref={videoRefCallback}
+                    src={previewSrc}
+                    playsInline
+                    className={cn(
+                      "relative h-full w-full",
+                      videoFit === "contain" ? "object-contain" : "object-cover"
+                    )}
+                    onLoadedMetadata={(e) => {
+                      e.currentTarget.currentTime = startTime;
+                    }}
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onClick={togglePlay}
+                  />
+                </>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-zinc-500">
                   <Scissors className="h-5 w-5" />
