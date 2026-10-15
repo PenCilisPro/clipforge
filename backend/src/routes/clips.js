@@ -169,8 +169,11 @@ router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next)
       .single();
     if (error || !clip) return res.status(404).json({ error: "Clip not found" });
 
-    const videoPath = clip.projects?.original_video_path;
-    const duration = clip.projects?.duration_seconds ?? null;
+        // The Firestore shim returns FK embeds as an array ([project]); supabase
+    // returns an object. Accept both so this works under either backend.
+    const project = Array.isArray(clip.projects) ? clip.projects[0] ?? null : clip.projects ?? null;
+    const videoPath = project?.original_video_path;
+    const duration = project?.duration_seconds ?? null;
     if (!videoPath) {
       return res.status(409).json({ error: "No source video for this project." });
     }
