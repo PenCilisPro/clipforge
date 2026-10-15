@@ -171,10 +171,13 @@ router.get("/api/clips/:id/source-playback", requireAuth, async (req, res, next)
 
         // The Firestore shim returns FK embeds as an array ([project]); supabase
     // returns an object. Accept both so this works under either backend.
+        console.log("[source-playback] raw projects embed:", JSON.stringify(clip.projects));
     const project = Array.isArray(clip.projects) ? clip.projects[0] ?? null : clip.projects ?? null;
+    console.log("[source-playback] resolved project:", JSON.stringify(project));
     const videoPath = project?.original_video_path;
     const duration = project?.duration_seconds ?? null;
     if (!videoPath) {
+      console.log("[source-playback] REFUSING 409 — videoPath was:", JSON.stringify(videoPath));
       return res.status(409).json({ error: "No source video for this project." });
     }
     // The project owner could have tampered the stored path — only sign
