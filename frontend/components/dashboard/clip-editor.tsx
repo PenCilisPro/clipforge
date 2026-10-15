@@ -1270,15 +1270,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       {/* ---------- Timeline ---------- */}
       <div className="border-t border-white/10 bg-[#0d0d0f] px-2 pb-2">
         <ClipTimeline
-          duration={timelineDuration}
-          start={startTime}
-          end={endTime}
-          playhead={playheadSource}
-          onScrub={scrub}
-          onTrim={trim}
-          onTrimCommit={undefined}
-          pxPerSec={zoom}
-        />
+    duration={clipDuration}
+    start={0}
+    end={clipDuration}
+    playhead={playheadSource - startTime}
+    onScrub={(t) => scrub(t + startTime)}
+    onTrim={(s, e) => trim(s + startTime, e + startTime)}
+    onTrimCommit={undefined}
+    pxPerSec={zoom}
+/>
       </div>
       <div className="flex items-center justify-between px-5 py-1.5 text-[10px] text-zinc-600">
         <span>Source · drag edges to set each piece, gaps are dropped</span>
