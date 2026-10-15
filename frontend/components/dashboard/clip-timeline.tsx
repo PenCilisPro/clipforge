@@ -1,33 +1,33 @@
 ﻿"use client";
 
 /**
- * StreamPal-style timeline for the full-screen clip editor: a time ruler, a
- * single source track with draggable trim handles at both edges, and a
- * playhead you can scrub. All times are SOURCE-video seconds (the trim
- * window selects the piece of the original that renders).
+ * Infinite-canvas timeline: the clip sits anchored at 0:00 and both edges
+ * can stretch into the surrounding source material (bounded by a runway
+ * that keeps the canvas finite but feels endless while panning).
  */
 import { useCallback, useEffect, useRef } from "react";
 
 import { clamp, formatTimecode, rulerTickStep } from "@/lib/timeline";
 
 interface ClipTimelineProps {
-  /** Total source-video duration in seconds. */
+  /** Clip length in seconds (the block occupies 0 → clipDuration). */
   duration: number;
-  /** Clip window (source seconds). */
-  start: number;
-  end: number;
-  /** Live trim updates while dragging. */
+  /** How much runway is visible beyond the clip (source seconds). */
+  runway?: number;
+  /** Playhead position (clip-relative seconds). */
+  playhead: number;
+  /** Live trim updates while dragging (clip-relative times). */
   onTrim: (start: number, end: number) => void;
   /** Fired once when a trim drag is released. */
   onTrimCommit?: () => void;
-  /** Playhead position (source seconds). */
-  playhead: number;
-  /** Scrub the playhead (fires continuously while dragging). */
+  /** Scrub the playhead (clip-relative seconds). */
   onScrub: (time: number) => void;
   /** Zoom in px per second. */
   pxPerSec: number;
-  /** Minimum clip length in seconds (matches the pipeline's 3 s floor). */
+  /** Minimum clip length (matches the pipeline's 3 s floor). */
   minSeconds?: number;
+  /** Max total clip length the source allows (start → source end). */
+  maxDuration?: number;
 }
 
 type Drag =
@@ -39,24 +39,31 @@ const TRACK_H = 44;
 
 export function ClipTimeline({
   duration,
-  start,
-  end,
+  runway = 120,
+  playhead,
   onTrim,
   onTrimCommit,
-  playhead,
   onScrub,
   pxPerSec,
   minSeconds = 3,
+  maxDuration = Infinity,
 }: ClipTimelineProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<Drag | null>(null);
   const durationRef = useRef(duration);
-  durationRef.current = duration > 0 ? duration : Math.max(end, 1);
+  durationRef.current = Math.max(duration, minSeconds);
 
-  const width = Math.max(durationRef.current * pxPerSec, 200);
+  // The canvas spans the clip plus runway on both sides (left runway exists
+  // because the clip can stretch backwards into the source too — bounded by
+  // what the source allows, which the parent enforces on commit).
+  const runwayRef = useRef(runway);
+  runwayRef.current = runway;
 
-  // Wheel = horizontal pan. Native listener with passive:false so
-  // preventDefault actually works (React binds wheel as passive).
+  const total = durationRef.current + runwayRef.current;
+  const width = Math.max(total * pxPerSec, 200);
+
+  // Wheel = horizontal pan (native listener, passive:false so
+  // preventDefault works — React binds wheel as passive).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -82,8 +89,7 @@ export function ClipTimeline({
     [pxPerSec]
   );
 
-  // Global pointer handlers are attached imperatively on pointer-down (refs
-  // don't trigger effects, so an effect-based approach would never bind).
+  // Global pointer handlers (imperative — refs don't trigger effects).
   const startDrag = (drag: Drag, e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -96,11 +102,14 @@ export function ClipTimeline({
       }
       const delta = (ev.clientX - drag.originX) / pxPerSec;
       if (drag.which === "start") {
+        // Left edge: stretch left into 0..(origEnd - min) — dragging left
+        // extends the clip backwards, right shrinks it.
         onTrim(clamp(drag.origStart + delta, 0, drag.origEnd - minSeconds), drag.origEnd);
       } else {
+        // Right edge: stretch right into the runway — bounded by maxDuration.
         onTrim(
           drag.origStart,
-          clamp(drag.origEnd + delta, drag.origStart + minSeconds, durationRef.current)
+          clamp(drag.origEnd + delta, drag.origStart + minSeconds, Math.min(durationRef.current + runwayRef.current, maxDuration))
         );
       }
     };
@@ -115,18 +124,17 @@ export function ClipTimeline({
   };
 
   const beginTrimDrag = (which: "start" | "end") => (e: React.PointerEvent) => {
-    startDrag({ kind: "trim", which, originX: e.clientX, origStart: start, origEnd: end }, e);
+    startDrag({ kind: "trim", which, originX: e.clientX, origStart: 0, origEnd: duration }, e);
   };
 
   const scrubFromEvent = (e: React.PointerEvent) => {
     startDrag({ kind: "scrub" }, e);
   };
 
-  const startPct = durationRef.current > 0 ? (start / durationRef.current) * 100 : 0;
-  const endPct = durationRef.current > 0 ? (end / durationRef.current) * 100 : 100;
+  const clipEndPct = Math.min((durationRef.current / total) * 100, 100);
   const tick = rulerTickStep(pxPerSec);
   const ticks: number[] = [];
-  for (let t = 0; t <= durationRef.current + 0.001; t += tick) ticks.push(Number(t.toFixed(2)));
+  for (let t = 0; t <= total + 0.001; t += tick) ticks.push(Number(t.toFixed(2)));
 
   return (
     <div
@@ -134,7 +142,7 @@ export function ClipTimeline({
       className="overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <div className="relative select-none" style={{ width }}>
-        {/* Ruler */}
+        {/* Ruler — 0:00 is the clip's first frame */}
         <div
           className="relative cursor-pointer border-b border-white/10"
           style={{ height: RULER_H }}
@@ -152,25 +160,27 @@ export function ClipTimeline({
 
         {/* Track */}
         <div className="relative py-3" style={{ height: TRACK_H + 24 }}>
-          {/* Dimmed out-of-window regions */}
+          {/* Runway (source material beyond the clip) */}
           <div
-            className="absolute inset-y-3 left-0 rounded-l-md bg-black/50"
-            style={{ width: `${startPct}%` }}
-            onPointerDown={scrubFromEvent}
+            className="absolute inset-y-3 left-0 rounded-l-md bg-[#0f0f12] ring-1 ring-inset ring-white/5"
+            style={{ width: "100%" }}
           />
-          <div
-            className="absolute inset-y-3 right-0 rounded-r-md bg-black/50"
-            style={{ width: `${100 - endPct}%` }}
-            onPointerDown={scrubFromEvent}
-          />
+          {/* "End of source" marker once runway exceeds maxDuration */}
+          {maxDuration !== Infinity && (
+            <div
+              className="absolute inset-y-3 w-px bg-red-500/40"
+              style={{ left: `${(Math.min(maxDuration, total) / total) * 100}%` }}
+              title="End of source material"
+            />
+          )}
 
-          {/* Selected clip window */}
+          {/* The clip block — anchored at 0:00, stretches to the right */}
           <div
-            className="absolute inset-y-3 rounded-md bg-gradient-to-b from-[#7c3aed] to-[#6d28d9] shadow-[inset_0_1px_0_rgba(255,255,255,0.15)] ring-1 ring-white/10"
-            style={{ left: `${startPct}%`, width: `${Math.max(endPct - startPct, 0.5)}%` }}
+            className="absolute inset-y-3 left-0 rounded-md bg-gradient-to-b from-[#7c3aed] to-[#6d28d9] shadow-[inset_0_1px_0_rgba(255,255,255,0.15)] ring-1 ring-white/10"
+            style={{ width: `${clipEndPct}%` }}
             onPointerDown={scrubFromEvent}
           >
-            {/* Trim handles */}
+            {/* Trim handles — both edges stretch the clip */}
             <div
               className="absolute inset-y-0 left-0 flex w-3 cursor-ew-resize items-center justify-start"
               onPointerDown={beginTrimDrag("start")}
@@ -179,6 +189,7 @@ export function ClipTimeline({
             </div>
             <div
               className="absolute inset-y-0 right-0 flex w-3 cursor-ew-resize items-center justify-end"
+              onClick={(e) => e.stopPropagation()}
               onPointerDown={beginTrimDrag("end")}
             >
               <span className="h-full w-1.5 rounded-r-md bg-white/90" />
@@ -188,7 +199,7 @@ export function ClipTimeline({
           {/* Playhead */}
           <div
             className="pointer-events-none absolute top-0 z-10"
-            style={{ left: `${(playhead / Math.max(durationRef.current, 0.001)) * 100}%` }}
+            style={{ left: `${(playhead / Math.max(total, 0.001)) * 100}%` }}
           >
             <div className="h-[3px] w-[3px] rounded-full bg-white" />
             <div className="absolute top-1.5 h-[68px] w-[2px] -translate-x-1/2 bg-white" />
