@@ -1227,12 +1227,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       {/* ---------- Timeline ---------- */}
       <div className="border-t border-white/10 bg-[#0c0c0e] px-2 pb-1">
         <ClipTimeline
-          duration={timelineDuration}
-          start={startTime}
-          end={endTime}
-          onTrim={trim}
-          playhead={playheadSource}
-          onScrub={scrub}
+          duration={endTime - startTime}
+          start={0}
+          end={endTime - startTime}
+          onTrim={(s, e) => { setStartTime(s + startTime); setEndTime(e + startTime); }}
+          playhead={playheadSource - startTime}
+          onScrub={(t) => setPlayheadSource(t + startTime)}
           pxPerSec={zoom}
           minSeconds={MIN_CLIP_SECONDS}
         />
