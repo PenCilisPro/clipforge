@@ -77,8 +77,11 @@ image = (
     .add_local_file(
         str(REPO_ROOT / "worker/src/lib/localRender.js"), "/app/src/lib/localRender.js", copy=True
     )
-    .add_local_file(
+        .add_local_file(
         str(REPO_ROOT / "worker/src/lib/captions.js"), "/app/src/lib/captions.js", copy=True
+    )
+    .add_local_file(
+        str(REPO_ROOT / "worker/src/lib/canvas.js"), "/app/src/lib/canvas.js", copy=True
     )
     .add_local_file(
         str(REPO_ROOT / "worker/src/lib/ffmpeg.js"), "/app/src/lib/ffmpeg.js", copy=True

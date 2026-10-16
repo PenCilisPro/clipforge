@@ -9,6 +9,7 @@ import {
   Clapperboard,
   Link2,
   MessageSquare,
+  Music,
   PlusCircle,
   ShieldCheck,
   Sparkles,
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { label: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
   { label: "AI Assistant", href: "/dashboard/assistant", icon: Bot },
+  { label: "Music", href: "/dashboard/music", icon: Music },
   { label: "Connections", href: "/dashboard/connections", icon: Link2 },
   { label: "Feedback", href: "/dashboard/feedback", icon: MessageSquare },
 ];
