@@ -27,6 +27,36 @@ const cache = new Map();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 async function fetchCatalog() {
+  const PIXABAY_MOOD_Q = {
+  upbeat: "upbeat",
+  chill: "chill lofi",
+  dramatic: "dramatic cinematic",
+  corporate: "corporate",
+  energetic: "energetic sport",
+  happy: "happy upbeat",
+  epic: "epic trailer",
+  background: "background",
+};
+
+async function fetchPixabayMusic(mood, q) {
+  if (!env.pixabayApiKey) return [];
+  const url = new URL("https://pixabay.com/api/music/");
+  url.searchParams.set("key", env.pixabayApiKey);
+  url.searchParams.set("q", q ?? PIXABAY_MOOD_Q[mood] ?? mood);
+  url.searchParams.set("per_page", "30");
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data?.hits ?? []).map((t) => ({
+    id: `pb-${t.id}`,
+    name: String(t.title ?? "Untitled").slice(0, 200),
+    artist: String(t.user ?? "Pixabay").slice(0, 200),
+    duration: Number(t.duration ?? 0),
+    audio: String(t.audio),
+    image: t.image ? String(t.image) : null,
+    tags: [],
+  }));
+}
   const cached = cache.get("catalog");
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.tracks;
   if (!env.jamendoClientId) throw new Error("Jamendo client id is not configured");
