@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
-import { detectViralClips } from "../lib/zai.js";
+import { detectViralClips } from "../lib/clipIntel.js";
 import { enqueuePipeline } from "../lib/queues.js";
 import { env } from "../lib/env.js";
 
@@ -105,6 +105,9 @@ export async function processAnalyze(job) {
           virality_score: suggestion.virality_score,
           reason: suggestion.reason,
           hashtags: suggestion.hashtags,
+          // Full Clip Intelligence rubric (scores/penalties/hook_type/risks)
+          // stored for the tuning loop — compare against real view data later.
+          intel_json: suggestion.intel_json ?? null,
           status: "queued",
           // Firestore can't query absent fields with == null (Postgres NULL
           // semantics did), so recovery.js's stranded-clip query needs these
