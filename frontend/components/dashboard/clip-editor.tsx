@@ -30,6 +30,7 @@ import {
   VolumeX,
   ZoomIn,
   ZoomOut,
+  Music as MusicIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -41,7 +42,7 @@ import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
 
-type Tab = "frame" | "text" | "brand";
+type Tab = "frame" | "text" | "brand" | "music";
 type CaptionPosition = "top" | "middle" | "bottom";
 type OutputAspect = "9:16" | "16:9" | "1:1";
 
@@ -69,6 +70,15 @@ const TEXT_COLORS = [
   "#22c55e",
   "#a78bfa",
 ];
+
+interface MusicTrackLite {
+  id: string;
+  name: string;
+  artist: string;
+  duration: number;
+  audio: string;
+  image: string | null;
+}
 
 const FRAME_STEP = 1 / 30;
 
@@ -126,6 +136,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [zoom, setZoom] = useState(24); // px per second
   const [fullscreen, setFullscreen] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(0);
+  const [musicTabMood, setMusicTabMood] = useState("background");
+  const [musicTracks, setMusicTracks] = useState<MusicTrackLite[] | null>(null);
+  const [musicLoading, setMusicLoading] = useState(false);
+  const [musicPlaying, setMusicPlaying] = useState<string | null>(null);
+  const [aiMusicBusy, setAiMusicBusy] = useState(false);
+  const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
@@ -358,7 +374,78 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       void document.documentElement.requestFullscreen().catch(() => {});
     }
   }
+  // ---------- Music ops ----------
+  async function loadMusicCatalog(m: string) {
+    setMusicLoading(true);
+    try {
+      const data = await apiFetch<{ configured: boolean; tracks: MusicTrackLite[] }>(
+        `/api/music?mood=${encodeURIComponent(m)}`
+      );
+      setMusicTracks(data.tracks);
+    } catch {
+      setMusicTracks([]);
+    } finally {
+      setMusicLoading(false);
+    }
+  }
 
+  function previewMusicTrack(track: MusicTrackLite) {
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current = null;
+    }
+    if (musicPlaying === track.id) {
+      setMusicPlaying(null);
+      return;
+    }
+    const audio = new Audio(track.audio);
+    audioPreviewRef.current = audio;
+    audio.play().catch(() => toast.error("Preview failed"));
+    setMusicPlaying(track.id);
+    audio.onended = () => setMusicPlaying(null);
+  }
+
+  async function applyMusicTrack(track: MusicTrackLite) {
+    if (!clip) return;
+    try {
+      await apiFetch(`/api/projects/${clip.project_id}/music`, {
+        method: "POST",
+        body: {
+          music_url: track.audio,
+          music_title: track.name,
+          music_artist: track.artist,
+          music_mood: musicTabMood,
+        },
+      });
+      setProject((p) =>
+        p ? { ...p, music_title: track.name, music_artist: track.artist, music_mood: musicTabMood } : p
+      );
+      toast.success(`"${track.name}" set — re-render this clip to hear it`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to set music");
+    }
+  }
+
+  async function aiPickMusic() {
+    if (!clip || aiMusicBusy) return;
+    setAiMusicBusy(true);
+    try {
+      const res = await apiFetch<{
+        track: { name: string; artist: string; audio: string; mood: string };
+      }>(`/api/clips/${clipId}/music/ai`, { method: "POST" });
+      setProject((p) =>
+        p ? { ...p, music_title: res.track.name, music_artist: res.track.artist, music_mood: res.track.mood } : p
+      );
+      toast.success(`AI picked "${res.track.name}" — re-render to hear it`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "AI music pick failed");
+    } finally {
+      setAiMusicBusy(false);
+    }
+  }
+
+  // Stop preview audio when leaving the editor.
+  useEffect(() => () => audioPreviewRef.current?.pause(), []);
   // ---------- Caption ops ----------
   function updateActiveCue(text: string) {
     if (!activeCue) return;
@@ -830,6 +917,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               [
                 { key: "frame", label: "Frame", icon: FrameIcon },
                 { key: "text", label: "Text", icon: TypeIcon },
+                { key: "music", label: "Music", icon: MusicIcon },
               ] as const
             ).map(({ key, label, icon: Icon }) => (
               <button
@@ -1134,6 +1222,92 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     White keeps the caption template's own default colour
                   </p>
                 </div>
+              </div>
+            )}
+            {tab === "music" && (
+              <div className="space-y-5">
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                    Current track
+                  </p>
+                  <p className="pt-1 text-sm text-zinc-200">
+                    {project?.music_title
+                      ? `${project.music_title}${project.music_artist ? ` — ${project.music_artist}` : ""}`
+                      : "No music set"}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => void aiPickMusic()}
+                  disabled={aiMusicBusy}
+                  className="w-full rounded-lg bg-primary-500/20 px-3 py-2 text-xs font-semibold text-primary-200 hover:bg-primary-500/30 disabled:opacity-50"
+                >
+                  {aiMusicBusy ? "Picking…" : "AI pick from transcript (10 credits)"}
+                </button>
+
+                <div>
+                  <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                    Mood
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {["upbeat","chill","dramatic","corporate","energetic","happy","epic","background"].map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => {
+                          setMusicTabMood(m);
+                          void loadMusicCatalog(m);
+                        }}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-[10px] font-medium capitalize transition-colors",
+                          musicTabMood === m
+                            ? "border-primary-500 bg-primary-500/15 text-primary-200"
+                            : "border-white/10 text-zinc-400 hover:border-white/25"
+                        )}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {musicLoading && <p className="text-xs text-zinc-500">Loading catalog…</p>}
+                  {(musicTracks ?? []).map((track) => (
+                    <div
+                      key={track.id}
+                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2"
+                    >
+                      <button
+                        onClick={() => previewMusicTrack(track)}
+                        aria-label="Preview"
+                        className="rounded-full bg-white/10 p-1.5 text-zinc-200 hover:bg-white/20"
+                      >
+                        {musicPlaying === track.id ? (
+                          <Pause className="h-3.5 w-3.5" />
+                        ) : (
+                          <Play className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs text-zinc-200">{track.name}</p>
+                        <p className="truncate text-[10px] text-zinc-500">{track.artist}</p>
+                      </div>
+                      <button
+                        onClick={() => void applyMusicTrack(track)}
+                        className="rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold text-black hover:bg-zinc-200"
+                      >
+                        Use
+                      </button>
+                    </div>
+                  ))}
+                  {!musicLoading && (musicTracks ?? []).length === 0 && (
+                    <p className="text-xs text-zinc-500">No tracks for this mood.</p>
+                  )}
+                </div>
+
+                <p className="text-[10px] leading-relaxed text-zinc-600">
+                  Applies to the project's background music. Re-render this clip to hear the new track.
+                </p>
               </div>
             )}
 
