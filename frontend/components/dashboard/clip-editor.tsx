@@ -4,7 +4,7 @@
  * Full-screen clip editor (StreamPal-style dark workspace).
  *
  * Layout: top bar (name + Render & save) · video preview with safe zones and
- * a live caption overlay · right panel with Frame / Text / Brand tabs ·
+ * a live caption overlay · right panel with Frame / Text / Music / Brand tabs ·
  * toolbar + trim timeline at the bottom.
  *
  * "Render & save" POSTs the same /api/clips/:id/edit payload the pipeline
@@ -23,6 +23,7 @@ import {
   Play,
   RotateCcw,
   Scissors,
+  Search,
   SkipBack,
   SkipForward,
   Type as TypeIcon,
@@ -69,6 +70,10 @@ const TEXT_COLORS = [
   "#ec4899",
   "#22c55e",
   "#a78bfa",
+];
+
+const MUSIC_MOODS = [
+  "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
 ];
 
 interface MusicTrackLite {
@@ -136,10 +141,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [zoom, setZoom] = useState(24); // px per second
   const [fullscreen, setFullscreen] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(0);
+
+  // Music tab state
   const [musicTabMood, setMusicTabMood] = useState("background");
   const [musicTracks, setMusicTracks] = useState<MusicTrackLite[] | null>(null);
   const [musicLoading, setMusicLoading] = useState(false);
   const [musicPlaying, setMusicPlaying] = useState<string | null>(null);
+  const [musicQuery, setMusicQuery] = useState("");
   const [aiMusicBusy, setAiMusicBusy] = useState(false);
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
 
@@ -211,7 +219,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               if (res.ok) setCues(parseSrt(await res.text()));
             }
           } catch {
-            // Captions stay empty — the Text tab offers auto-fill.
+            // Captions stay empty — the auto-fill effect covers it.
           }
         }
       } catch (err) {
@@ -236,25 +244,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setCues(next);
       setResetSrt(false);
     }
-    // Runs once after load (and again only if cues are cleared intentionally).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, cues.length, startTime, endTime]);
-
-  // Preview: play the SOURCE video so trim edits are visible live.
-  // Lock playback to the trim window and keep the timeline playhead in sync.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const tick = () => {
-      if (video.currentTime < startTime - 0.05 || video.currentTime >= endTime) {
-        video.currentTime = startTime;
-      }
-      setClipTime(clamp(video.currentTime - startTime, 0, clipDuration));
-      setPlayheadSource(clamp(video.currentTime, startTime, endTime));
-    };
-        video.addEventListener("timeupdate", tick);
-    return () => video.removeEventListener("timeupdate", tick);
-  }, [startTime, endTime, clipDuration]);
 
   // ---------- SEEK TO CLIP START ON LOAD ----------
   // The preview video starts at the clip's first frame (CapCut-style), not
@@ -273,7 +264,6 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       }
     };
     seek();
-    // Re-seek once when the source URL arrives / clip data changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, sourceVideoUrl, startTime]);
 
@@ -304,7 +294,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   }, [volume, muted]);
 
   // ---------- Handlers ----------
-    // Fresh-window refs: the tick always reads current values, and the
+  // Fresh-window refs: the tick always reads current values, and the
   // ref-callback binding survives video element replacement.
   const windowRef = useRef({ start: 0, end: 0, dur: 0 });
   windowRef.current = { start: startTime, end: endTime, dur: clipDuration };
@@ -327,6 +317,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       el.addEventListener("timeupdate", handleTimeUpdate);
     }
   };
+
   const scrub = useCallback(
     (t: number) => {
       const clamped = clamp(t, startTime, endTime);
@@ -374,6 +365,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       void document.documentElement.requestFullscreen().catch(() => {});
     }
   }
+
   // ---------- Music ops ----------
   async function loadMusicCatalog(m: string) {
     setMusicLoading(true);
@@ -446,6 +438,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   // Stop preview audio when leaving the editor.
   useEffect(() => () => audioPreviewRef.current?.pause(), []);
+
   // ---------- Caption ops ----------
   function updateActiveCue(text: string) {
     if (!activeCue) return;
@@ -616,6 +609,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     return cues.find((c) => t >= c.start - 0.05 && t <= c.end + 0.05) ?? null;
   }, [cues, clipTime]);
 
+  // Music search filter (client-side over the loaded catalog page).
+  const musicFiltered = useMemo(() => {
+    const q = musicQuery.trim().toLowerCase();
+    if (!q) return musicTracks ?? [];
+    return (musicTracks ?? []).filter(
+      (t) => t.name.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q)
+    );
+  }, [musicTracks, musicQuery]);
+
   const fontDef = CAPTION_FONTS.find((f) => f.key === font) ?? CAPTION_FONTS[0];
 
   /** Caption font size scaled from the 1080px canvas to the preview box. */
@@ -756,7 +758,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 height: "100%",
               }}
             >
-                            {previewSrc ? (
+              {previewSrc ? (
                 <>
                   {/* Blurred backdrop for "Blur fill" — mimics the render's
                       boxblur+scale backdrop so the preview matches the output */}
@@ -911,7 +913,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
 
         {/* ---------- Right panel ---------- */}
-        <aside className="flex w-[320px] shrink-0 flex-col border-l border-white/10 bg-[#161619]">
+        <aside className="flex w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#161619]">
           <div className="flex items-center gap-1 border-b border-white/10 px-4 py-3">
             {(
               [
@@ -922,7 +924,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             ).map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
-                onClick={() => setTab(key)}
+                onClick={() => {
+                  setTab(key);
+                  if (key === "music" && musicTracks === null) void loadMusicCatalog(musicTabMood);
+                }}
                 className={cn(
                   "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                   tab === key
@@ -1224,8 +1229,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               </div>
             )}
+
             {tab === "music" && (
-              <div className="space-y-5">
+              <div className="space-y-4">
                 <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
                     Current track
@@ -1250,7 +1256,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     Mood
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {["upbeat","chill","dramatic","corporate","energetic","happy","epic","background"].map((m) => (
+                    {MUSIC_MOODS.map((m) => (
                       <button
                         key={m}
                         onClick={() => {
@@ -1270,17 +1276,27 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                 </div>
 
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+                  <input
+                    value={musicQuery}
+                    onChange={(e) => setMusicQuery(e.target.value)}
+                    placeholder="Search tracks or artists…"
+                    className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2 pl-8 pr-3 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-primary-500/60"
+                  />
+                </div>
+
                 <div className="space-y-2">
                   {musicLoading && <p className="text-xs text-zinc-500">Loading catalog…</p>}
-                  {(musicTracks ?? []).map((track) => (
+                  {musicFiltered.map((track) => (
                     <div
                       key={track.id}
-                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2"
+                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] p-2 transition-colors hover:border-white/20"
                     >
                       <button
                         onClick={() => previewMusicTrack(track)}
                         aria-label="Preview"
-                        className="rounded-full bg-white/10 p-1.5 text-zinc-200 hover:bg-white/20"
+                        className="shrink-0 rounded-full bg-white/10 p-1.5 text-zinc-200 hover:bg-white/20"
                       >
                         {musicPlaying === track.id ? (
                           <Pause className="h-3.5 w-3.5" />
@@ -1294,19 +1310,23 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       </div>
                       <button
                         onClick={() => void applyMusicTrack(track)}
-                        className="rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold text-black hover:bg-zinc-200"
+                        className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold text-black hover:bg-zinc-200"
                       >
                         Use
                       </button>
                     </div>
                   ))}
-                  {!musicLoading && (musicTracks ?? []).length === 0 && (
-                    <p className="text-xs text-zinc-500">No tracks for this mood.</p>
+                  {!musicLoading && musicFiltered.length === 0 && musicTracks !== null && (
+                    <p className="text-xs text-zinc-500">
+                      No tracks match{musicQuery ? ` "${musicQuery}"` : " this mood"} — try
+                      another mood.
+                    </p>
                   )}
                 </div>
 
                 <p className="text-[10px] leading-relaxed text-zinc-600">
-                  Applies to the project's background music. Re-render this clip to hear the new track.
+                  Applies to the project's background music. Re-render this clip to hear the
+                  new track.
                 </p>
               </div>
             )}
@@ -1375,7 +1395,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     <button
                       role="switch"
                       aria-checked={shadow}
-                      onClick={() => setStroke((v) => !v)}
+                      onClick={() => setShadow((v) => !v)}
                       className={cn(
                         "relative h-5 w-9 rounded-full transition-colors",
                         shadow ? "bg-primary-500" : "bg-zinc-700"
@@ -1484,19 +1504,18 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
       {/* ---------- Timeline ---------- */}
       <div className="border-t border-white/10 bg-[#0d0d0f] px-2 pb-2">
-  <ClipTimeline
-    duration={clipDuration}
-    runway={120}
-    playhead={clipTime}
-    onTrim={(s, e) => trim(s + startTime, e + startTime)}
-    onTrimCommit={undefined}
-    onScrub={(t) => scrub(t + startTime)}
-    pxPerSec={zoom}
-    maxDuration={sourceDuration - startTime || undefined}
-  />
-</div>
+        <ClipTimeline
+          duration={clipDuration}
+          runway={120}
+          playhead={clipTime}
+          onTrim={(s, e) => trim(s + startTime, e + startTime)}
+          onScrub={(t) => scrub(t + startTime)}
+          pxPerSec={zoom}
+          maxDuration={sourceDuration - startTime || undefined}
+        />
+      </div>
       <div className="flex items-center justify-between px-5 py-1.5 text-[10px] text-zinc-600">
-        <span>Source · drag edges to set each piece, gaps are dropped</span>
+        <span>Source · drag edges to stretch the clip, runway is source material</span>
         <span>Editing runs on your device · larger clips take longer · the result is saved to your uploaded clips</span>
       </div>
     </div>
