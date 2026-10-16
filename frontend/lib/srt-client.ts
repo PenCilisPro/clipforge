@@ -8,6 +8,10 @@ export interface SrtCue {
   start: number;
   end: number;
   text: string;
+  /** Per-word timings (clip-relative) — carried from the transcript so the
+   *  preview can render the karaoke word-pop. Optional: cues parsed from a
+   *  stored SRT override have no word data. */
+  words?: { word: string; start: number; end: number }[];
 }
 
 function parseTimestamp(raw: string): number | null {
@@ -51,7 +55,9 @@ export function parseSrt(srt: string): SrtCue[] {
   return cues.sort((a, b) => a.start - b.start);
 }
 
-/** Serialize cues back to SRT text. */
+/** Serialize cues back to SRT text. Word timings are intentionally dropped —
+ *  plain SRT has no slot for them; the pipeline re-derives word sync from
+ *  the transcript when it regenerates caption styling. */
 export function cuesToSrtText(cues: SrtCue[]): string {
   return cues
     .map(

@@ -44,11 +44,20 @@ export function fitZoom(windowSeconds: number, widthPx: number) {
   return clamp(widthPx / (windowSeconds * 1.35), 2, 200);
 }
 
+/** Per-word timing carried on each cue — the caption overlay's karaoke
+ *  word-pop reads this (mirrors the render-side ASS scheme). */
+export interface CueWord {
+  word: string;
+  start: number; // clip-relative
+  end: number; // clip-relative
+}
+
 /**
  * Build caption cues for the clip window straight from the word-level
  * transcript (source coordinates). Words are grouped into readable cues:
  * break on >42 chars, >1 s pause, or >3.5 s duration. Returns clip-relative
- * cues ready for the SRT editor.
+ * cues ready for the SRT editor, with per-word timings preserved so the
+ * preview can render the karaoke word-pop.
  */
 export function cuesFromTranscript(
   words: TranscriptWord[],
@@ -56,7 +65,12 @@ export function cuesFromTranscript(
   clipEnd: number
 ): SrtCue[] {
   const cues: SrtCue[] = [];
-  let current: { start: number; end: number; text: string } | null = null;
+  let current: {
+    start: number;
+    end: number;
+    text: string;
+    words: CueWord[];
+  } | null = null;
 
   const push = () => {
     if (current && current.text.trim()) cues.push({ id: uuid(), ...current });
@@ -76,11 +90,14 @@ export function cuesFromTranscript(
     const gap = current ? start - current.end : 0;
     const chars = current ? current.text.length + 1 + text.length : text.length;
     if (current && (chars > 42 || gap > 1 || end - current.start > 3.5)) push();
-    if (!current) current = { start, end, text };
+    if (!current) current = { start, end, text, words: [] };
     else {
       current.end = end;
       current.text = `${current.text} ${text}`;
     }
+    // Keep per-word timing — the caption overlay needs it for the
+    // karaoke word-pop (mirrors the render-side ASS scheme).
+    current.words.push({ word: text, start, end });
   }
   push();
 

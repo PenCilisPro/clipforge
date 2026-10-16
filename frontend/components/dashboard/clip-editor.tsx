@@ -4,8 +4,8 @@
  * Full-screen clip editor (StreamPal-style dark workspace).
  *
  * Layout: top bar (name + Render & save) · video preview with safe zones and
- * a live caption overlay · right panel with Frame / Text / Music / Brand tabs ·
- * toolbar + trim timeline at the bottom.
+ * a live karaoke caption overlay · right panel with Frame / Text / Music /
+ * Brand tabs · toolbar + trim timeline at the bottom.
  *
  * "Render & save" POSTs the same /api/clips/:id/edit payload the pipeline
  * already accepts, extended with caption position/size and output aspect.
@@ -800,7 +800,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-              {/* Live caption overlay */}
+              {/* Live caption overlay — karaoke word-pop when the cue carries
+                  word timings (auto-filled cues from the transcript do) */}
               {activeCue?.text.trim() && (
                 <div
                   className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
@@ -816,7 +817,6 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   <span
                     style={{
                       fontSize: `${previewFontSize}px`,
-                      color: textColor.toLowerCase() === "#ffffff" ? "#ffffff" : textColor,
                       lineHeight: 1.15,
                       fontWeight: 800,
                       ...(stroke
@@ -831,7 +831,34 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         : {}),
                     }}
                   >
-                    {activeCue.text}
+                    {(() => {
+                      const cueWords =
+                        Array.isArray(activeCue.words) && activeCue.words.length > 0
+                          ? activeCue.words
+                          : null;
+                      if (!cueWords) return activeCue.text;
+                      const activeIdx = cueWords.findIndex(
+                        (w) => clipTime >= w.start - 0.05 && clipTime <= w.end + 0.05
+                      );
+                      return cueWords.map((w, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            color:
+                              i === activeIdx
+                                ? "#ff5d1c"
+                                : textColor.toLowerCase() === "#ffffff"
+                                  ? "#ffffff"
+                                  : textColor,
+                            opacity: activeIdx === -1 || i === activeIdx ? 1 : 0.55,
+                            transition: "color 80ms linear, opacity 80ms linear",
+                          }}
+                        >
+                          {w.word}
+                          {i < cueWords.length - 1 ? " " : ""}
+                        </span>
+                      ));
+                    })()}
                   </span>
                 </div>
               )}
