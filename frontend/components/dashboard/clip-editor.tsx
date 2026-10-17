@@ -40,7 +40,6 @@ import type { Clip, Project } from "@/lib/types";
 import { CAPTION_FONTS } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
-import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anims";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
 
@@ -119,12 +118,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [resetSrt, setResetSrt] = useState(false);
   const [font, setFont] = useState("anton");
   const [textColor, setTextColor] = useState("#ffffff");
-  const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
   const [position, setPosition] = useState<CaptionPosition>("bottom");
-  const [capX, setCapX] = useState<number | null>(null); // % across, null = preset mode
-const [capY, setCapY] = useState<number | null>(null); // % down,  null = preset mode
-const [dragging, setDragging] = useState(false);
-const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -186,7 +180,6 @@ const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(
         setPlayheadSource(Number(found.start_time));
         setFont(found.caption_font ?? "anton");
         setTextColor(found.caption_color ?? "#ffffff");
-        setCaptionAnim((found.caption_anim as CaptionAnimId) ?? "pop");
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
         setSize(Number(found.caption_size) || 0);
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
@@ -343,26 +336,7 @@ const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(
     setEndTime(end);
     setPlayheadSource((prev) => clamp(prev, start, end));
   }, []);
-function onCaptionPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
-  e.stopPropagation();
-  e.currentTarget.setPointerCapture(e.pointerId);
-  const y0 = capY ?? (position === "top" ? 12 : position === "middle" ? 50 : 90);
-  dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
-  setCapX(capX ?? 50);
-  setCapY(y0);
-  setDragging(true);
-}
-function onCaptionPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
-  const d = dragRef.current;
-  const box = previewBoxRef.current?.getBoundingClientRect();
-  if (!d || !box) return;
-  setCapX(clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96));
-  setCapY(clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96));
-}
-function onCaptionPointerUp() {
-  dragRef.current = null;
-  setDragging(false);
-}
+
   function togglePlay() {
     const video = videoRef.current;
     if (!video) return;
@@ -582,7 +556,6 @@ function onCaptionPointerUp() {
           ...(nameDirtyRef.current ? { title: name.trim().slice(0, 200) } : {}),
           caption_font: font,
           caption_color: textColor,
-          caption_anim: captionAnim,
           caption_position: position,
           caption_size: size,
           output_aspect: aspect,
@@ -832,26 +805,20 @@ function onCaptionPointerUp() {
               {/* Live caption overlay — karaoke word-pop when the cue carries
                   word timings (auto-filled cues from the transcript do) */}
               {activeCue?.text.trim() && (
-  <div
-    className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
-    style={{
-      fontFamily: fontDef.cssVar,
-      ...(capY == null
-        ? position === "top"
-          ? { top: "8%" }
-          : position === "middle"
-            ? { top: "50%", transform: "translateY(-50%)" }
-            : { bottom: "8%" }
-        : { left: `${capX}%`, right: "auto", top: `${capY}%`, bottom: "auto", transform: "translate(-50%, -50%)" }),
-    }}
-  >
-    <span
-      onPointerDown={onCaptionPointerDown}
-      onPointerMove={onCaptionPointerMove}
-      onPointerUp={onCaptionPointerUp}
-      className={cn("inline-block touch-none", dragging ? "cursor-grabbing" : "cursor-grab")}
-      style={{
-        fontSize: `${previewFontSize}px`,
+                <div
+                  className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
+                  style={{
+                    fontFamily: fontDef.cssVar,
+                    ...(position === "top"
+                      ? { top: "8%" }
+                      : position === "middle"
+                        ? { top: "50%", transform: "translateY(-50%)" }
+                        : { bottom: "8%" }),
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: `${previewFontSize}px`,
                       lineHeight: 1.15,
                       fontWeight: 800,
                       ...(stroke
@@ -1157,27 +1124,6 @@ function onCaptionPointerUp() {
                       {(activeCue?.text ?? "").length}/120
                     </span>
                   </div>
-                  <div>
-  <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-    Animations
-  </p>
-  <div className="grid grid-cols-3 gap-2">
-    {CAPTION_ANIMS.map((a) => (
-      <button
-        key={a.id}
-        onClick={() => setCaptionAnim(a.id)}
-        className={cn(
-          "rounded-lg border px-3 py-2 text-sm transition-colors",
-          captionAnim === a.id
-            ? "border-primary-500 bg-primary-500/10 text-primary-200"
-            : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
-        )}
-      >
-        {a.label}
-      </button>
-    ))}
-  </div>
-</div>
                   <input
                     value={activeCue?.text ?? ""}
                     onChange={(e) => updateActiveCue(e.target.value.slice(0, 120))}

@@ -357,8 +357,10 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionShadowSize = 6,
     videoFit = "cover",
     videoBackgroundBlur = true,
-    captionPosition = "bottom",
+      captionPosition = "bottom",
     captionSize = 0,
+    captionX = null,
+    captionY = null,
     outputAspect = "9:16",
   } = spec;
 
@@ -489,7 +491,7 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const retryHeight = Math.round(height / 1.5 / 2) * 2;
 
   try {
-    await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true });
+    await renderOnce(spec, outputRel, { width, height, withMusic: true });
   } catch (err) {
         if (/SIGKILL/i.test(err.message)) {
       console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
