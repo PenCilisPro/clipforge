@@ -1,4 +1,9 @@
-import { RENDER_STYLES, captionFont, resolveCaptionFontSize } from "./captions.js";
+import {
+  RENDER_STYLES,
+  CAPTION_FONTS,
+  captionFont,
+  resolveCaptionFontSize,
+} from "./captions.js";
 import { aspectDimensions } from "./canvas.js";
 import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } from "./ffmpeg.js";
 import fs from "node:fs/promises";
@@ -85,6 +90,12 @@ function assText(text) {
   return String(text).replace(/[{}\\]/g, "").replace(/\s+/g, " ").trim();
 }
 
+/** Clamp to [lo, hi] with a numeric fallback for junk values. */
+function clampNum(value, lo, hi, fallback = 0) {
+  const n = Number(value);
+  return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : fallback));
+}
+
 function styleDef(style) {
   return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
 }
@@ -115,6 +126,8 @@ export function buildAssSubtitles({
   captionSize = 0,
   captionX = null,
   captionY = null,
+  textOverlays = [],
+  durationSeconds = 0,
   width = 1080,
   height = 1920,
 }) {
@@ -138,20 +151,31 @@ export function buildAssSubtitles({
   const shadow = boxed ? 0 : shadowOn ? Math.min(Number(captionShadowSize) || 6, 12) : 3;
   const backColour = boxed ? assColor(def.background) : shadowColor;
 
-  // Caption placement: free-drag percentages from the editor win; otherwise
-  // ASS alignment numpad — 2 bottom-center, 5 mid-center, 8 top-center with
-  // MarginV pinning the block 8% inside the edge (matching cloud providers).
+  // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
+  // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
+  // (matching the cloud providers' 8% offset); centered captions use 0.
   const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
+  // Free-drag caption position (percent of canvas) overrides the preset
+  // placement: alignment 5 (middle center) anchors the block on \pos(x, y),
+  // so a saved caption_x/caption_y renders pixel-for-pixel like the preview.
   const freePos =
     captionX != null && captionY != null
-      ? {
-          x: Math.round(width * (Number(captionX) / 100)),
-          y: Math.round(height * (Number(captionY) / 100)),
-        }
-      : null;
-  const posTag = freePos ? `{\\pos(${freePos.x},${freePos.y})}` : "";
-  const alignment = freePos ? 5 : captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
-  const marginV = freePos ? 0 : captionPosition === "middle" ? 0 : Math.round(height * 0.08);
+      ? `{\\pos(${Math.round(width * (clampNum(captionX, 0, 100) / 100))},${Math.round(
+          height * (clampNum(captionY, 0, 100) / 100)
+        )})}`
+      : "";
+  const alignment = freePos
+    ? 5
+    : captionPosition === "top"
+      ? 8
+      : captionPosition === "middle"
+        ? 5
+        : 2;
+  const marginV = freePos
+    ? 0
+    : captionPosition === "middle"
+      ? 0
+      : Math.round(height * 0.08);
 
   const fspPx = def.letterSpacingPct
     ? Math.round((parseFloat(def.letterSpacingPct) / 100) * fontSize * 10) / 10
@@ -170,11 +194,45 @@ export function buildAssSubtitles({
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
+    // block inside the edge, matching the cloud providers' placement.
     `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
-    "",
-    "[Events]",
-    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
+
+  // Custom text overlays: one style + one full-duration \pos event each, on
+  // layer 1 so they paint above the captions. BorderStyle 3 paints the
+  // optional dark box (OutlineColour doubles as the box fill at ~71%
+  // opacity); unboxed text gets a soft drop shadow instead.
+  const ovStyles = [];
+  const ovEvents = [];
+  const ovList = (Array.isArray(textOverlays) ? textOverlays : [])
+    .filter((o) => o && String(o.text ?? "").trim().length > 0)
+    .slice(0, 10);
+  ovList.forEach((o, i) => {
+    const fontKey =
+      o.font && Object.prototype.hasOwnProperty.call(CAPTION_FONTS, o.font) ? o.font : "poppins";
+    const fs = Math.max(10, Math.round((height * clampNum(o.size, 1, 30, 5)) / 100));
+    const color = assColor(/^#[0-9a-fA-F]{6}$/.test(String(o.color)) ? o.color : "#ffffff");
+    const boxed = o.bg === true;
+    const ox = Math.round(width * (clampNum(o.x, 0, 100, 50) / 100));
+    const oy = Math.round(height * (clampNum(o.y, 0, 100, 50) / 100));
+    ovStyles.push(
+      `Style: Ov${i},${captionFont(fontKey).family},${fs},${color},&H000000FF,` +
+        `${boxed ? "&H4A000000" : "&H00000000"},&H00000000,${o.bold === false ? 0 : -1},` +
+        `0,0,0,100,100,0,0,${boxed ? 3 : 1},${boxed ? 8 : 0},${boxed ? 0 : 2},5,40,40,0,1`
+    );
+    const body =
+      String(o.text)
+        .split(/\r?\n/)
+        .map((line) => assText(line))
+        .filter(Boolean)
+        .slice(0, 4)
+        .join("\\N") || "Text";
+    ovEvents.push(
+      `Dialogue: 1,${assTime(0)},${assTime(Math.max(0.1, Number(durationSeconds) || 0))},` +
+        `Ov${i},,0,0,0,,{\\pos(${ox},${oy})}${body}`
+    );
+  });
 
   const lines = [];
   const usableCues = (Array.isArray(captionCues) ? captionCues : []).slice(0, 400);
@@ -190,7 +248,7 @@ export function buildAssSubtitles({
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
   const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${posTag}${blurTag}${fspTag}${body}`);
+    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${freePos}${blurTag}${fspTag}${body}`);
   };
 
   for (const cue of usableCues) {
@@ -226,7 +284,16 @@ export function buildAssSubtitles({
     }
   }
 
-  return [...header, ...lines, ""].join("\n");
+  return [
+    ...header,
+    ...ovStyles,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...lines,
+    ...ovEvents,
+    "",
+  ].join("\n");
 }
 
 /** Fetch the caption TTF into the shared fonts dir (cached by family). */
@@ -275,6 +342,9 @@ function buildFilterGraph({
   watermarkInput = null,
   videoFit = "cover",
   videoBackgroundBlur = true,
+  videoScale = 100,
+  videoX = 0,
+  videoY = 0,
 }) {
   const parts = [];
   // Lanczos resampling: bilinear (the default) visibly softens the 1080x1920
@@ -307,6 +377,24 @@ function buildFilterGraph({
   } else {
     parts.push(
       `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
+    );
+  }
+  // Editor video transform: zoom the composited base frame, then pan it.
+  // Overlaying the scaled frame on a black canvas handles both zoom-in
+  // (overflow clips at the canvas edge) and zoom-out / pan (black shows past
+  // the edges) — the same math as the editor preview's CSS translate+scale.
+  const zt = Math.min(3, Math.max(0.5, (Number(videoScale) || 100) / 100));
+  const panX = Math.round(width * (clampNum(videoX, -100, 100) / 100));
+  const panY = Math.round(height * (clampNum(videoY, -100, 100) / 100));
+  if (Math.abs(zt - 1) > 0.001 || panX !== 0 || panY !== 0) {
+    const bgDur = Math.max(1, Number(durationSeconds) || 1) + 1;
+    parts.push(
+      `[base]scale=trunc(iw*${fmt(zt)}/2)*2:trunc(ih*${fmt(zt)}/2)*2:flags=lanczos,setsar=1[zt]`
+    );
+    parts.push(`color=c=black:s=${width}x${height}:r=30:d=${fmt(bgDur)}[ztbg]`);
+    parts.push(
+      `[ztbg][zt]overlay=x=(W-w)/2` + (panX < 0 ? "" : "+") + panX +
+      `:y=(H-h)/2` + (panY < 0 ? "" : "+") + panY + `:eof_action=pass,setsar=1[base]`
     );
   }
   let prev = "base";
@@ -357,21 +445,30 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionShadowSize = 6,
     videoFit = "cover",
     videoBackgroundBlur = true,
-      captionPosition = "bottom",
+    captionPosition = "bottom",
     captionSize = 0,
+    outputAspect = "9:16",
     captionX = null,
     captionY = null,
-    outputAspect = "9:16",
+    textOverlays = [],
+    videoScale = 100,
+    videoX = 0,
+    videoY = 0,
   } = spec;
 
   await ensureFont(captionFontKey);
+  // Overlay fonts must sit in the fonts dir before libass resolves styles.
+  for (const key of new Set(
+    (Array.isArray(textOverlays) ? textOverlays : [])
+      .slice(0, 10)
+      .map((o) => (o && typeof o.font === "string" && o.font ? o.font : "poppins"))
+  )) {
+    await ensureFont(key).catch(() => {});
+  }
   const assRel = `captions-${path.basename(outputRel, ".mp4")}.ass`;
   await fs.writeFile(
     path.join(TMP_DIR, assRel),
     buildAssSubtitles({
-      captionPosition,
-      captionX,
-      captionY,
       captionCues,
       captionFontKey,
       captionStyle,
@@ -382,7 +479,12 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionStrokeSize,
       captionShadowColor,
       captionShadowSize,
+      captionPosition,
       captionSize,
+      captionX,
+      captionY,
+      textOverlays,
+      durationSeconds,
       width,
       height,
     }),
@@ -424,6 +526,9 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i
     watermarkInput,
     videoFit,
     videoBackgroundBlur,
+    videoScale,
+    videoX,
+    videoY,
   });
   if (useMusic) {
     // One filtergraph file holds the video chain and the audio mix together
@@ -491,7 +596,7 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const retryHeight = Math.round(height / 1.5 / 2) * 2;
 
   try {
-    await renderOnce(spec, outputRel, { width, height, withMusic: true });
+    await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true });
   } catch (err) {
         if (/SIGKILL/i.test(err.message)) {
       console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");

@@ -8,7 +8,9 @@
  * Brand tabs · toolbar + trim timeline at the bottom.
  *
  * "Render & save" POSTs the same /api/clips/:id/edit payload the pipeline
- * already accepts, extended with caption position/size and output aspect.
+ * already accepts, extended with caption position/size, output aspect,
+ * video zoom/pan, and draggable text overlays.
+
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -88,6 +90,24 @@ interface MusicTrackLite {
 
 const FRAME_STEP = 1 / 30;
 
+/**
+ * A standalone text overlay placed on the canvas (independent of captions).
+ * x/y are the block's CENTER as % of the canvas; size is % of canvas height —
+ * the same math the local render uses for ASS \pos / \fs, so the preview
+ * matches the exported MP4.
+ */
+interface TextOverlay {
+  id: string;
+  text: string;
+  font: string;
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  bold: boolean;
+  bg: boolean;
+}
+
 function formatClock(seconds: number) {
   const s = Math.max(0, seconds);
   const m = Math.floor(s / 60);
@@ -145,6 +165,28 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [shadow, setShadow] = useState(false);
   const [shadowColor, setShadowColor] = useState("#000000");
   const [shadowSize, setShadowSize] = useState(6);
+
+  // Video transform (CapCut-style zoom & pan). videoScale is 50-300 (%);
+  // videoX/videoY are pan offsets in % of the canvas. Panning is clamped so
+  // the frame never reveals black past the edges unless zoomed below 100%.
+  const [videoScale, setVideoScale] = useState(100);
+  const [videoX, setVideoX] = useState(0);
+  const [videoY, setVideoY] = useState(0);
+  const [panning, setPanning] = useState(false);
+  const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+  const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
+  const rafPanRef = useRef<number | null>(null);
+  const panMovedRef = useRef(false);
+
+  // Custom text overlays: draggable blocks rendered above the captions.
+  const [overlays, setOverlays] = useState<TextOverlay[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  const [ovDragging, setOvDragging] = useState(false);
+  const ovDragRef = useRef<{ id: string; px: number; py: number; x: number; y: number } | null>(null);
+  const pendingOvRef = useRef<{ id: string; x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
+  const rafOvRef = useRef<number | null>(null);
+  // Live canvas box size — overlay font sizes are % of canvas height.
+  const [canvasPx, setCanvasPx] = useState({ w: 0, h: 0 });
 
   // UI state
   const [tab, setTab] = useState<Tab>("text");
@@ -210,6 +252,25 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setShadow(found.caption_shadow === true);
         setShadowColor(found.caption_shadow_color ?? "#000000");
         setShadowSize(Number(found.caption_shadow_size) || 6);
+        setVideoScale(clamp(Number((found as any).video_scale) || 100, 50, 300));
+        setVideoX(clamp(Number((found as any).video_x) || 0, -50, 50));
+        setVideoY(clamp(Number((found as any).video_y) || 0, -50, 50));
+        const loadedOverlays = (found as any).text_overlays;
+        setOverlays(
+          Array.isArray(loadedOverlays)
+            ? loadedOverlays.slice(0, 10).map((o: any, i: number): TextOverlay => ({
+                id: typeof o?.id === "string" && o.id ? o.id : `ov-${i}-${Date.now()}`,
+                text: String(o?.text ?? "").slice(0, 200),
+                font: typeof o?.font === "string" && o.font ? o.font : "poppins",
+                x: clamp(Number(o?.x) || 50, 2, 98),
+                y: clamp(Number(o?.y) || 50, 2, 98),
+                size: clamp(Number(o?.size) || 5, 1, 20),
+                color: typeof o?.color === "string" && o.color ? o.color : "#ffffff",
+                bold: o?.bold !== false,
+                bg: o?.bg === true,
+              }))
+            : []
+        );
 
         if (found.srt_override) setCues(parseSrt(found.srt_override));
 
@@ -294,6 +355,19 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) setPreviewWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loading]);
+
+  // Track the canvas box itself — text overlay font sizes are % of its height.
+  useEffect(() => {
+    const el = canvasBoxRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setCanvasPx({ w: entry.contentRect.width, h: entry.contentRect.height });
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -485,6 +559,161 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     }
   }
 
+  // ---------- Video zoom & pan (CapCut-style) ----------
+  // Pan: drag the video itself — pointer capture + rAF throttle, same trick
+  // that fixed the caption drag lag. Max pan grows with zoom: a 2x-zoomed
+  // frame can slide ±50%, while 100% is locked (nothing outside to reveal).
+  function videoMaxPan() {
+    return videoScale >= 100 ? Math.max(0, (videoScale - 100) / 2) : 50;
+  }
+
+  function onVideoPointerDown(e: React.PointerEvent<HTMLVideoElement>) {
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panRef.current = { px: e.clientX, py: e.clientY, x: videoX, y: videoY };
+    panMovedRef.current = false;
+    setPanning(true);
+  }
+
+  function onVideoPointerMove(e: React.PointerEvent<HTMLVideoElement>) {
+    const p = panRef.current;
+    const box = canvasBoxRef.current?.getBoundingClientRect();
+    if (!p || !box) return;
+    if (!panMovedRef.current && Math.hypot(e.clientX - p.px, e.clientY - p.py) > 4) {
+      panMovedRef.current = true;
+    }
+    const mp = videoMaxPan();
+    pendingPanRef.current = {
+      x: clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp),
+      y: clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp),
+    };
+    if (rafPanRef.current == null) {
+      rafPanRef.current = requestAnimationFrame(() => {
+        rafPanRef.current = null;
+        const q = pendingPanRef.current;
+        if (!q) return;
+        setVideoX(q.x);
+        setVideoY(q.y);
+      });
+    }
+  }
+
+  function onVideoPointerUp() {
+    panRef.current = null;
+    setPanning(false);
+    if (rafPanRef.current != null) {
+      cancelAnimationFrame(rafPanRef.current);
+      rafPanRef.current = null;
+    }
+    const q = pendingPanRef.current;
+    pendingPanRef.current = null;
+    if (q) {
+      setVideoX(q.x);
+      setVideoY(q.y);
+    }
+  }
+
+  // Click-to-pause still works — a drag swallows the click that follows it.
+  function onVideoClick() {
+    if (panMovedRef.current) {
+      panMovedRef.current = false;
+      return;
+    }
+    togglePlay();
+  }
+
+  // Re-clamp the pan whenever the zoom level changes.
+  useEffect(() => {
+    const mp = videoMaxPan();
+    setVideoX((x) => clamp(x, -mp, mp));
+    setVideoY((y) => clamp(y, -mp, mp));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoScale]);
+
+  // ---------- Text overlay drag (Shift snaps to center, like captions) ----------
+  function onOverlayPointerDown(e: React.PointerEvent<HTMLSpanElement>, id: string) {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const ov = overlays.find((o) => o.id === id);
+    if (!ov) return;
+    ovDragRef.current = { id, px: e.clientX, py: e.clientY, x: ov.x, y: ov.y };
+    setSelectedOverlayId(id);
+    setOvDragging(true);
+    snapRef.current = { x: false, y: false };
+  }
+
+  function onOverlayPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
+    const d = ovDragRef.current;
+    const box = canvasBoxRef.current?.getBoundingClientRect();
+    if (!d || !box) return;
+    const nx = clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 2, 98);
+    const ny = clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 2, 98);
+    const SNAP = 1.2;
+    const RELEASE = 2.6;
+    let ux = nx;
+    let uy = ny;
+    let gx = false;
+    let gy = false;
+    if (e.shiftKey) {
+      const thrX = snapRef.current.x ? RELEASE : SNAP;
+      const thrY = snapRef.current.y ? RELEASE : SNAP;
+      if (Math.abs(nx - 50) <= thrX) { ux = 50; gx = true; }
+      if (Math.abs(ny - 50) <= thrY) { uy = 50; gy = true; }
+    }
+    snapRef.current = { x: gx, y: gy };
+    pendingOvRef.current = { id: d.id, x: ux, y: uy, gx, gy, sh: e.shiftKey };
+    if (rafOvRef.current == null) {
+      rafOvRef.current = requestAnimationFrame(() => {
+        rafOvRef.current = null;
+        const p = pendingOvRef.current;
+        if (!p) return;
+        setOverlays((prev) => prev.map((o) => (o.id === p.id ? { ...o, x: p.x, y: p.y } : o)));
+        setGuides({ shift: p.sh, x: p.gx, y: p.gy });
+      });
+    }
+  }
+
+  function onOverlayPointerUp() {
+    ovDragRef.current = null;
+    setOvDragging(false);
+    if (rafOvRef.current != null) {
+      cancelAnimationFrame(rafOvRef.current);
+      rafOvRef.current = null;
+    }
+    const p = pendingOvRef.current;
+    pendingOvRef.current = null;
+    if (p) {
+      setOverlays((prev) => prev.map((o) => (o.id === p.id ? { ...o, x: p.x, y: p.y } : o)));
+    }
+    setGuides({ shift: false, x: false, y: false });
+    snapRef.current = { x: false, y: false };
+  }
+
+  // ---------- Text overlay ops ----------
+  function addTextOverlay() {
+    const ov: TextOverlay = {
+      id: uuid(),
+      text: "New text",
+      font: "poppins",
+      x: 50,
+      y: 50,
+      size: 5,
+      color: "#ffffff",
+      bold: true,
+      bg: false,
+    };
+    setOverlays((prev) => [...prev, ov].slice(-10));
+    setSelectedOverlayId(ov.id);
+  }
+
+  function patchOverlay(id: string, patch: Partial<TextOverlay>) {
+    setOverlays((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+  }
+
+  function removeTextOverlay(id: string) {
+    setOverlays((prev) => prev.filter((o) => o.id !== id));
+    setSelectedOverlayId((sel) => (sel === id ? null : sel));
+  }
 
   function stepFrame(dir: 1 | -1) {
     const video = videoRef.current;
@@ -701,6 +930,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             ? { caption_x: Number(capX.toFixed(2)), caption_y: Number(capY.toFixed(2)) }
             : {}),
           caption_size: size,
+          video_scale: videoScale,
+          video_x: Number(videoX.toFixed(2)),
+          video_y: Number(videoY.toFixed(2)),
+          text_overlays: overlays.map((o) => ({
+            ...o,
+            x: Number(o.x.toFixed(2)),
+            y: Number(o.y.toFixed(2)),
+            size: Number(o.size.toFixed(2)),
+          })),
           output_aspect: aspect,
           video_fit: videoFit,
           video_background_blur: blur,
@@ -764,6 +1002,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   }, [musicTracks, musicQuery]);
 
   const fontDef = CAPTION_FONTS.find((f) => f.key === font) ?? CAPTION_FONTS[0];
+
+  const selectedOverlay = overlays.find((o) => o.id === selectedOverlayId) ?? null;
 
   /** Caption font size scaled from the 1080px canvas to the preview box. */
   const previewFontSize = useMemo(() => {
@@ -928,15 +1168,24 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     src={previewSrc}
                     playsInline
                     className={cn(
-                      "relative h-full w-full",
-                      videoFit === "contain" ? "object-contain" : "object-cover"
+                      "relative h-full w-full touch-none",
+                      videoFit === "contain" ? "object-contain" : "object-cover",
+                      panning ? "cursor-grabbing" : "cursor-grab"
                     )}
+                    style={{
+                      transform: `translate(${videoX.toFixed(2)}%, ${videoY.toFixed(2)}%) scale(${
+                        videoScale / 100
+                      })`,
+                    }}
                     onLoadedMetadata={(e) => {
                       e.currentTarget.currentTime = startTime;
                     }}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
-                    onClick={togglePlay}
+                    onPointerDown={onVideoPointerDown}
+                    onPointerMove={onVideoPointerMove}
+                    onPointerUp={onVideoPointerUp}
+                    onClick={onVideoClick}
                   />
                 </>
               ) : (
@@ -947,7 +1196,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
 
               {/* Center guide lines — hold Shift while dragging to snap */}
-              {dragging && guides.shift && (
+              {(dragging || ovDragging) && guides.shift && (
                 <>
                   <div
                     className={cn(
@@ -1064,6 +1313,55 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </span>
                 </div>
               )}
+
+              {/* Custom text overlays — draggable, Shift snaps to center */}
+              {overlays.map((ov) => (
+                <div
+                  key={ov.id}
+                  className="pointer-events-none absolute"
+                  style={{
+                    left: `${ov.x}%`,
+                    top: `${ov.y}%`,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                >
+                  <span
+                    onPointerDown={(e) => onOverlayPointerDown(e, ov.id)}
+                    onPointerMove={onOverlayPointerMove}
+                    onPointerUp={onOverlayPointerUp}
+                    onClick={() => {
+                      setSelectedOverlayId(ov.id);
+                      setTab("text");
+                    }}
+                    className={cn(
+                      "pointer-events-auto inline-block whitespace-pre rounded-md px-1.5 py-0.5 touch-none select-none",
+                      ovDragging && selectedOverlayId === ov.id
+                        ? "cursor-grabbing"
+                        : "cursor-grab",
+                      selectedOverlayId === ov.id
+                        ? "ring-2 ring-primary-400/90"
+                        : "ring-1 ring-transparent hover:ring-white/40"
+                    )}
+                    style={{
+                      fontFamily: (
+                        CAPTION_FONTS.find((f) => f.key === ov.font) ?? CAPTION_FONTS[0]
+                      ).cssVar,
+                      fontSize: `${(ov.size / 100) * canvasPx.h}px`,
+                      lineHeight: 1.2,
+                      fontWeight: ov.bold ? 800 : 500,
+                      color: ov.color,
+                      ...(ov.bg
+                        ? {
+                            background: "rgba(0,0,0,0.72)",
+                            borderRadius: "0.35em",
+                          }
+                        : { textShadow: "0 2px 4px rgba(0,0,0,0.8)" }),
+                    }}
+                  >
+                    {ov.text || "Text"}
+                  </span>
+                </div>
+              ))}
 
               {/* Safe zones overlay */}
               {safeZones && (
@@ -1311,6 +1609,43 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     })}
                   </div>
                 </div>
+
+                <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Zoom & pan
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">{videoScale}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={50}
+                    max={300}
+                    step={5}
+                    value={videoScale}
+                    onChange={(e) => setVideoScale(Number(e.target.value))}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Video zoom"
+                  />
+                  <div className="flex items-center justify-between pt-1.5">
+                    <p className="text-[10px] text-zinc-600">
+                      {videoScale === 100
+                        ? "Zoom in, then drag the video on the canvas to move it"
+                        : "Drag the video on the canvas to move it"}
+                    </p>
+                    <button
+                      onClick={() => {
+                        setVideoScale(100);
+                        setVideoX(0);
+                        setVideoY(0);
+                      }}
+                      disabled={videoScale === 100 && videoX === 0 && videoY === 0}
+                      className="ml-2 shrink-0 rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-white/15 disabled:opacity-40"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1479,6 +1814,162 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   <p className="pt-1.5 text-[10px] text-zinc-600">
                     How caption words behave while they are spoken
                   </p>
+                </div>
+
+                <div className="border-t border-white/10 pt-4">
+                  <div className="flex items-center justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Text overlays
+                    </p>
+                    <button
+                      onClick={addTextOverlay}
+                      disabled={overlays.length >= 10}
+                      className="rounded-md bg-primary-500/20 px-2.5 py-1 text-[11px] font-medium text-primary-200 hover:bg-primary-500/30 disabled:opacity-40"
+                    >
+                      + Add text
+                    </button>
+                  </div>
+                  {overlays.length === 0 ? (
+                    <p className="text-[10px] leading-relaxed text-zinc-600">
+                      Add standalone text — titles, labels, callouts. Drag it anywhere on the
+                      video, pick the font, size and colour, and it renders exactly where you
+                      placed it.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        {overlays.map((ov, i) => (
+                          <button
+                            key={ov.id}
+                            onClick={() => setSelectedOverlayId(ov.id)}
+                            className={cn(
+                              "max-w-[140px] truncate rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+                              selectedOverlayId === ov.id
+                                ? "border-primary-500 bg-primary-500/10 text-primary-200"
+                                : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
+                            )}
+                          >
+                            {i + 1}. {ov.text || "Text"}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedOverlay && (
+                        <div className="space-y-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                          <textarea
+                            value={selectedOverlay.text}
+                            onChange={(e) =>
+                              patchOverlay(selectedOverlay.id, { text: e.target.value.slice(0, 200) })
+                            }
+                            rows={2}
+                            maxLength={200}
+                            placeholder="Overlay text — Enter for a new line"
+                            className="w-full resize-none rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-primary-500/60"
+                          />
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {CAPTION_FONTS.slice(0, 9).map((f) => (
+                              <button
+                                key={f.key}
+                                onClick={() => patchOverlay(selectedOverlay.id, { font: f.key })}
+                                style={{ fontFamily: f.cssVar }}
+                                className={cn(
+                                  "truncate rounded-md border px-2 py-1 text-[10px] transition-colors",
+                                  selectedOverlay.font === f.key
+                                    ? "border-primary-500 bg-primary-500/10 text-primary-200"
+                                    : "border-white/10 text-zinc-300 hover:border-white/25"
+                                )}
+                              >
+                                {f.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div>
+                            <div className="flex items-baseline justify-between pb-1">
+                              <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                Size
+                              </p>
+                              <span className="text-[10px] tabular-nums text-zinc-500">
+                                {selectedOverlay.size.toFixed(1)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={2}
+                              max={20}
+                              step={0.5}
+                              value={selectedOverlay.size}
+                              onChange={(e) =>
+                                patchOverlay(selectedOverlay.id, { size: Number(e.target.value) })
+                              }
+                              className="h-1 w-full accent-primary-500"
+                              aria-label="Overlay size"
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {TEXT_COLORS.map((c) => (
+                              <button
+                                key={c}
+                                onClick={() => patchOverlay(selectedOverlay.id, { color: c })}
+                                aria-label={`Overlay colour ${c}`}
+                                className={cn(
+                                  "h-6 w-6 rounded-full border transition-transform",
+                                  selectedOverlay.color.toLowerCase() === c.toLowerCase()
+                                    ? "scale-110 border-primary-500 ring-2 ring-primary-500/40"
+                                    : "border-white/20 hover:scale-105"
+                                )}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={() => patchOverlay(selectedOverlay.id, { bold: !selectedOverlay.bold })}
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+                                selectedOverlay.bold
+                                  ? "border-primary-500 bg-primary-500/15 text-primary-200"
+                                  : "border-white/10 text-zinc-400 hover:border-white/25"
+                              )}
+                            >
+                              Bold
+                            </button>
+                            <button
+                              onClick={() => patchOverlay(selectedOverlay.id, { bg: !selectedOverlay.bg })}
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+                                selectedOverlay.bg
+                                  ? "border-primary-500 bg-primary-500/15 text-primary-200"
+                                  : "border-white/10 text-zinc-400 hover:border-white/25"
+                              )}
+                            >
+                              Box
+                            </button>
+                            <button
+                              onClick={() => patchOverlay(selectedOverlay.id, { x: 50 })}
+                              className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-medium text-zinc-400 hover:border-white/25"
+                            >
+                              Center H
+                            </button>
+                            <button
+                              onClick={() => patchOverlay(selectedOverlay.id, { y: 50 })}
+                              className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] font-medium text-zinc-400 hover:border-white/25"
+                            >
+                              Center V
+                            </button>
+                            <button
+                              onClick={() => removeTextOverlay(selectedOverlay.id)}
+                              className="ml-auto rounded-full border border-red-500/40 px-2.5 py-1 text-[10px] font-medium text-red-300 hover:bg-red-500/15"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-zinc-600">
+                            Drag the text on the video to move it · hold Shift while dragging to
+                            snap to the center lines
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

@@ -60,6 +60,30 @@ const layoutShape = {
 };
 const effectShape = {
   ...layoutShape,
+  // Free caption placement (% of canvas; null/omitted = preset placement).
+  caption_x: z.coerce.number().finite().min(0).max(100).nullable().optional(),
+  caption_y: z.coerce.number().finite().min(0).max(100).nullable().optional(),
+  // Video zoom (50-300%) + pan offsets (% of canvas).
+  video_scale: z.coerce.number().finite().min(50).max(300).optional(),
+  video_x: z.coerce.number().finite().min(-100).max(100).optional(),
+  video_y: z.coerce.number().finite().min(-100).max(100).optional(),
+  // Standalone draggable text overlays (rendered above the video).
+  text_overlays: z
+    .array(
+      z.object({
+        id: z.string().max(64).optional(),
+        text: z.string().max(200),
+        font: z.enum(CAPTION_FONTS).optional(),
+        x: z.coerce.number().finite().min(0).max(100).optional(),
+        y: z.coerce.number().finite().min(0).max(100).optional(),
+        size: z.coerce.number().finite().min(1).max(30).optional(),
+        color: z.string().regex(HEX_COLOR).optional(),
+        bold: z.boolean().optional(),
+        bg: z.boolean().optional(),
+      })
+    )
+    .max(10)
+    .optional(),
   caption_stroke: z.boolean().optional(),
   caption_shadow: z.boolean().optional(),
   caption_stroke_color: z.string().regex(HEX_COLOR).optional(),
@@ -250,6 +274,12 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_size",
       "output_aspect",
       "video_fit",
+      "caption_x",
+      "caption_y",
+      "video_scale",
+      "video_x",
+      "video_y",
+      "text_overlays",
     ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
@@ -300,8 +330,8 @@ const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, output_aspect, " +
-  "video_fit, video_background_blur, " +
-  "srt_override, broll_json";
+  "video_fit, video_background_blur, caption_x, caption_y, video_scale, video_x, video_y, " +
+  "text_overlays, srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
 // referenced as storage:user-uploads/<uid>/broll/<file>.
@@ -409,6 +439,12 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         output_aspect: clip.output_aspect,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        caption_x: clip.caption_x,
+        caption_y: clip.caption_y,
+        video_scale: clip.video_scale,
+        video_x: clip.video_x,
+        video_y: clip.video_y,
+        text_overlays: clip.text_overlays,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
         // exist on every clip row (Firestore can't query absent fields).
         storage_path: null,
@@ -492,6 +528,12 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         output_aspect: clip.output_aspect,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        caption_x: clip.caption_x,
+        caption_y: clip.caption_y,
+        video_scale: clip.video_scale,
+        video_x: clip.video_x,
+        video_y: clip.video_y,
+        text_overlays: clip.text_overlays,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
         status: "queued",

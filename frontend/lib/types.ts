@@ -94,6 +94,23 @@ export type CaptionFontKey =
   | "pacifico"
   | "lobster";
 
+/**
+ * A standalone text overlay placed on the clip canvas (editor preview + local
+ * render). x/y are the block's CENTER as % of the canvas; size is % of canvas
+ * height — the same math the worker uses for ASS \pos / \fs.
+ */
+export interface TextOverlay {
+  id: string;
+  text: string;
+  font: CaptionFontKey;
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  bold: boolean;
+  bg: boolean;
+}
+
 export interface Clip {
   id: string;
   project_id: string;
@@ -115,7 +132,7 @@ export interface Clip {
   /** Caption text color — '#ffffff' keeps the template's own default. */
   caption_color: string;
   caption_font: CaptionFontKey;
-    /** Caption word-level animation preset id (see lib/caption-anim.ts). */
+  /** Caption word-level animation preset id (see lib/caption-anim.ts). */
   caption_anim?: string | null;
   /** 9:16 layout for landscape sources ("cover" = zoomed fill). */
   video_fit: VideoFit;
@@ -127,6 +144,15 @@ export interface Clip {
   caption_size?: number;
   /** Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square). */
   output_aspect?: "9:16" | "16:9" | "1:1";
+  /** Free caption placement (% of canvas; null = preset placement). */
+  caption_x?: number | null;
+  caption_y?: number | null;
+  /** Video zoom (50-300%) + pan offsets (% of canvas). */
+  video_scale?: number;
+  video_x?: number;
+  video_y?: number;
+  /** Standalone draggable text overlays rendered above the video. */
+  text_overlays?: TextOverlay[] | null;
   srt_override: string | null;
   /** null = AI-planned at render, [] = explicitly off, otherwise [{start,end,src}] */
   broll_json: { start: number; end: number; src: string }[] | null;
