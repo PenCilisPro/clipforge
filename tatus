@@ -1,0 +1,121 @@
+[33md58cd30[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Editor: caption animation presets in Text tab
+[33m4c4d3fc[m Editor: caption animation presets in Text tab and upgraded Ai's brain
+[33m5117857[m Editor: solid inactive words in karaoke captions
+[33m05164e9[m Editor: carry word timings through cue pipeline
+[33m1756888[m Editor: karaoke word-pop in caption preview
+[33m38088d8[m Clip Intelligence: retention-first rubric, code-computed totals, HPC hooks
+[33m3cf6abf[m Music: add Pixabay as primary provider with Jamendo fallback
+[33m8a69da3[m Editor Music tab: search + wider panel, clean state placement
+[33mdec2513[m Restore Projects page and shell; remove dashboard Music tab (editor Music tab kept)
+[33ma5d26a8[m Editor: Music tab - browse/preview Jamendo, AI pick, apply to project
+[33m1d896e2[m Editor: Music tab - browse/preview Jamendo, AI pick, apply to project
+[33m3fbd42e[m Update page.tsx
+[33mdb7da50[m Music library: browse Jamendo catalog, preview, apply to projects
+[33m4b57fea[m Music library: browse Jamendo catalog, preview, apply to projects
+[33madcae0c[m Editor: live blurred-bars preview (mirrors render-side blur fill)
+[33m06ede3d[m Timeline: infinite-canvas design - clip at 0:00, stretch into runway
+[33m7ce4de4[m Timeline: infinite-canvas design - clip at 0:00, stretch into runway
+[33m8d5ee06[m Editor: rebind timeupdate on video element swap (fixes frozen playhead/captions)
+[33mc493e21[m Timeline: full clip-relative view (CapCut-style) - playhead spans whole track
+[33m47aac51[m Editor: auto-captions from transcript on load, preview seeks to clip start, shadow toggle fix
+[33ma78aef0[m Timeline: native wheel-pan listener (fixes passive listener spam)
+[33m2462ff2[m Timeline: clip-relative view (0:00 = clip start)
+[33mbccbaef[m Timeline: wheel pans the track horizontally
+[33m1c431f5[m Fix shim parseSelect: multi-column embeds were silently dropped
+[33m7c8750d[m debug: log source-playback embed shape
+[33m3a3a873[m Fix source-playback: accept both array and object embed shapes from the Firestore shim
+[33m0cc6e50[m asdadad
+[33me386af6[m Update modal_render.py
+[33m7676271[m Update modal_render.py
+[33m133a96b[m Update modal_render.py
+[33m793eed4[m Update modal_render.py
+[33m143edd5[m Update modal_render.py
+[33mf0e27a9[m Log FFMPEG binary path in ffmpeg.js
+[33mb4563fc[m Update ffmpeg.js
+[33m8a6a9a1[m Update modal_render.py
+[33m0cb51ef[m Update modal_render.py
+[33mdac4d08[m Update localRender.js
+[33ma1c2400[m Update ffmpeg.js
+[33m35fe274[m Update ffmpeg.js
+[33m06e3451[m Update recovery.js
+[33mf32d25e[m Update recovery.js
+[33m0408f44[m Update modal_render.py
+[33m8b2c90d[m Update modal_render.py
+[33m4c010a1[m Update ffmpeg.js
+[33me63f7c1[m Update ffmpeg.js
+[33ma030a56[m Update localRender.js
+[33mc96695c[m Update localRender.js
+[33m1413e6c[m Update localRender.js
+[33me0fe7b2[m Update localRender.js
+[33m4217a21[m Update modal_render.py
+[33md631f2f[m Update modal_render.py
+[33mfec101f[m Update modal_render.py
+[33m5f47dfa[m Update recovery.js
+[33m4a56058[m Update recovery.js
+[33m2152257[m Update recovery.js
+[33mcf47dbe[m Update recovery.js
+[33m1e33414[m Update modal_render.py
+[33m488f08a[m Update server.js
+[33m2c773f4[m Update server.js
+[33ma07cd04[m Create middleware.ts
+[33md93a266[m Fix JSON formatting in vercel.json
+[33m5e9703b[m Update vercel.json
+[33m3be8178[m Update vercel.json
+[33me15c419[m Update vercel.json
+[33m3e6baf1[m Update server.js
+[33mbbbdc3e[m Bad Commit
+[33m6f37d1c[m Update modal_render.py
+[33m409e127[m Adjust render memory limit to 8GB
+[33m1d7b3a7[m Remove NODE_OPTIONS and RENDER_THREADS from env
+[33m5b1522a[m Update modal_render.py
+[33m92d1fb3[m Fix Modal render memory limit and config
+[33ma42fa35[m fix(render): validate MODAL_RENDER_URL and fix navigation/favicon stability
+[33m8617964[m Update modal_render.py
+[33m61c5f32[m Update modal_render.py
+[33m9baca59[m feat(render): add Modal provider — free-tier serverless ffmpeg, no watermark
+[33m817a91f[m feat(clips): per-clip 9:16 layout choice — zoomed fill or original size with blurred background
+[33m0037cdc[m fix(render): trust Creatomate's Backblaze B2 output hosts in render allowlist
+[33m7a0b4fd[m feat(render): add local ffmpeg render provider
+[33m36ec2ab[m fix(branding): apply custom favicon immediately and allow Shotstack B2 render hosts
+[33m9a70959[m feat: add multipart R2 uploads and provider-agnostic render webhooks
+[33me87940c[m Optimize video pipeline for constrained resources
+[33m583458a[m Support bounded audio extraction for transcription
+[33mc4289a8[m Process long video transcription in bounded chunks
+[33m2ed56a4[m chore(firestore): add composite indexes for jobs queries
+[33m69af047[m perf: fit render pipeline in 1GB container (stop OOM crash loop)
+[33m1e50672[m perf(worker): stream media files instead of buffering them in memory
+[33m4722b7a[m chore(deploy): redeploy to pick up GCS_BUCKET in clipforge-env secret group
+[33m986d70b[m chore(deploy): redeploy with repaired GOOGLE_CREDENTIALS_JSON + GCS bucket access confirmed
+[33m4587713[m chore: add GCS access probe script for service account verification
+[33m815ec53[m chore(deploy): redeploy to pick up GCS_BUCKET=clipforge-media-storage for large-file STT
+[33mec45dc9[m fix(deploy): stop 1GB-plan OOM crash loop; derive Firebase project from service account
+[33m8282bac[m fix(worker): clip rows need explicit null fields for Firestore recovery queries
+[33m29b6480[m fix(worker): hard timeout on ffmpeg and pipeline jobs — stop silent render deadlocks
+[33m663ad8e[m chore(deps): add firebase-tools as dev dependency
+[33md394dfe[m fix(firestore): add render-poll clips index with render_submitted_at leading
+[33ma067271[m fix(recovery): add missing Firestore composite indexes; degrade embed failures gracefully
+[33m634183e[m fix(firestore): sort numeric child fields without localeCompare crash
+[33m6bdb77a[m fix(frontend): eliminate Firestore IndexedDB assertion errors at the source
+[33m7c792f2[m fix: stop showing 'Project not found' after transient load failures
+[33maf5434b[m chore: remove temporary auth diagnostic endpoint
+[33m7ca83f6[m fix: initialize Firebase Admin eagerly at boot
+[33m3695898[m chore: temporary auth diagnostic endpoint (remove after diagnosis)
+[33m4157793[m chore: redeploy backend to reset container
+[33mf6381a6[m fix: return real job/clip rows from API embeds; resume pipeline stages lost to redis wipes
+[33m26fa5a5[m feat(clips): mirror finalized clips to Cloudflare Stream with R2 playback fallback
+[33m516c8b1[m fix(backend): allow *.vercel.app origins in CORS for Vercel-hosted frontend
+[33m3a402b7[m chore(probe): commit probe video outputs; ignore stray Windows temp videos
+[33m639cf7e[m fix(firestore): switch to auto-detected long polling to avoid SDK crash
+[33m4885213[m fix(frontend): tolerate transient backend blips and Firestore a5xx crash
+[33m782b031[m fix(frontend): upgrade firebase SDK 10.14.1 -> 12.19.0
+[33m8edfc62[m fix(frontend): keep Firestore fully idle on project detail when the backend is up
+[33m16bb74c[m fix(frontend): replace flaky Firestore fetch with backend API in project detail
+[33m0a0c5e6[m perf(dashboard): load projects from the backend first, Firestore as fallback
+[33m1da37d3[m fix(shim): map id filters to the Firestore document ID so lookups by id stop 404ing
+[33m41b1364[m fix(dashboard): fall back to backend project reads when the Firestore client transport dies
+[33m2618606[m fix(frontend): force Firestore long-polling to stop WebChannel 'Unexpected state' assertions killing dashboard reads
+[33m89d6d38[m chore: ignore .vercel-env-prod
+[33mfc49f5a[m fix(dashboard): await Firebase session before Firestore queries so projects load
+[33m1699abf[m chore: redeploy backend with corrected R2_ACCOUNT_ID / R2_PUBLIC_BASE_URL in Northflank secret
+[33m3808b38[m chore: redeploy backend to pick up corrected R2_ACCOUNT_ID and R2_PUBLIC_BASE_URL env
+[33m6c1e8d7[m fix(r2): force path

@@ -12,7 +12,6 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-
 import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
@@ -807,18 +806,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-                            {/* Live caption overlay — karaoke with selectable word
-                  animations (auto-filled cues carry word timings; flat SRT
-                  cues fall back to plain text) */}
+              {/* Live caption overlay — karaoke word-pop when the cue carries
+                  word timings (auto-filled cues from the transcript do) */}
               {activeCue?.text.trim() && (
                 <div
-                  key={activeCue.id}
                   className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
                   style={{
                     fontFamily: fontDef.cssVar,
-                    ...(captionAnim === "slideUp"
-                      ? { animation: "cfSlideUp 200ms ease-out" }
-                      : {}),
                     ...(position === "top"
                       ? { top: "8%" }
                       : position === "middle"
@@ -854,20 +848,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       );
                       return cueWords.map((w, i) => (
                         <span
-                          key={i}
-                          style={{
-                            color:
-                              i === activeIdx
-                                ? "#ff5d1c"
-                                : textColor.toLowerCase() === "#ffffff"
-                                  ? "#ffffff"
-                                  : textColor,
-                            ...wordAnimStyle(captionAnim, i === activeIdx, activeIdx !== -1),
-                          }}
-                        >
-                          {w.word}
-                          {i < cueWords.length - 1 ? " " : ""}
-                        </span>
+  key={i}
+  style={{
+    color:
+      i === activeIdx
+        ? "#ff5d1c"
+        : textColor.toLowerCase() === "#ffffff"
+          ? "#d9d9d9"
+          : textColor,
+    transition: "color 80ms linear",
+  }}
+>
+  {w.word}
+  {i < cueWords.length - 1 ? " " : ""}
+</span>
                       ));
                     })()}
                   </span>
@@ -1241,30 +1235,31 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   />
                 </div>
 
-                                <div>
+                <div>
                   <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                    Animation
+                    Text colour
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {CAPTION_ANIMS.map((a) => (
+                  <div className="flex flex-wrap gap-2">
+                    {TEXT_COLORS.map((c) => (
                       <button
-                        key={a.id}
-                        onClick={() => setCaptionAnim(a.id)}
+                        key={c}
+                        onClick={() => setTextColor(c)}
+                        aria-label={c === "#ffffff" ? "Template default" : c}
                         className={cn(
-                          "rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
-                          captionAnim === a.id
-                            ? "border-primary-500 bg-primary-500/10 text-primary-200"
-                            : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
+                          "h-7 w-7 rounded-full border transition-transform",
+                          textColor.toLowerCase() === c.toLowerCase()
+                            ? "scale-110 border-primary-500 ring-2 ring-primary-500/40"
+                            : "border-white/20 hover:scale-105"
                         )}
-                      >
-                        {a.label}
-                      </button>
+                        style={{ backgroundColor: c }}
+                      />
                     ))}
                   </div>
                   <p className="pt-1.5 text-[10px] text-zinc-600">
-                    How caption words behave while they are spoken
+                    White keeps the caption template's own default colour
                   </p>
                 </div>
+              </div>
             )}
 
             {tab === "music" && (

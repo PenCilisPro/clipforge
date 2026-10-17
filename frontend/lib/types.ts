@@ -40,7 +40,7 @@ export interface Project {
   caption_style?: Clip["caption_style"];
   caption_font?: Clip["caption_font"];
   caption_color?: string;
-  caption_anim?: string | null;   // ← add this line
+  caption_anim?: string | null;
   caption_stroke?: boolean;
   caption_stroke_color?: string;
   caption_stroke_size?: number;
@@ -115,6 +115,8 @@ export interface Clip {
   /** Caption text color — '#ffffff' keeps the template's own default. */
   caption_color: string;
   caption_font: CaptionFontKey;
+    /** Caption word-level animation preset id (see lib/caption-anim.ts). */
+  caption_anim?: string | null;
   /** 9:16 layout for landscape sources ("cover" = zoomed fill). */
   video_fit: VideoFit;
   /** With video_fit "contain": blurred zoomed background vs black bars. */
