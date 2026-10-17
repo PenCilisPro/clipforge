@@ -844,21 +844,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       );
                       return cueWords.map((w, i) => (
                         <span
-                          key={i}
-                          style={{
-                            color:
-                              i === activeIdx
-                                ? "#ff5d1c"
-                                : textColor.toLowerCase() === "#ffffff"
-                                  ? "#ffffff"
-                                  : textColor,
-                            opacity: activeIdx === -1 || i === activeIdx ? 1 : 0.55,
-                            transition: "color 80ms linear, opacity 80ms linear",
-                          }}
-                        >
-                          {w.word}
-                          {i < cueWords.length - 1 ? " " : ""}
-                        </span>
+  key={i}
+  style={{
+    color:
+      i === activeIdx
+        ? "#ff5d1c"
+        : textColor.toLowerCase() === "#ffffff"
+          ? "#d9d9d9"
+          : textColor,
+    transition: "color 80ms linear",
+  }}
+>
+  {w.word}
+  {i < cueWords.length - 1 ? " " : ""}
+</span>
                       ));
                     })()}
                   </span>
