@@ -40,7 +40,7 @@ import type { Clip, Project } from "@/lib/types";
 import { CAPTION_FONTS } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
-import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anim";
+import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anims";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
 
