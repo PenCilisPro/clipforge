@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+
 import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
@@ -40,6 +41,7 @@ import type { Clip, Project } from "@/lib/types";
 import { CAPTION_FONTS } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
+import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anim";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
 
@@ -118,6 +120,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [resetSrt, setResetSrt] = useState(false);
   const [font, setFont] = useState("anton");
   const [textColor, setTextColor] = useState("#ffffff");
+  const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
   const [position, setPosition] = useState<CaptionPosition>("bottom");
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
@@ -180,6 +183,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setPlayheadSource(Number(found.start_time));
         setFont(found.caption_font ?? "anton");
         setTextColor(found.caption_color ?? "#ffffff");
+        setCaptionAnim((found.caption_anim as CaptionAnimId) ?? "pop");
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
         setSize(Number(found.caption_size) || 0);
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
@@ -556,6 +560,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           ...(nameDirtyRef.current ? { title: name.trim().slice(0, 200) } : {}),
           caption_font: font,
           caption_color: textColor,
+          caption_anim: captionAnim,
           caption_position: position,
           caption_size: size,
           output_aspect: aspect,
@@ -802,13 +807,18 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-              {/* Live caption overlay — karaoke word-pop when the cue carries
-                  word timings (auto-filled cues from the transcript do) */}
+                            {/* Live caption overlay — karaoke with selectable word
+                  animations (auto-filled cues carry word timings; flat SRT
+                  cues fall back to plain text) */}
               {activeCue?.text.trim() && (
                 <div
+                  key={activeCue.id}
                   className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
                   style={{
                     fontFamily: fontDef.cssVar,
+                    ...(captionAnim === "slideUp"
+                      ? { animation: "cfSlideUp 200ms ease-out" }
+                      : {}),
                     ...(position === "top"
                       ? { top: "8%" }
                       : position === "middle"
@@ -844,20 +854,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       );
                       return cueWords.map((w, i) => (
                         <span
-  key={i}
-  style={{
-    color:
-      i === activeIdx
-        ? "#ff5d1c"
-        : textColor.toLowerCase() === "#ffffff"
-          ? "#d9d9d9"
-          : textColor,
-    transition: "color 80ms linear",
-  }}
->
-  {w.word}
-  {i < cueWords.length - 1 ? " " : ""}
-</span>
+                          key={i}
+                          style={{
+                            color:
+                              i === activeIdx
+                                ? "#ff5d1c"
+                                : textColor.toLowerCase() === "#ffffff"
+                                  ? "#ffffff"
+                                  : textColor,
+                            ...wordAnimStyle(captionAnim, i === activeIdx, activeIdx !== -1),
+                          }}
+                        >
+                          {w.word}
+                          {i < cueWords.length - 1 ? " " : ""}
+                        </span>
                       ));
                     })()}
                   </span>
@@ -1231,31 +1241,30 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   />
                 </div>
 
-                <div>
+                                <div>
                   <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                    Text colour
+                    Animation
                   </p>
-                  <div className="flex flex-wrap gap-2">
-                    {TEXT_COLORS.map((c) => (
+                  <div className="flex flex-wrap gap-1.5">
+                    {CAPTION_ANIMS.map((a) => (
                       <button
-                        key={c}
-                        onClick={() => setTextColor(c)}
-                        aria-label={c === "#ffffff" ? "Template default" : c}
+                        key={a.id}
+                        onClick={() => setCaptionAnim(a.id)}
                         className={cn(
-                          "h-7 w-7 rounded-full border transition-transform",
-                          textColor.toLowerCase() === c.toLowerCase()
-                            ? "scale-110 border-primary-500 ring-2 ring-primary-500/40"
-                            : "border-white/20 hover:scale-105"
+                          "rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+                          captionAnim === a.id
+                            ? "border-primary-500 bg-primary-500/10 text-primary-200"
+                            : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
                         )}
-                        style={{ backgroundColor: c }}
-                      />
+                      >
+                        {a.label}
+                      </button>
                     ))}
                   </div>
                   <p className="pt-1.5 text-[10px] text-zinc-600">
-                    White keeps the caption template's own default colour
+                    How caption words behave while they are spoken
                   </p>
                 </div>
-              </div>
             )}
 
             {tab === "music" && (

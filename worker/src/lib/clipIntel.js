@@ -1,105 +1,398 @@
-import { chatComplete, snapToBounds } from "./zai.js";
+import { createHash } from "node:crypto";
+import { chatComplete } from "./zai.js";
 
 /**
- * Clip Intelligence — the analyze-stage brain.
+ * Clip Intelligence v2 — transcript-based clip selector with dead-air cutting.
  *
- * Built from the Clip Intelligence spec (retention-first selection, HPC
- * structure, six-dimension rubric with code-computed totals). The model
- * picks candidates and scores dimensions; THIS module computes the total,
- * clamps timestamps onto real transcript boundaries, and enforces the
- * dead-air rules programmatically. The model cannot inflate its own score.
+ * The model picks sentence IDs, classifies archetypes and scores dimensions
+ * against anchors. THIS module owns everything that can be computed:
+ * ID -> time mapping, trims, dead-air edit plan, duration, verbatim checks,
+ * headline fact checks, payoff position, filler/dead-air detection, score caps,
+ * penalties, totals, threshold, dedupe and ranking. The model never sets the total.
  *
- * [tunable] — the WEIGHTS and PENALTY_SIZE below are starting defaults,
- * not gospel. Retune from real performance data (see intel_json on clips).
+ * Every number tagged [mine] is a starting default — retune it from the
+ * performance data logged in intel_json.
  */
 
-// ---------- [tunable] scoring configuration ----------
-const WEIGHTS = {
-  hook_strength: 0.30,
-  unexpected_turn: 0.20,
-  emotion_relatability: 0.20,
-  information_value: 0.10,
-  retention_flow: 0.15,
-  audience_fit: 0.05,
+// ---------- configuration ([mine] unless noted) ----------
+export const CONFIG = {
+  HOOK_WINDOW: 5,                 // seconds — [A] "first 5 seconds"
+  PAYOFF_MIN_POSITION: 0.6,       // payoff starts at >= 60% of clip — [mine], from [A]
+  GAP_COMPRESS: 0.8,              // silences above this are cut down to KEEP_GAP
+  GAP_HARD: 2.0,                  // any internal gap above this (after editing) = dead_air
+  FILLER_MAX: 8,                  // filler words per 100 words (after editing) before dead_air
+  THRESHOLD: 6.5,                 // minimum total to ship
+  CANDIDATE_MULTIPLIER: 2,        // MAX_CANDIDATES = 2 x target_count
+  OVERLAP_LIMIT: 0.2,             // dedupe when overlap > 20% of the shorter clip
+  WINDOW: 720,                    // 12-minute analysis windows
+  WINDOW_OVERLAP: 120,            // 2-minute overlap
+  PATTERN_BONUS: 0.5,             // per matched engagement pattern
+  PATTERN_BONUS_CAP: 1.0,
+  DURATION_SLACK: 1.0,            // tolerance on MIN/MAX since cuts land on sentence edges
+  ARCHETYPE_CAP: { max: 2, topN: 5, margin: 1.0 }, // set to null to disable
+  AUTO_TRIM_LEADING_FILLER: true, // trim leading filler even if the model forgot to
+  MAX_LEADING_TRIM: 4,
+  MAX_TRAILING_TRIM: 6,
+  SEG_SILENCE: 0.6,               // split unpunctuated transcripts at silences >= this
+  SEG_MAX_WORDS_UNPUNCTUATED: 25,
+  SEG_MAX_WORDS_PUNCTUATED: 60,   // safety cap for run-on sentences
+  CHUNK_CONCURRENCY: 3,
+  TRANSCRIPT_CHAR_CAP: 120_000,
+  MODEL_TIMEOUT_MS: 240_000,
+  MODEL_TEMPERATURE: 0.2,
+
+  // ---- dead-air cutting [mine] ----
+  CUT_DEAD_AIR: true,
+  KEEP_GAP: 0.25,            // a cut silence is shortened to about this many seconds
+  PAD_BEFORE: 0.08,          // kept before a word so its onset isn't clipped
+  PAD_AFTER: 0.12,           // kept after a word so its tail isn't clipped
+  MIN_CUT: 0.3,              // never make a cut that removes less than this
+  MIN_SEGMENT: 0.25,         // shorter kept pieces are merged (avoids stutter cuts)
+  CUT_FILLER_WORDS: true,    // remove um / uh / er / erm mid-clip
+  CUT_FILLER_PHRASES: false, // "you know", "I mean", "kind of", "sort of" (can carry meaning, so off)
 };
-const PENALTY_SIZE = 1.5; // subtracted per penalty point from the 0-10 total
-const SCORE_KEYS = Object.keys(WEIGHTS);
-const PENALTY_KEYS = ["payoff_too_early", "dead_air", "needs_outside_context", "hook_content_mismatch", "off_audience"];
-// -----------------------------------------------------
 
-const LENGTH_RULES = {
-  "10-14": "Each clip must be 10-14 seconds long.",
-  "15-30": "Each clip must be 15-30 seconds long.",
-  "31-45": "Each clip must be 31-45 seconds long.",
-  "60+": "Each clip must be at least 60 seconds long (60-90 seconds is ideal).",
-  ai_optimized: "Each clip must be 15-60 seconds long.",
+const WEIGHTS = { hook_strength: 0.30, peak: 0.30, second: 0.10, retention_flow: 0.20, audience_fit: 0.10 };
+const PENALTY_VALUES = {
+  payoff_too_early: 2,
+  dead_air: 1,
+  needs_outside_context: 2,
+  hook_content_mismatch: 3,
+  off_audience: 1.5,
+  no_clean_ending: 3,
 };
 
-const INTEL_SYSTEM_PROMPT = `You are a short-form clip analyst. You read a timestamped transcript of long-form footage and pick the segments most likely to hold attention as vertical short-form clips (YouTube Shorts, TikTok, Reels). You also write the hook for each clip.
+const LENGTH_BOUNDS = {
+  "10-14": { min: 10, max: 14 },
+  "15-30": { min: 15, max: 30 },
+  "31-45": { min: 31, max: 45 },
+  "60+": { min: 60, max: 90 },
+  ai_optimized: { min: 20, max: 60 }, // spec defaults
+};
 
-CORE PRINCIPLES
-1. Retention is the main signal. Everything you pick must keep a viewer from swiping away. Prefer clips with high watch-time potential over clips that are merely "interesting".
-2. A clip is judged by its first ~5 seconds. The hook must introduce the topic AND leave open questions.
-3. Do not pay off the topic too early. If the answer or punchline lands in the first few seconds, viewers have nothing left to wait for. Choose start/end so the setup comes first and the payoff comes last.
-4. The hook's promise must match the content. No bait-and-switch.
-5. Prefer simple and engaging over flashy. A strong clip with basic editing beats a weak clip with heavy editing.
-6. Dead air kills retention. Prefer fast, continuous speech; the clip must not open with greetings, intros, or filler ("um", "so", "okay").
+const SCORE_KEYS = ["hook_strength", "unexpected_turn", "emotion_relatability", "information_value", "retention_flow", "audience_fit"];
+const TRAIT_KEYS = ["unexpected_turn", "emotion_relatability", "information_value"];
+const ARCHETYPES = new Set(["twist", "polarizing_take", "emotional_peak", "tip_or_myth_bust", "promise_journey_payoff", "standoff_resolution"]);
+const FORMULAS = new Set(["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"]);
 
-SCORE EACH DIMENSION 0-10:
-- hook_strength: the first 5 seconds — fast-paced, no pauses, introduces the topic, raises questions (how? why? what?).
-- unexpected_turn: pattern interrupt, plot twist, reversal, or shocking line that resets attention.
-- emotion_relatability: laughter, anger, inspiration, or "this is exactly me". High-arousal emotion gets shared. Polarizing content counts. Who speaks can matter as much as what happens.
-- information_value: a quick tip, hack, or corrected misconception — save-worthy content.
-- retention_flow: continuous pacing, no dead air, setup -> progression -> climax, payoff near the end, optional clean loop back to the start.
-- audience_fit: matches the creator's core audience and what they already watch.
+// ---------- text detection ----------
+const TERMINAL_RE = /[.!?]["'”’)\]]*$/;
+const ABBREV_RE = /^(mr|mrs|ms|dr|st|vs|etc|jr|sr|prof|e\.g|i\.e|u\.s)\.$/i;
+const LEAD_FILLER_ONE = new Set(["um", "umm", "uh", "uhh", "er", "erm", "so", "okay", "ok", "alright", "well", "now", "yeah", "anyway", "right"]);
+const LEAD_FILLER_TWO = new Set(["you know", "i mean", "all right"]);
+const DENSITY_ONE = new Set(["um", "umm", "uh", "uhh", "er", "erm"]);
+const DENSITY_TWO = new Set(["you know", "i mean", "kind of", "sort of"]);
+const CUT_FILLER_ONE = new Set(["um", "umm", "uh", "uhh", "er", "erm", "hmm"]);
+const GREETING_RE = /^(hi|hey|hello|yo|welcome|whats up|good (morning|afternoon|evening))\b/;
+const HOUSEKEEPING_RE = /\b(like and subscribe|hit (the )?subscribe|link in the description|before we go on|word from (our|today's) sponsor|this (video|episode) is sponsored|welcome back|thanks for watching|see you (next time|in the next))\b/i;
+const PRONOUN_I_RE = /^i(m|ve|ll|d)?$/i;
+const STOPWORDS = new Set(("the a an and or but if then than so to of in on at by for with from up out about into over after before " +
+  "is are was were be been being am do does did have has had will would can could should may might must " +
+  "i you he she it we they me him her us them my your his its our their this that these those there here " +
+  "what why how when where who which not no just very really all any some more most other such only own same too " +
+  "said says say get got one").split(" "));
 
-STRUCTURE (HPC): Hook (first ~5s, topic + open questions) -> Progression (meets the hook's expectations, shows the journey) -> Climax (the payoff, near the end).
+// ---------- system prompt ----------
+const SYSTEM_PROMPT_TEMPLATE = `You are the clip-selection engine for a short-form video product. You receive a transcript of long-form video, pre-split into numbered sentences. You return the clips most likely to hold viewer attention on YouTube Shorts, TikTok and Reels, each with a hook. You never see the video, only text and timing. Output JSON only, matching the schema at the end.
 
-PENALTIES (0-2 each; the system subtracts these from the total):
-- payoff_too_early: the key reveal happens in the first ~5-8 seconds.
-- dead_air: noticeable pauses, filler openings, greetings/intros.
-- needs_outside_context: not understandable without information outside the clip.
-- hook_content_mismatch: the opening promises something the clip never delivers.
-- off_audience: does not fit the creator's core audience.
+INPUT
+Each transcript line looks like:  S014 [312.40-315.10] gap=0.20 SPEAKER_1: text
+- S014 is the sentence ID. [a-b] are start and end seconds. gap is the silence in seconds before the sentence. The speaker label may be missing.
+- A clip is a contiguous run of sentences. You choose it by start_id and end_id. Never output raw timestamps.
+- The request block gives: mode (select or score_only), target_count, and optionally creator_profile, engagement_patterns and window.
+- In score_only mode you are given fixed start_id and end_id values. Do not search for other clips. Fill in the same fields and scores for that range and return exactly one clip.
 
-OUTPUT — respond with ONLY a JSON object, no markdown or commentary:
-{"clips": [{
-  "start": <seconds:number>, "end": <seconds:number>,
-  "headline": "<on-screen headline, max 12 words, curiosity/tension without revealing the payoff>",
-  "spoken_hook": "<the exact first line spoken in the clip>",
-  "hook_type": "<pattern_interrupt|open_question|bold_claim|controversy|tip|story_setup>",
-  "scores": {"hook_strength": <0-10>, "unexpected_turn": <0-10>, "emotion_relatability": <0-10>, "information_value": <0-10>, "retention_flow": <0-10>, "audience_fit": <0-10>},
-  "penalties": {"payoff_too_early": <0-2>, "dead_air": <0-2>, "needs_outside_context": <0-2>, "hook_content_mismatch": <0-2>, "off_audience": <0-2>},
-  "why": "<one sentence naming the traits it hits>",
-  "trim_notes": "<how the cut could be improved>",
-  "risks": "<visual-dependent strengths you cannot see, or empty string>",
-  "hashtags": ["<3-5 lowercase topical tags, no spaces>"]
-}]}
-Do NOT output a "total" — the system computes it from the dimensions and penalties.
+PARAMETERS
+HOOK_WINDOW = {{HOOK_WINDOW}} seconds (about 12 spoken words). MIN_DURATION = {{MIN_DURATION}} s. MAX_DURATION = {{MAX_DURATION}} s. The payoff must start at or after {{PAYOFF_MIN_POSITION}} of the clip length. MAX_CANDIDATES = {{MAX_CANDIDATES}}.
+Inside a clip, silences longer than {{GAP_COMPRESS}} s and hesitation sounds (um, uh, er) are cut automatically by the editor. Count clip length as speaking time, and do not lower retention_flow for pauses that will be cut.
 
-RULES:
-- Use only timestamps that exist in the transcript. Never invent spoken text.
-- "end" must land right after a finished sentence (a word ending with . ! or ?) — never mid-sentence. If the length would be exceeded, move "start" later instead.
-- Choose start/end so the clip opens on the hook and ends on the climax; cut intros and dead air by moving the start later.
-- One-sentence "why" per pick, naming the traits it hits.
-- If a clip's strength depends on visuals you cannot see, say so in "risks".
-- Return at most the number of clips requested, ranked best first. Return fewer rather than padding with weak clips; use "skipped_reason" when the footage has few strong moments.
+1. HOW THE VIEWER DECIDES
+- The platform shows the most engaging content. Watch time and retention are what you optimize.
+- The viewer decides in the first HOOK_WINDOW seconds. A hook must do two things: introduce the topic, and leave at least two open questions the viewer cannot answer from the hook alone.
+- A viewer keeps watching only while something is still unknown. The moment the payoff arrives, the reason to stay ends. So the payoff must come last. Never choose a start point that places the answer, punchline, twist or reveal inside the hook window.
+- The hook makes a promise. The rest of the clip must deliver exactly that promise.
+- Shares and saves are strong signals. High-arousal emotion drives shares. Useful, specific information drives saves.
+- Simple clips win. A strong moment with plain editing beats a weak moment with a heavy edit. Dead air, greetings and throat-clearing lose viewers.
 
-EXAMPLES (shapes that work):
-1. Pattern interrupt: a stranger greets a public figure as a "big fan", then says the opposite next sentence. Cut: start at the greeting, end on the reversal. unexpected_turn 9.
-2. Controversy + open question: a claim about the speaker, the interviewer reacts — the clip ends before the resolution. The viewer stays for the resolution.
-3. Information value: a tip or corrected misconception delivered in one breath. Hook = the claim, payoff = the explanation. Save-worthy.
-ANTI-EXAMPLE: opening with "Here's the secret to success:" and stating it in 5 seconds — payoff_too_early. Instead open on the question or story and move the secret to the end.`;
+2. CLIP ARCHETYPES
+Classify every clip as exactly one of these.
 
-// Filler-word dead-air enforcement (the spec's "murder every filler word").
-const FILLER_RE = /^(um+|uh+|erm+|er|so|okay|ok|yeah|like|basically|literally|alright)[,.!]?$|^you know$/i;
+twist
+ What: a setup, then a reversal the viewer does not predict (pattern interrupt, plot twist, shocking line).
+ Signals: reversal connectors right after a setup ("but", "then he said", "turns out", "until", "instead", "except", "that's when"); a direct quote that flips what the previous sentences set up; praise followed by an insult, or the reverse; "I didn't expect".
+ Cut: start at the earliest sentence needed to understand the setup. End on the final reversal, plus at most one reaction sentence of 4 seconds or less.
+ Preferred headline formulas: F1, F6, F8.
 
-/** Compute the total in code — the model's opinion of its own score is ignored. */
-function computeTotal(scores, penalties) {
-  let total = 0;
-  for (const key of SCORE_KEYS) total += WEIGHTS[key] * clampNum(Number(scores?.[key] ?? 0), 0, 10);
-  for (const key of PENALTY_KEYS) total -= PENALTY_SIZE * clampNum(Number(penalties?.[key] ?? 0), 0, 2);
-  return clampNum(total, 0, 10);
+polarizing_take
+ What: a claim that makes different viewers react in opposite ways.
+ Signals: absolutes ("always", "never", "nobody", "everyone", "the only"); "unpopular opinion"; opinions on divisive topics; a person or brand that provokes strong reactions; us-versus-them framing.
+ Cut: start on the claim sentence. End after the strongest supporting line or the interviewer's reaction. Do not end on a balanced "two sides" line if it kills the tension.
+ Preferred headline formulas: F3, F6.
+
+emotional_peak
+ What: the viewer instantly laughs, feels angry, feels inspired, or thinks "this is exactly me".
+ Signals: first-person vulnerability; stakes (money, family, fear, embarrassment); laughter or exclamation; "I can't believe", "I was so"; a relatable situation in one or two sentences.
+ Cut: start 1-2 sentences before the peak so it builds. End right after the peak line. No wind-down.
+ Preferred headline formulas: F5, F6.
+
+tip_or_myth_bust
+ What: a quick tip, a hack, or a corrected misconception the viewer wants to save.
+ Signals: "here's how", "the trick is", "most people think", "actually", "did you know", "stop doing", "the reason is"; numbers, steps, quantities; imperative verbs; concrete nouns.
+ Cut: start at the problem or the myth. Never start at the fix. End at the fix, plus a one-sentence recap only if it fits within MAX_DURATION.
+ Preferred headline formulas: F2, F3, F7.
+
+promise_journey_payoff
+ What: hook states a goal, bet or challenge; progression shows the attempt and an obstacle; climax fulfills the promise.
+ Signals: a goal early ("I want to be the first to...", "we have 24 hours", "I'm going to..."); an obstacle ("but there's a problem"); steps; fulfillment ("and that's when it worked").
+ Cut: start at the promise. Keep one obstacle. End at the fulfillment.
+ Preferred headline formulas: F4, F5.
+
+standoff_resolution
+ What: a two-person exchange where a claim or accusation creates tension at the start and the last lines resolve it.
+ Signals: speaker alternation; a bold self-description or accusation; quoted lines; unresolved tension that the final sentences settle.
+ Cut: start at the claim or entrance. End at the resolution line.
+ Preferred headline formulas: F1, F8.
+
+3. PROCEDURE
+Step 1. Group consecutive sentences into beats. Mark a beat boundary where the topic changes or gap is 1.5 s or more.
+Step 2. Mark signal sentences using the archetype signals above.
+Step 3. For each signal cluster, find the payoff sentence: where the question is answered, the twist lands, the fix is stated, or the goal is fulfilled.
+Step 4. Walk back from the payoff to find the start. Take the latest sentence from which the first two sentences are understandable without outside context. Do not go earlier than the beat start. Keep setup under 40% of the clip so the payoff lands at 60% or later.
+Step 5. Walk forward from the payoff to find the end. End on the payoff sentence, or one reaction sentence of 4 seconds or less after it. Never include the next topic, a thank-you, a sign-off, a host transition, or a sponsor read.
+Step 6. Check the hook window. If the answer, twist, punchline or fix is inside the first HOOK_WINDOW seconds, try moving the start up to 20 seconds earlier to add setup. If no earlier start fixes it, reject with payoff_too_early. Do not reorder sentences.
+Step 7. Check duration. If shorter than MIN_DURATION, extend the start backward by whole sentences inside the same beat. If still too short, reject with below_min_duration. If longer than MAX_DURATION, tighten the start or reject with above_max_duration.
+Step 8. Leading filler. If the first spoken word is a filler or discourse marker (um, uh, er, so, okay, alright, well, now, yeah, anyway, right, "you know", "I mean"), add a trim_ops entry that drops those words. Count only filler at the very start.
+Step 9. Fill in hook_checks, context, scores and penalty_flags using the anchors in section 5. Report filler_or_greeting_open honestly for the untrimmed start.
+Step 10. Return at most MAX_CANDIDATES clips that would reach the quality bar. Put the rest in rejected with a reason. Returning fewer clips, or none, is correct when the footage has few strong moments. Never pad.
+
+4. HOOKS AND HEADLINES
+- spoken_text is the full text of the sentence or sentences that overlap the first HOOK_WINDOW seconds, copied exactly from the transcript. If the opening sentence is not a hook, pick a different start. If none works, reject. Never write a spoken hook that is not in the transcript.
+- The headline is at most 12 words, sentence case, no all caps.
+- The headline may use only facts, names and numbers that appear in the transcript window you were given.
+- The headline must tease, not resolve. It must not contain the payoff. It may state the setup or the first turn.
+- The headline must be something the clip delivers. Otherwise it is a hook_content_mismatch.
+- Formulas:
+ F1 Tease the turn: "[setup fact]. [first turn]." Stop before the payoff.
+ F2 Question the viewer has: "Why does [common thing] always [bad outcome]?"
+ F3 Counter-claim: "[Group] is wrong about [topic]." Only if the clip says it.
+ F4 Quest: "[Person] tried to [goal] in [constraint]."
+ F5 Stakes: "[Thing at risk] on [uncertain outcome]."
+ F6 Quote lead: a verbatim shocking line from the clip that is not the payoff line.
+ F7 Stop instruction: "Stop [doing X] when you [activity]."
+ F8 Named curiosity gap: "What [Name] said when [situation]."
+- Not allowed: generic bait with no content ("You won't believe this"), headlines that reveal the answer, headlines that name something not in the transcript.
+
+5. SCORING ANCHORS (0-10 integers)
+hook_strength (first HOOK_WINDOW seconds only):
+ 0-2 greeting, filler, throat-clearing, or no context. 3-5 on topic but flat; answers instead of asking, or vague. 6-8 a clear claim or tension plus one open question, concrete detail. 9-10 immediate tension, two or more open questions, no payoff, and a concrete name, number or detail in the first 12 words.
+unexpected_turn:
+ 0-2 none. 3-5 mild shift in tone or topic. 6-8 clear reversal of what the previous sentences set up. 9-10 a reversal that flips the meaning of the setup, lands within two sentences, and could not be guessed.
+emotion_relatability:
+ 0-2 neutral. 3-5 mildly amusing or engaging. 6-8 strong feeling shown by explicit emotional language or real stakes. 9-10 high-arousal and shareable, polarizing or deeply relatable.
+information_value:
+ 0-2 none. 3-5 general knowledge. 6-8 one specific, new, usable tip or corrected misconception. 9-10 specific, counter-intuitive, immediately actionable, summarizable in one sentence.
+retention_flow:
+ 0-2 long pauses, heavy filler, rambling. 3-5 some rambling, needs two or more trims. 6-8 continuous, at most one trim. 9-10 continuous, every sentence adds information or tension, payoff in the last 25%, end could loop to the start.
+audience_fit:
+ If no creator_profile is given, score 5. 0-2 clashes with the profile's audience. 8-10 directly matches the profile's audience and topics that work.
+A clip needs only one strong attention trait. unexpected_turn, emotion_relatability and information_value are alternatives, not requirements. Score all three honestly; do not inflate a trait the clip does not have.
+
+PENALTY FLAGS (report honestly; code applies the values)
+- no_clean_ending: the clip ends mid-thought or without delivering the payoff.
+- hook_content_mismatch: the headline or hook promises something the clip does not deliver.
+- off_audience: the topic clashes with creator_profile.
+
+HARD REJECTS (go in rejected, not clips)
+- payoff_too_early, no_payoff, below_min_duration, above_max_duration
+- housekeeping: intros, outros, "welcome back", "before we go on", "like and subscribe", "link in the description", sponsor reads, breaks, stage logistics
+- needs_outside_context: the first two sentences contain a reference no allowed start can resolve
+- visual_dependent: the only interest is something the transcript cannot show
+- policy_risk_hold: harassment of a private individual, hateful content, dangerous misinformation, or sexual content. Do not drop silently.
+
+6. RULES
+- Use only sentence IDs that exist in the input. Never invent text. Every quote must be verbatim.
+- Do not use facts from outside the transcript.
+- Every clip gets a one-sentence reason naming the archetype and the strongest trait.
+- If engagement_patterns are provided, list only the IDs the clip genuinely matches in matched_patterns.
+- Output valid JSON only. No commentary, no markdown.
+
+OUTPUT SCHEMA
+{
+  "clips": [{
+    "start_id": "S101", "end_id": "S106",
+    "archetype": "twist | polarizing_take | emotional_peak | tip_or_myth_bust | promise_journey_payoff | standoff_resolution",
+    "hook": { "spoken_text": "verbatim", "headline": "max 12 words, no payoff", "formula": "F1-F8", "open_questions": ["...", "..."] },
+    "payoff_id": "S105",
+    "hook_checks": { "introduces_topic": true, "raises_open_question": true, "payoff_in_window": false, "filler_or_greeting_open": false, "concrete_detail": true },
+    "context": { "dangling_reference": null, "resolved_by": "clip | headline | none" },
+    "trim_ops": [ { "op": "drop_leading_words | drop_trailing_words", "count": 1, "why": "..." } ],
+    "estimates": { "filler_per_100_words": 0, "max_internal_gap_sec": 0.0 },
+    "scores": { "hook_strength": 0, "unexpected_turn": 0, "emotion_relatability": 0, "information_value": 0, "retention_flow": 0, "audience_fit": 0 },
+    "penalty_flags": { "no_clean_ending": false, "hook_content_mismatch": false, "off_audience": false },
+    "matched_patterns": [],
+    "reason": "one sentence naming the archetype and strongest trait",
+    "risks": [],
+    "hashtags": ["3-5 lowercase topical tags, no spaces, no #"]
+  }],
+  "rejected": [ { "start_id": "S320", "end_id": "S322", "reasons": ["payoff_too_early"], "note": "short explanation" } ],
+  "skipped_reason": null
+}
+Order clips best first. Do not output a total score.`;
+
+// =====================================================================
+// Segmentation
+// =====================================================================
+
+function formatSpeaker(s) {
+  if (s == null || String(s).trim() === "") return null;
+  const str = String(s).trim();
+  return /^\d+$/.test(str) ? `SPEAKER_${str}` : str.replace(/\s+/g, "_").toUpperCase();
+}
+
+/**
+ * Split word timestamps into sentences. Punctuated transcripts split on
+ * terminal punctuation; unpunctuated ones split at silence >= 0.6 s or 25 words.
+ * Speaker changes always split. Exported so the golden set can reproduce IDs.
+ */
+export function segmentSentences(rawWords) {
+  const words = (Array.isArray(rawWords) ? rawWords : [])
+    .map((w) => ({
+      word: String(w?.word ?? w?.text ?? "").trim(),
+      start: Number(w?.start),
+      end: Number(w?.end),
+      speaker: w?.speaker ?? w?.speaker_id ?? null,
+    }))
+    .filter((w) => w.word && Number.isFinite(w.start) && Number.isFinite(w.end))
+    .sort((a, b) => a.start - b.start);
+  if (words.length === 0) return { sentences: [], words, punctuated: false };
+
+  const punctuated = words.filter((w) => TERMINAL_RE.test(w.word)).length / words.length >= 0.02;
+  const maxWords = punctuated ? CONFIG.SEG_MAX_WORDS_PUNCTUATED : CONFIG.SEG_MAX_WORDS_UNPUNCTUATED;
+
+  const groups = [];
+  let cur = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const prev = words[i - 1];
+    if (cur.length > 0 && prev) {
+      const speakerChange = w.speaker != null && prev.speaker != null && w.speaker !== prev.speaker;
+      const silence = !punctuated && w.start - prev.end >= CONFIG.SEG_SILENCE;
+      if (speakerChange || silence) { groups.push(cur); cur = []; }
+    }
+    cur.push(i);
+    const terminal = punctuated && TERMINAL_RE.test(w.word) && !ABBREV_RE.test(w.word);
+    if (terminal || cur.length >= maxWords) { groups.push(cur); cur = []; }
+  }
+  if (cur.length) groups.push(cur);
+
+  const pad = Math.max(3, String(groups.length).length);
+  const sentences = groups.map((g, idx) => {
+    const first = words[g[0]];
+    const last = words[g[g.length - 1]];
+    const prevEnd = idx > 0 ? words[groups[idx - 1][groups[idx - 1].length - 1]].end : 0;
+    return {
+      idx,
+      num: idx + 1,
+      id: `S${String(idx + 1).padStart(pad, "0")}`,
+      start: first.start,
+      end: last.end,
+      gap: Math.max(0, first.start - prevEnd),
+      speaker: formatSpeaker(first.speaker),
+      text: g.map((i) => words[i].word).join(" "),
+      wStart: g[0],
+      wEnd: g[g.length - 1],
+    };
+  });
+  return { sentences, words, punctuated };
+}
+
+function formatLine(s) {
+  return `${s.id} [${s.start.toFixed(2)}-${s.end.toFixed(2)}] gap=${s.gap.toFixed(2)}${s.speaker ? ` ${s.speaker}:` : ""} ${s.text}`;
+}
+
+function transcriptBlock(sentences) {
+  const lines = [];
+  let length = 0;
+  for (const s of sentences) {
+    const line = formatLine(s);
+    if (length + line.length + 1 > CONFIG.TRANSCRIPT_CHAR_CAP) break;
+    lines.push(line);
+    length += line.length + 1;
+  }
+  return lines.join("\n");
+}
+
+/** 12-minute windows with 2-minute overlap, on sentence boundaries. IDs stay global. */
+function chunkSentences(sentences, duration) {
+  const { WINDOW, WINDOW_OVERLAP } = CONFIG;
+  if (duration <= WINDOW + WINDOW_OVERLAP) return [{ sentences, from: 0, to: duration }];
+  const chunks = [];
+  let from = 0;
+  while (from < duration) {
+    const to = Math.min(from + WINDOW, duration);
+    const inWindow = sentences.filter((s) => s.start >= from && s.start < to);
+    if (inWindow.length) chunks.push({ sentences: inWindow, from, to });
+    if (to >= duration) break;
+    from = to - WINDOW_OVERLAP;
+  }
+  return chunks;
+}
+
+// =====================================================================
+// Prompt + parsing
+// =====================================================================
+
+function fillPrompt({ min, max, maxCandidates }) {
+  return SYSTEM_PROMPT_TEMPLATE
+    .replaceAll("{{HOOK_WINDOW}}", String(CONFIG.HOOK_WINDOW))
+    .replaceAll("{{MIN_DURATION}}", String(min))
+    .replaceAll("{{MAX_DURATION}}", String(max))
+    .replaceAll("{{PAYOFF_MIN_POSITION}}", String(CONFIG.PAYOFF_MIN_POSITION))
+    .replaceAll("{{MAX_CANDIDATES}}", String(maxCandidates))
+    .replaceAll("{{GAP_COMPRESS}}", String(CONFIG.GAP_COMPRESS));
+}
+
+function buildRequest({ mode, targetCount, creatorProfile, patterns, sentences, window, clip }) {
+  const req = { mode, target_count: targetCount };
+  if (creatorProfile) req.creator_profile = creatorProfile;
+  if (patterns.length) req.engagement_patterns = patterns;
+  if (window) req.window = window;
+  if (clip) req.clip = clip;
+  req.transcript = transcriptBlock(sentences);
+  return JSON.stringify(req, null, 2);
+}
+
+function parseResponse(content) {
+  const cleaned = String(content ?? "").replace(/```(?:json)?/gi, "").trim();
+  const objStart = cleaned.indexOf("{");
+  const arrStart = cleaned.indexOf("[");
+  let parsed;
+  if (objStart !== -1 && (arrStart === -1 || objStart < arrStart)) {
+    parsed = JSON.parse(cleaned.slice(objStart, cleaned.lastIndexOf("}") + 1));
+  } else if (arrStart !== -1) {
+    parsed = { clips: JSON.parse(cleaned.slice(arrStart, cleaned.lastIndexOf("]") + 1)) };
+  } else {
+    throw new Error("response contained no JSON");
+  }
+  return {
+    clips: Array.isArray(parsed?.clips) ? parsed.clips : [],
+    rejected: Array.isArray(parsed?.rejected) ? parsed.rejected : [],
+    skipped_reason: parsed?.skipped_reason ? String(parsed.skipped_reason) : null,
+  };
+}
+
+// =====================================================================
+// Text helpers
+// =====================================================================
+
+function normalize(text) {
+  return String(text ?? "")
+    .toLowerCase()
+    .replace(/[’‘`]/g, "'")
+    .replace(/'/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function clampNum(n, min, max) {
@@ -108,192 +401,668 @@ function clampNum(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
-/** Dead-air enforcement: filler in the first 3 seconds forces the penalty. */
-function enforceFillerPenalty(clip, words) {
-  const fillers = words.filter(
-    (w) => Number(w.start) >= clip.start - 0.05 && Number(w.end) <= clip.start + 3 && FILLER_RE.test(String(w.word).trim())
-  );
-  if (fillers.length >= 1) {
-    clip.penalties.dead_air = Math.max(clip.penalties.dead_air, 1);
-  }
-  return clip;
+const round2 = (n) => Math.round(n * 100) / 100;
+const round3 = (n) => Math.round(n * 1000) / 1000;
+
+function parseId(x) {
+  const m = String(x ?? "").trim().match(/^S?0*(\d+)$/i);
+  return m ? Number(m[1]) : NaN;
 }
 
-/** Validate + normalize one model candidate. Returns null when unusable. */
-function normalizeIntelClip(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const start = Math.max(0, Number(raw.start ?? 0));
-  const end = Number(raw.end ?? 0);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < 3) return null;
+function leadingFillerCount(words) {
+  let i = 0;
+  while (i < words.length) {
+    const a = normalize(words[i].word);
+    const ab = i + 1 < words.length ? `${a} ${normalize(words[i + 1].word)}` : "";
+    if (LEAD_FILLER_TWO.has(ab)) { i += 2; continue; }
+    if (LEAD_FILLER_ONE.has(a)) { i += 1; continue; }
+    break;
+  }
+  return i;
+}
 
-  const scores = {};
-  for (const key of SCORE_KEYS) scores[key] = clampNum(raw.scores?.[key], 0, 10);
-  const penalties = {};
-  for (const key of PENALTY_KEYS) penalties[key] = clampNum(raw.penalties?.[key], 0, 2);
+function fillerPer100(words) {
+  const n = words.map((w) => normalize(w.word)).filter(Boolean);
+  let count = 0;
+  for (let i = 0; i < n.length; i++) {
+    if (DENSITY_ONE.has(n[i])) count++;
+    else if (i + 1 < n.length && DENSITY_TWO.has(`${n[i]} ${n[i + 1]}`)) { count++; i++; }
+  }
+  return n.length ? (count * 100) / n.length : 0;
+}
 
-  const headlineWords = String(raw.headline ?? "Untitled clip").trim().split(/\s+/).slice(0, 12).join(" ");
+function maxInternalGap(words) {
+  let maxGap = 0;
+  for (let i = 1; i < words.length; i++) {
+    const g = words[i].start - words[i - 1].end;
+    if (g > maxGap) maxGap = g;
+  }
+  return maxGap;
+}
 
+function contentWords(text) {
+  const stem = (w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w);
+  return [...new Set(normalize(text).split(" ").filter((w) => w.length > 2 && !STOPWORDS.has(w)).map(stem))];
+}
+
+/** V7 — share of headline content words that also appear in the payoff sentence(s). */
+function payoffLeakRatio(headline, payoffText) {
+  const h = contentWords(headline);
+  if (h.length < 2) return 0;
+  const p = new Set(contentWords(payoffText));
+  return h.filter((w) => p.has(w)).length / h.length;
+}
+
+/** V6 — every capitalized name and every number in the headline must exist in the window. */
+function headlineFactProblems(headline, ctx) {
+  const tokens = headline.split(/\s+/).filter(Boolean);
+  const problems = [];
+  tokens.forEach((tok, i) => {
+    const core = tok.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/i, "");
+    if (!core) return;
+    if (/\d/.test(core)) {
+      const num = core.replace(/[^\d.]/g, "").replace(/\.$/, "");
+      if (num && !new RegExp(`(^|[^\\d])${num.replace(/\./g, "\\.")}(?!\\d)`).test(ctx.windowDigits)) problems.push(core);
+      return;
+    }
+    const startsSentence = i === 0 || /[.!?:]["'”’]?$/.test(tokens[i - 1]) || /^["'“‘]/.test(tok);
+    if (startsSentence || PRONOUN_I_RE.test(normalize(core)) || !/^\p{Lu}/u.test(core)) return;
+    const parts = normalize(core).split(" ");
+    if (!parts.every((p) => ctx.windowWords.has(p))) problems.push(core);
+  });
+  return problems;
+}
+
+function sanitizeTrimOps(ops) {
+  let lead = 0;
+  let trail = 0;
+  const kept = [];
+  for (const op of Array.isArray(ops) ? ops : []) {
+    const count = Math.floor(Number(op?.count));
+    if (!(count > 0)) continue;
+    if (op.op === "drop_leading_words") lead += count;
+    else if (op.op === "drop_trailing_words") trail += count;
+    else continue;
+    kept.push({ op: op.op, count, why: String(op.why ?? "").slice(0, 120) });
+  }
+  return { lead, trail, ops: kept };
+}
+
+function sanitizeHashtags(tags) {
+  return (Array.isArray(tags) ? tags : [])
+    .map((t) => String(t).replace(/^#/, "").toLowerCase().replace(/[^\p{L}\p{N}_]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function hashText(text) {
+  return createHash("sha1").update(text).digest("hex").slice(0, 16);
+}
+
+// =====================================================================
+// Dead-air cutting — builds the edit decision list for one clip
+// =====================================================================
+
+function cuttableFillerLen(words, i) {
+  const a = normalize(words[i].word);
+  if (CONFIG.CUT_FILLER_WORDS && CUT_FILLER_ONE.has(a)) return 1;
+  if (CONFIG.CUT_FILLER_PHRASES && i + 1 < words.length && DENSITY_TWO.has(`${a} ${normalize(words[i + 1].word)}`)) return 2;
+  return 0;
+}
+
+/**
+ * Returns the source ranges to keep, plus a mapper from source time to
+ * edited (output) time. floor/ceil stop padding from bleeding into the
+ * neighbouring words outside the clip.
+ */
+function buildEditPlan(words, { floor = 0, ceil = Infinity } = {}) {
+  const n = words.length;
+  let segments;
+
+  if (!CONFIG.CUT_DEAD_AIR) {
+    segments = [{ start: words[0].start, end: words[n - 1].end }];
+  } else {
+    // 1. Mark mid-clip filler for removal (never the first or last word).
+    const keep = new Array(n).fill(true);
+    for (let i = 1; i < n - 1; ) {
+      const len = cuttableFillerLen(words, i);
+      if (len && i + len < n) {
+        for (let k = 0; k < len; k++) keep[i + k] = false;
+        i += len;
+      } else i++;
+    }
+    const kept = keep.map((k, i) => (k ? i : -1)).filter((i) => i !== -1);
+
+    // 2. Decide a cut between each pair of neighbouring kept words.
+    const half = CONFIG.KEEP_GAP / 2;
+    segments = [];
+    let segStart = Math.max(floor, words[kept[0]].start - CONFIG.PAD_BEFORE);
+    for (let j = 1; j < kept.length; j++) {
+      const a = words[kept[j - 1]];
+      const b = words[kept[j]];
+      const removed = kept[j] - kept[j - 1] - 1;
+      let cutStart;
+      let cutEnd;
+      if (removed > 0) {
+        // Filler between a and b: cut from just after a to just before b, covering the filler.
+        const r0 = words[kept[j - 1] + 1];
+        const r1 = words[kept[j] - 1];
+        cutStart = Math.max(a.end, Math.min(a.end + CONFIG.PAD_AFTER, r0.start));
+        cutEnd = Math.min(b.start, Math.max(b.start - CONFIG.PAD_BEFORE, r1.end));
+      } else if (b.start - a.end > CONFIG.GAP_COMPRESS) {
+        // Long silence: keep about KEEP_GAP of it so the speech still breathes.
+        cutStart = a.end + Math.max(CONFIG.PAD_AFTER, half);
+        cutEnd = b.start - Math.max(CONFIG.PAD_BEFORE, half);
+      } else continue;
+      if (cutEnd - cutStart < CONFIG.MIN_CUT) continue; // too small to bother; filler stays
+      segments.push({ start: segStart, end: cutStart });
+      segStart = cutEnd;
+    }
+    segments.push({ start: segStart, end: Math.min(ceil, words[kept[kept.length - 1]].end + CONFIG.PAD_AFTER) });
+
+    // 3. Merge pieces too short to read as speech.
+    const merged = [segments[0]];
+    for (const s of segments.slice(1)) {
+      const last = merged[merged.length - 1];
+      if (last.end - last.start < CONFIG.MIN_SEGMENT || s.end - s.start < CONFIG.MIN_SEGMENT) last.end = s.end;
+      else merged.push({ ...s });
+    }
+    segments = merged;
+  }
+
+  // Source -> output time. A time inside a cut maps to the next kept frame.
+  const offsets = [];
+  let acc = 0;
+  for (const s of segments) { offsets.push(acc); acc += s.end - s.start; }
+  const toOutput = (t) => {
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      if (t < s.start) return offsets[i];
+      if (t <= s.end) return offsets[i] + (t - s.start);
+    }
+    return acc;
+  };
+
+  // Words that survive the edit, re-timed to the output timeline (use these for captions).
+  const keptWords = words
+    .filter((w) => {
+      const mid = (w.start + w.end) / 2;
+      return segments.some((s) => mid >= s.start && mid <= s.end);
+    })
+    .map((w) => ({ word: w.word, start: round3(toOutput(w.start)), end: round3(toOutput(w.end)), speaker: w.speaker ?? null }));
+
+  const sourceDuration = segments[segments.length - 1].end - segments[0].start;
   return {
-    start,
-    end,
-    headline: headlineWords.slice(0, 80),
-    spoken_hook: String(raw.spoken_hook ?? "").slice(0, 160),
-    hook_type: String(raw.hook_type ?? "story_setup").slice(0, 40),
-    scores,
-    penalties,
-    why: String(raw.why ?? "").slice(0, 500),
-    trim_notes: String(raw.trim_notes ?? "").slice(0, 300),
-    risks: String(raw.risks ?? "").slice(0, 300),
-    hashtags: Array.isArray(raw.hashtags)
-      ? raw.hashtags.slice(0, 5).map((t) => String(t).replace(/^#/, "").trim().toLowerCase()).filter(Boolean)
-      : [],
+    segments: segments.map((s) => ({ start: round3(s.start), end: round3(s.end) })),
+    outputDuration: acc,
+    sourceDuration,
+    removedSec: sourceDuration - acc,
+    cuts: segments.length - 1,
+    fillersRemoved: words.length - keptWords.length,
+    keptWords,
+    maxGapAfter: maxInternalGap(keptWords),
+    toOutput,
   };
 }
 
-/** Parse the model response — tolerates code fences, accepts object or bare array. */
-function parseIntelResponse(content) {
-  const cleaned = content.replace(/```(?:json)?/gi, "").trim();
-  const objStart = cleaned.indexOf("{");
-  const arrStart = cleaned.indexOf("[");
-  let parsed;
-  if (objStart !== -1 && (arrStart === -1 || objStart < arrStart)) {
-    const end = cleaned.lastIndexOf("}");
-    parsed = JSON.parse(cleaned.slice(objStart, end + 1));
-  } else if (arrStart !== -1) {
-    const end = cleaned.lastIndexOf("]");
-    parsed = { clips: JSON.parse(cleaned.slice(arrStart, end + 1)) };
-  } else {
-    throw new Error("response contained no JSON");
-  }
-  const clips = Array.isArray(parsed?.clips) ? parsed.clips : [];
-  return { clips, skipped_reason: String(parsed?.skipped_reason ?? "") };
+// =====================================================================
+// Validation + scoring (V1-V13, caps, penalties, total)
+// =====================================================================
+
+function makeWindowContext(windowSentences, shared, opts) {
+  const text = windowSentences.map((s) => s.text).join(" ");
+  return {
+    ...shared,
+    ...opts,
+    byNum: new Map(windowSentences.map((s) => [s.num, s])),
+    windowWords: new Set(normalize(text).split(" ")),
+    windowDigits: text.replace(/(\d),(?=\d)/g, "$1"),
+  };
 }
 
-/** Split words into ~12-minute analysis windows with 90s overlap. */
-function chunkWords(words, durationSeconds) {
-  const WINDOW = 720; // 12 min
-  const OVERLAP = 90;
-  if (!durationSeconds || durationSeconds <= WINDOW + OVERLAP) {
-    return [{ words, from: 0, to: durationSeconds || WINDOW }];
+function evaluateCandidate(raw, ctx) {
+  const startIdRaw = String(raw?.start_id ?? "");
+  const endIdRaw = String(raw?.end_id ?? "");
+  const reject = (reasons, note) => ({
+    ok: false,
+    rejection: { start_id: startIdRaw, end_id: endIdRaw, reasons, note, source: "code" },
+  });
+
+  // V1 — IDs exist in this window and are ordered
+  const s0 = ctx.byNum.get(parseId(raw?.start_id));
+  const s1 = ctx.byNum.get(parseId(raw?.end_id));
+  if (!s0 || !s1 || s0.idx > s1.idx) return reject(["invalid_ids"], "start_id/end_id missing from this window or out of order");
+
+  const hardFails = [];
+  const flags = [];
+
+  // V2 — map IDs to word timestamps, apply trims
+  const trim = sanitizeTrimOps(raw.trim_ops);
+  const spanWords = ctx.words.slice(s0.wStart, s1.wEnd + 1);
+  const fillerLead = Math.min(leadingFillerCount(spanWords), CONFIG.MAX_LEADING_TRIM);
+  const lead = CONFIG.AUTO_TRIM_LEADING_FILLER ? fillerLead : Math.min(trim.lead, fillerLead);
+  const trail = Math.min(trim.trail, CONFIG.MAX_TRAILING_TRIM);
+  const clipWords = spanWords.slice(lead, spanWords.length - trail);
+  if (clipWords.length < 3) return reject(["empty_after_trim"], "trim removed nearly all words");
+  if (lead > trim.lead) flags.push("auto_trimmed_leading_filler");
+
+  // Dead-air edit plan
+  const firstIdx = s0.wStart + lead;
+  const lastIdx = s1.wEnd - trail;
+  const plan = buildEditPlan(clipWords, {
+    floor: firstIdx > 0 ? ctx.words[firstIdx - 1].end : 0,
+    ceil: lastIdx + 1 < ctx.words.length ? ctx.words[lastIdx + 1].start : Infinity,
+  });
+  const start = plan.segments[0].start;
+  const end = plan.segments[plan.segments.length - 1].end;
+  const duration = plan.outputDuration; // what the viewer actually watches
+  const clipSentences = ctx.sentences.slice(s0.idx, s1.idx + 1);
+  const clipText = clipSentences.map((s) => s.text).join(" ");
+
+  // V3 — duration, measured after dead air is cut
+  if (ctx.enforceDuration) {
+    if (duration < ctx.bounds.min - CONFIG.DURATION_SLACK) hardFails.push("below_min_duration");
+    else if (duration > ctx.bounds.max + CONFIG.DURATION_SLACK) hardFails.push("above_max_duration");
   }
-  const chunks = [];
-  let from = 0;
-  while (from < durationSeconds) {
-    const to = Math.min(from + WINDOW, durationSeconds);
-    chunks.push({
-      words: words.filter((w) => Number(w.start) >= from - 0.5 && Number(w.start) < to),
-      from,
-      to,
-    });
-    if (to >= durationSeconds) break;
-    from = to - OVERLAP;
+
+  // V4 — spoken hook must be verbatim from the clip
+  const spoken = String(raw.hook?.spoken_text ?? "").trim();
+  if (!spoken || !normalize(clipText).includes(normalize(spoken))) hardFails.push("hook_text_mismatch");
+
+  // V5 — headline length
+  let headline = String(raw.hook?.headline ?? "").replace(/\s+/g, " ").trim();
+  if (!headline) hardFails.push("missing_headline");
+  const headlineWords = headline.split(" ").filter(Boolean);
+  if (headlineWords.length > 12) {
+    headline = headlineWords.slice(0, 12).join(" ");
+    flags.push("headline_truncated");
   }
-  return chunks;
+
+  // V6 — headline facts must exist in the window
+  const factProblems = headlineFactProblems(headline, ctx);
+  if (factProblems.length) hardFails.push("headline_fact_mismatch");
+
+  // [mine] housekeeping guard on the first and last sentence
+  if (HOUSEKEEPING_RE.test(clipSentences[0].text) || HOUSEKEEPING_RE.test(s1.text)) hardFails.push("housekeeping");
+
+  // Payoff sentence
+  let payoff = ctx.byNum.get(parseId(raw.payoff_id));
+  if (!payoff || payoff.idx < s0.idx || payoff.idx > s1.idx) {
+    hardFails.push("no_payoff");
+    payoff = s1;
+  }
+
+  // V7 — headline leaks the payoff
+  const payoffText = ctx.sentences.slice(payoff.idx, s1.idx + 1).map((s) => s.text).join(" ");
+  const leak = payoffLeakRatio(headline, payoffText);
+
+  // V8 / V9 — payoff position on the edited timeline (cuts move the payoff earlier)
+  const payoffOut = plan.toOutput(Math.max(payoff.start, clipWords[0].start));
+  const payoffPct = duration > 0 ? payoffOut / duration : 0;
+  const payoffInWindow = payoffOut < CONFIG.HOOK_WINDOW;
+
+  // V10 — filler/greeting open, re-checked after trimming (overrides the model)
+  const greeting = GREETING_RE.test(normalize(clipWords.slice(0, 4).map((w) => w.word).join(" ")));
+  const fillerOpen = leadingFillerCount(clipWords) > 0 || greeting;
+
+  // V11 / V12 — measured after the edit; raw values are logged for tuning
+  const fillerDensity = fillerPer100(plan.keptWords);
+  const maxGap = plan.maxGapAfter;
+  const rawFillerDensity = fillerPer100(clipWords);
+  const rawMaxGap = maxInternalGap(clipWords);
+
+  // V13 — dangling reference
+  const dangling = raw.context?.dangling_reference;
+  const resolvedBy = String(raw.context?.resolved_by ?? "clip");
+  const needsContext = dangling != null && String(dangling).trim() !== "" && resolvedBy === "none";
+
+  // [mine] clean ending — in punctuated transcripts the last word must close a sentence
+  const codeNoCleanEnding = ctx.punctuated && !TERMINAL_RE.test(clipWords[clipWords.length - 1].word);
+
+  // ---- scores + caps ----
+  const modelScores = {};
+  for (const k of SCORE_KEYS) modelScores[k] = Math.round(clampNum(raw.scores?.[k], 0, 10));
+  if (!ctx.hasProfile) modelScores.audience_fit = 5;
+
+  const hc = raw.hook_checks ?? {};
+  const scores = { ...modelScores };
+  const capsApplied = [];
+  const cap = (key, max, why) => {
+    if (scores[key] > max) { scores[key] = max; capsApplied.push(`${key}<=${max}: ${why}`); }
+  };
+  if (payoffInWindow) cap("hook_strength", 3, "payoff in hook window");
+  if (fillerOpen) cap("hook_strength", 4, greeting ? "greeting open" : "filler open");
+  if (hc.introduces_topic !== true || hc.raises_open_question !== true) cap("hook_strength", 5, "no topic or no open question");
+  if (hc.concrete_detail !== true) cap("hook_strength", 7, "no concrete detail");
+
+  // ---- penalties ----
+  const pf = raw.penalty_flags ?? {};
+  const penalties = {};
+  const penaltyWhy = {};
+  const penalize = (key, why) => { penalties[key] = PENALTY_VALUES[key]; penaltyWhy[key] = why; };
+  if (payoffPct < CONFIG.PAYOFF_MIN_POSITION) penalize("payoff_too_early", `payoff at ${Math.round(payoffPct * 100)}% of clip`);
+  if (fillerDensity > CONFIG.FILLER_MAX) penalize("dead_air", `${fillerDensity.toFixed(1)} filler per 100 words after edit`);
+  else if (maxGap > CONFIG.GAP_HARD) penalize("dead_air", `${maxGap.toFixed(2)} s internal gap after edit`);
+  if (needsContext) penalize("needs_outside_context", `unresolved reference "${String(dangling).slice(0, 40)}"`);
+  if (pf.hook_content_mismatch === true) penalize("hook_content_mismatch", "model flag");
+  else if (leak > 0.5) penalize("hook_content_mismatch", `headline leaks payoff (${Math.round(leak * 100)}% overlap)`);
+  if (ctx.hasProfile && pf.off_audience === true) penalize("off_audience", "model flag");
+  if (pf.no_clean_ending === true) penalize("no_clean_ending", "model flag");
+  else if (codeNoCleanEnding) penalize("no_clean_ending", "last word does not end a sentence");
+
+  // ---- total (peak-trait formula) ----
+  const traits = TRAIT_KEYS.map((k) => scores[k]).sort((a, b) => b - a);
+  const base =
+    WEIGHTS.hook_strength * scores.hook_strength +
+    WEIGHTS.peak * traits[0] +
+    WEIGHTS.second * traits[1] +
+    WEIGHTS.retention_flow * scores.retention_flow +
+    WEIGHTS.audience_fit * scores.audience_fit;
+  const penaltySum = Object.values(penalties).reduce((a, b) => a + b, 0);
+  const matchedPatterns = [...new Set((Array.isArray(raw.matched_patterns) ? raw.matched_patterns : []).map(String))]
+    .filter((id) => ctx.patternIds.has(id));
+  const bonus = Math.min(CONFIG.PATTERN_BONUS_CAP, CONFIG.PATTERN_BONUS * matchedPatterns.length);
+  const total = round2(clampNum(base - penaltySum + bonus, 0, 10));
+
+  if (ctx.strict && hardFails.length) {
+    const note = factProblems.length ? `headline names facts not in transcript: ${factProblems.join(", ")}` : hardFails.join(", ");
+    return reject(hardFails, note);
+  }
+
+  const archetype = ARCHETYPES.has(raw.archetype) ? raw.archetype : "unclassified";
+  const formula = FORMULAS.has(raw.hook?.formula) ? raw.hook.formula : null;
+  const strongest = [...TRAIT_KEYS].sort((a, b) => scores[b] - scores[a])[0];
+  const spokenHook = spoken.slice(0, 300);
+
+  return {
+    ok: true,
+    clip: {
+      start,
+      end,
+      start_id: s0.id,
+      end_id: s1.id,
+      archetype,
+      headline: headline.slice(0, 120),
+      spoken_hook: spokenHook,
+      total,
+      reason: String(raw.reason ?? "").slice(0, 500) || `${archetype}: strongest trait ${strongest}.`,
+      hashtags: sanitizeHashtags(raw.hashtags),
+      segments: plan.segments,
+      output_duration: duration,
+      edited_words: plan.keptWords,
+      hard_fails: hardFails, // non-empty only in score_only mode
+      intel_json: {
+        version: "v2",
+        start_id: s0.id,
+        end_id: s1.id,
+        payoff_id: payoff.id,
+        archetype,
+        formula,
+        headline,
+        spoken_hook: spokenHook,
+        open_questions: (Array.isArray(raw.hook?.open_questions) ? raw.hook.open_questions : []).map(String).slice(0, 5),
+        window_hash: hashText(clipSentences.map(formatLine).join("\n")),
+        model_scores: modelScores,
+        scores,
+        caps_applied: capsApplied,
+        penalties,
+        penalty_reasons: penaltyWhy,
+        base: round2(base),
+        pattern_bonus: bonus,
+        matched_patterns: matchedPatterns,
+        total,
+        checks: {
+          duration: round2(duration),
+          source_duration: round2(plan.sourceDuration),
+          payoff_pct: round2(payoffPct),
+          payoff_in_window: payoffInWindow,
+          filler_or_greeting_open: fillerOpen,
+          filler_per_100_words: round2(fillerDensity),
+          max_internal_gap_sec: round2(maxGap),
+          raw_filler_per_100_words: round2(rawFillerDensity),
+          raw_max_internal_gap_sec: round2(rawMaxGap),
+          headline_leak_ratio: round2(leak),
+          leading_words_trimmed: lead,
+          trailing_words_trimmed: trail,
+          model_hook_checks: hc,
+          model_estimates: raw.estimates ?? null,
+          context: { dangling_reference: dangling ?? null, resolved_by: resolvedBy },
+        },
+        hard_fails: hardFails,
+        flags,
+        trim_ops: trim.ops,
+        edit: {
+          segments: plan.segments,
+          output_duration: round2(duration),
+          removed_sec: round2(plan.removedSec),
+          cuts: plan.cuts,
+          fillers_removed: plan.fillersRemoved,
+        },
+        risks: (Array.isArray(raw.risks) ? raw.risks : [raw.risks]).filter(Boolean).map((r) => String(r).slice(0, 300)),
+        config: {
+          weights: WEIGHTS,
+          penalty_values: PENALTY_VALUES,
+          threshold: CONFIG.THRESHOLD,
+          hook_window: CONFIG.HOOK_WINDOW,
+          payoff_min_position: CONFIG.PAYOFF_MIN_POSITION,
+          gap_compress: CONFIG.GAP_COMPRESS,
+          keep_gap: CONFIG.KEEP_GAP,
+          bounds: ctx.bounds,
+        },
+      },
+    },
+  };
 }
 
-/** Drop candidates that heavily overlap an already-kept (better) clip. */
-function dedupeClips(clips) {
+// =====================================================================
+// Ranking
+// =====================================================================
+
+function dedupeClips(sorted) {
   const kept = [];
-  for (const clip of clips) {
+  for (const clip of sorted) {
     const dup = kept.some((k) => {
       const overlap = Math.min(clip.end, k.end) - Math.max(clip.start, k.start);
       if (overlap <= 0) return false;
       const shorter = Math.min(clip.end - clip.start, k.end - k.start);
-      return overlap / shorter > 0.5;
+      return overlap / shorter > CONFIG.OVERLAP_LIMIT;
     });
     if (!dup) kept.push(clip);
   }
   return kept;
 }
 
-function transcriptText(words, cap = 120_000) {
-  return words
-    .map((w) => `[${Number(w.start).toFixed(1)}s] ${w.word}`)
-    .join(" ")
-    .slice(0, cap);
+/** [mine] at most 2 of one archetype in the top 5, unless the alternative is > 1.0 lower. */
+function pickWithArchetypeCap(ranked, target) {
+  const cfg = CONFIG.ARCHETYPE_CAP;
+  if (!cfg) return ranked.slice(0, target);
+  const pool = [...ranked];
+  const out = [];
+  const counts = new Map();
+  while (out.length < target && pool.length) {
+    let i = 0;
+    const top = pool[0];
+    if (out.length < cfg.topN && (counts.get(top.archetype) ?? 0) >= cfg.max) {
+      const alt = pool.findIndex((c) => (counts.get(c.archetype) ?? 0) < cfg.max);
+      if (alt !== -1 && top.total - pool[alt].total <= cfg.margin) i = alt;
+    }
+    const [pick] = pool.splice(i, 1);
+    out.push(pick);
+    counts.set(pick.archetype, (counts.get(pick.archetype) ?? 0) + 1);
+  }
+  return out;
 }
 
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns }) {
+  const { sentences, words, punctuated } = segmentSentences(transcriptJson?.words ?? []);
+  if (sentences.length === 0) throw new Error("no transcript words to analyze");
+  const patterns = (Array.isArray(engagementPatterns) ? engagementPatterns : []).filter((p) => p?.id);
+  return {
+    sentences,
+    words,
+    shared: {
+      sentences,
+      words,
+      punctuated,
+      bounds: LENGTH_BOUNDS[clipLengthPref] ?? LENGTH_BOUNDS.ai_optimized,
+      hasProfile: Boolean(creatorProfile && Object.keys(creatorProfile).length),
+      patternIds: new Set(patterns.map((p) => String(p.id))),
+    },
+    patterns,
+  };
+}
+
+// =====================================================================
+// Public API
+// =====================================================================
+
 /**
- * Clip Intelligence analysis. Returns the same shape analyze.js expects
- * ({start, end, title, hook, virality_score, reason, hashtags}) plus
- * `intel_json` — the full rubric output, stored for the tuning loop.
+ * Select mode. Returns the shape analyze.js expects plus intel_json,
+ * segments (dead-air edit list), output_duration and edited_words (captions).
  */
 export async function detectViralClips({
   transcriptJson,
   durationSeconds,
   maxClips,
   clipLengthPref = "ai_optimized",
+  creatorProfile = null,
+  engagementPatterns = [],
+  onDiagnostics = null,
 }) {
-  const lengthRule = LENGTH_RULES[clipLengthPref] ?? LENGTH_RULES.ai_optimized;
-  const words = transcriptJson?.words ?? [];
-  if (words.length === 0) throw new Error("no transcript words to analyze");
+  const { sentences, words, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns });
+  const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : words[words.length - 1].end;
+  const target = Math.max(1, Math.floor(Number(maxClips) || 5));
+  const maxCandidates = target * CONFIG.CANDIDATE_MULTIPLIER;
+  const systemPrompt = fillPrompt({ ...shared.bounds, maxCandidates });
+  const chunks = chunkSentences(sentences, duration);
 
-  const chunks = chunkWords(words, durationSeconds);
-  const candidates = [];
+  const diagnostics = { modelRejected: [], codeRejected: [], belowThreshold: [], skipped: [], chunkErrors: [] };
 
-  for (const chunk of chunks) {
-    const userPrompt = `Video duration: ${Math.round(durationSeconds)} seconds${chunks.length > 1 ? `. You are analyzing the segment ${Math.round(chunk.from)}s-${Math.round(chunk.to)}s of the full video — timestamps remain absolute.` : ""}.
-Find up to ${maxClips} clips — return the full ${maxClips} only if the material genuinely supports it. ${lengthRule}
-
-Transcript with word timestamps:
- ${transcriptText(chunk.words)}`;
-
-    const content = await chatComplete(INTEL_SYSTEM_PROMPT, userPrompt, {
-      timeoutMs: 240_000,
-      temperature: 0.3,
-    });
-
-    const { clips } = parseIntelResponse(content);
-    const { min, max } = prefBounds(clipLengthPref);
-
-    for (const raw of clips) {
-      const clip = normalizeIntelClip(raw);
-      if (!clip) continue;
-      // Clamp onto real word boundaries / finished sentences.
-      const snapped = snapToBounds(clip, chunk.words, { min, max });
-      if (snapped.end - snapped.start < Math.min(min, 8)) continue;
-      enforceFillerPenalty(snapped, words);
-      const total = computeTotal(snapped.scores, snapped.penalties);
-      candidates.push({
-        ...snapped,
-        total,
-        intel_json: {
-          hook_type: snapped.hook_type,
-          scores: snapped.scores,
-          penalties: snapped.penalties,
-          total,
-          spoken_hook: snapped.spoken_hook,
-          trim_notes: snapped.trim_notes,
-          risks: snapped.risks,
-          weights: WEIGHTS, // frozen at decision time — the tuning loop reads this
-        },
+  const perChunk = await mapLimit(chunks, CONFIG.CHUNK_CONCURRENCY, async (chunk) => {
+    const window = chunks.length > 1
+      ? { from_sec: Math.round(chunk.from), to_sec: Math.round(chunk.to), video_duration_sec: Math.round(duration), note: "Sentence IDs and timestamps are absolute across the full video." }
+      : { video_duration_sec: Math.round(duration) };
+    try {
+      const userPrompt = buildRequest({ mode: "select", targetCount: target, creatorProfile, patterns, sentences: chunk.sentences, window });
+      const content = await chatComplete(systemPrompt, userPrompt, {
+        timeoutMs: CONFIG.MODEL_TIMEOUT_MS,
+        temperature: CONFIG.MODEL_TEMPERATURE,
       });
+      const parsed = parseResponse(content);
+      diagnostics.modelRejected.push(...parsed.rejected);
+      if (parsed.skipped_reason) diagnostics.skipped.push({ window, reason: parsed.skipped_reason });
+
+      const ctx = makeWindowContext(chunk.sentences, shared, { strict: true, enforceDuration: true });
+      const accepted = [];
+      for (const raw of parsed.clips.slice(0, maxCandidates)) {
+        const res = evaluateCandidate(raw, ctx);
+        if (res.ok) accepted.push(res.clip);
+        else diagnostics.codeRejected.push(res.rejection);
+      }
+      return accepted;
+    } catch (err) {
+      diagnostics.chunkErrors.push({ window, error: String(err?.message ?? err) });
+      return [];
     }
+  });
+
+  if (diagnostics.chunkErrors.length === chunks.length) {
+    throw new Error(`clip intelligence failed on every window: ${diagnostics.chunkErrors[0].error}`);
   }
 
-  if (candidates.length === 0) throw new Error("clip intelligence returned no usable clips");
+  const candidates = perChunk.flat();
+  const passing = [];
+  for (const c of candidates) {
+    if (c.total >= CONFIG.THRESHOLD) passing.push(c);
+    else diagnostics.belowThreshold.push({ start_id: c.start_id, end_id: c.end_id, total: c.total, archetype: c.archetype });
+  }
+  const ranked = dedupeClips(passing.sort((a, b) => b.total - a.total));
+  const picked = pickWithArchetypeCap(ranked, target);
 
-  // Rank by the code-computed total, dedupe overlapping windows, cap.
-  const ranked = dedupeClips(candidates.sort((a, b) => b.total - a.total)).slice(0, maxClips);
+  if (typeof onDiagnostics === "function") {
+    try { onDiagnostics(diagnostics); } catch { /* diagnostics must never break analysis */ }
+  }
 
-  return ranked.map((c) => ({
-    start: c.start,
-    end: c.end,
+  if (picked.length === 0) {
+    const why = diagnostics.skipped[0]?.reason ?? `no candidate reached threshold ${CONFIG.THRESHOLD}`;
+    const err = new Error(`clip intelligence returned no usable clips: ${why}`);
+    err.diagnostics = diagnostics;
+    throw err;
+  }
+
+  return picked.map((c) => ({
+    start: round2(c.start),                  // outer source bounds
+    end: round2(c.end),
     title: c.headline,
     hook: c.spoken_hook || c.headline,
-    virality_score: Math.round(c.total * 10), // 0-10 rubric -> 0-100 column
-    reason: c.why || `${c.hook_type} — strong ${SCORE_KEYS.sort((a, b) => c.scores[b] - c.scores[a])[0]}.`,
+    virality_score: Math.round(c.total * 10), // 0-10 total -> 0-100 column
+    reason: c.reason,
     hashtags: c.hashtags.length > 0 ? c.hashtags : ["clipforge"],
+    segments: c.segments,                    // source ranges to keep, in order
+    output_duration: round2(c.output_duration),
+    edited_words: c.edited_words,            // word timings on the edited timeline (for captions)
     intel_json: c.intel_json,
   }));
 }
 
-function prefBounds(clipLengthPref) {
-  switch (clipLengthPref) {
-    case "10-14": return { min: 8, max: 16 };
-    case "15-30": return { min: 13, max: 32 };
-    case "31-45": return { min: 28, max: 47 };
-    case "60+": return { min: 55, max: 120 };
-    default: return { min: 8, max: 62 };
-  }
+/**
+ * score_only mode — for the golden set, A/B checks and re-scoring.
+ * Never rejects on duration or threshold; reports hard_fails instead.
+ */
+export async function scoreKnownClip({
+  transcriptJson,
+  startId,
+  endId,
+  clipLengthPref = "ai_optimized",
+  creatorProfile = null,
+  engagementPatterns = [],
+}) {
+  const { sentences, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns });
+  const s0 = sentences[parseId(startId) - 1];
+  const s1 = sentences[parseId(endId) - 1];
+  if (!s0 || !s1 || s0.idx > s1.idx) throw new Error(`invalid clip range ${startId}-${endId}`);
+
+  // Give the model the clip plus surrounding context.
+  const windowSentences = sentences.filter((s) => s.end >= s0.start - 60 && s.start <= s1.end + 30);
+  const systemPrompt = fillPrompt({ ...shared.bounds, maxCandidates: 1 });
+  const userPrompt = buildRequest({
+    mode: "score_only",
+    targetCount: 1,
+    creatorProfile,
+    patterns,
+    sentences: windowSentences,
+    clip: { start_id: s0.id, end_id: s1.id },
+  });
+
+  const content = await chatComplete(systemPrompt, userPrompt, {
+    timeoutMs: CONFIG.MODEL_TIMEOUT_MS,
+    temperature: CONFIG.MODEL_TEMPERATURE,
+  });
+  const parsed = parseResponse(content);
+  const raw = parsed.clips[0];
+  if (!raw) return { scored: false, rejected: parsed.rejected, skipped_reason: parsed.skipped_reason };
+
+  const ctx = makeWindowContext(windowSentences, shared, { strict: false, enforceDuration: false });
+  const res = evaluateCandidate({ ...raw, start_id: s0.id, end_id: s1.id }, ctx);
+  if (!res.ok) return { scored: false, rejected: [res.rejection] };
+  return { scored: true, passes_threshold: res.clip.total >= CONFIG.THRESHOLD, ...res.clip };
 }
+
+export {
+  evaluateCandidate as _evaluateCandidate,
+  makeWindowContext as _makeWindowContext,
+  buildEditPlan as _buildEditPlan,
+};
