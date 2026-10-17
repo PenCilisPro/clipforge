@@ -162,13 +162,15 @@ export async function processRender(job) {
       // template default), and the output canvas aspect from the editor.
       captionPosition: clip.caption_position ?? "bottom",
       captionSize: Number(clip.caption_size) || 0,
-      captionSize: Number(clip.caption_size) || 0,
       // Free-drag caption position (% of canvas; null = preset placement),
       // custom text overlays and video zoom/pan from the editor. The local
       // provider renders all of these; cloud providers pick only the keys
       // their spec builders know, so the extras are ignored there.
       captionX: clip.caption_x ?? null,
       captionY: clip.caption_y ?? null,
+      // "Words per screen" regrouping + caption wrap width (% of canvas).
+      captionWords: Math.round(Number(clip.caption_words)) || 0,
+      captionWidth: Number(clip.caption_width) || 0,
       textOverlays: Array.isArray(clip.text_overlays) ? clip.text_overlays : [],
       videoScale: Number(clip.video_scale) || 100,
       videoX: Number(clip.video_x ?? 0),

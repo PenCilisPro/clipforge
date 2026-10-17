@@ -106,6 +106,8 @@ export interface TextOverlay {
   x: number;
   y: number;
   size: number;
+  /** Wrap width as % of canvas width (default 90). */
+  width?: number;
   color: string;
   bold: boolean;
   bg: boolean;
@@ -151,6 +153,10 @@ export interface Clip {
   video_scale?: number;
   video_x?: number;
   video_y?: number;
+  /** "Words per screen" regrouping (0 = off — use SRT lines as edited). */
+  caption_words?: number | null;
+  /** Caption wrap width as % of canvas width. */
+  caption_width?: number | null;
   /** Standalone draggable text overlays rendered above the video. */
   text_overlays?: TextOverlay[] | null;
   srt_override: string | null;

@@ -126,6 +126,8 @@ export function buildAssSubtitles({
   captionSize = 0,
   captionX = null,
   captionY = null,
+  captionWords = 0,
+  captionWidth = 0,
   textOverlays = [],
   durationSeconds = 0,
   width = 1080,
@@ -177,6 +179,11 @@ export function buildAssSubtitles({
       ? 0
       : Math.round(height * 0.08);
 
+  // Caption wrap width (% of canvas) — per-event MarginL/R override the style
+  // margins so lines wrap at the same width as the preview's caption box.
+  const capWrapPct = Number(captionWidth) > 0 ? clampNum(captionWidth, 20, 100, 90) : 0;
+  const capMarginLR = capWrapPct > 0 ? Math.round((width * (100 - capWrapPct)) / 200) : 0;
+
   const fspPx = def.letterSpacingPct
     ? Math.round((parseFloat(def.letterSpacingPct) / 100) * fontSize * 10) / 10
     : 0;
@@ -216,6 +223,9 @@ export function buildAssSubtitles({
     const boxed = o.bg === true;
     const ox = Math.round(width * (clampNum(o.x, 0, 100, 50) / 100));
     const oy = Math.round(height * (clampNum(o.y, 0, 100, 50) / 100));
+    // Wrap width (% of canvas): per-event margins so multi-line overlay text
+    // wraps at the same width as the editor preview box.
+    const ovML = Math.round((width * (100 - clampNum(o.width, 20, 100, 90))) / 200);
     ovStyles.push(
       `Style: Ov${i},${captionFont(fontKey).family},${fs},${color},&H000000FF,` +
         `${boxed ? "&H4A000000" : "&H00000000"},&H00000000,${o.bold === false ? 0 : -1},` +
@@ -230,13 +240,67 @@ export function buildAssSubtitles({
         .join("\\N") || "Text";
     ovEvents.push(
       `Dialogue: 1,${assTime(0)},${assTime(Math.max(0.1, Number(durationSeconds) || 0))},` +
-        `Ov${i},,0,0,0,,{\\pos(${ox},${oy})}${body}`
+        `Ov${i},,${ovML},${ovML},0,,{\\pos(${ox},${oy})}${body}`
     );
   });
 
   const lines = [];
   const usableCues = (Array.isArray(captionCues) ? captionCues : []).slice(0, 400);
-  const wordTotal = usableCues.reduce(
+
+  // "Words per screen" (caption_words): flatten every timed word and re-chunk
+  // into groups of N so the render shows exactly the same words per caption
+  // block as the editor preview. Cues without word timings get times spread
+  // proportionally to word length. Chunk words carry both .text and .word so
+  // the existing event builders keep working unchanged.
+  const nWords = Math.round(Number(captionWords) || 0);
+  let grouped = usableCues;
+  if (nWords >= 1 && nWords <= 12 && usableCues.length > 0) {
+    const flat = [];
+    for (const cue of usableCues) {
+      const start = Math.max(0, Number(cue.start) || 0);
+      const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
+      const timed = Array.isArray(cue.words)
+        ? cue.words
+            .map((w) => {
+              const word = assText((w && (w.text ?? w.word)) ?? "");
+              return {
+                text: word,
+                word,
+                start: Math.max(0, Number(w && w.start) || 0),
+                end: Math.max(0, Number(w && w.end) || 0),
+              };
+            })
+            .filter((w) => w.text.length > 0)
+        : [];
+      if (timed.length > 0) {
+        flat.push(...timed);
+      } else {
+        const raw = assText(cue.text).split(/\s+/).filter(Boolean);
+        const total = raw.reduce((s, w) => s + w.length, 0) || 1;
+        const dur = Math.max(0.3, end - start);
+        let t = start;
+        for (const w of raw) {
+          const d = (w.length / total) * dur;
+          flat.push({ text: w, word: w, start: t, end: t + d });
+          t += d;
+        }
+      }
+    }
+    if (flat.length > 0) {
+      grouped = [];
+      for (let i = 0; i < flat.length; i += nWords) {
+        const chunk = flat.slice(i, i + nWords);
+        grouped.push({
+          start: chunk[0].start,
+          end: chunk[chunk.length - 1].end,
+          text: chunk.map((w) => w.text).join(" "),
+          words: chunk,
+        });
+      }
+    }
+  }
+
+  const wordTotal = grouped.reduce(
     (sum, cue) => sum + (Array.isArray(cue.words) ? cue.words.length : 0),
     0
   );
@@ -248,10 +312,10 @@ export function buildAssSubtitles({
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
   const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${freePos}${blurTag}${fspTag}${body}`);
+    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,${capMarginLR},${capMarginLR},0,,${freePos}${blurTag}${fspTag}${body}`);
   };
 
-  for (const cue of usableCues) {
+  for (const cue of grouped) {
     if (!wordSync || !Array.isArray(cue.words) || cue.words.length === 0) {
       // Static cue: one event spanning the whole cue.
       const start = Math.max(0, Number(cue.start) || 0);
@@ -450,6 +514,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     outputAspect = "9:16",
     captionX = null,
     captionY = null,
+    captionWords = 0,
+    captionWidth = 0,
     textOverlays = [],
     videoScale = 100,
     videoX = 0,
@@ -483,6 +549,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionSize,
       captionX,
       captionY,
+      captionWords,
+      captionWidth,
       textOverlays,
       durationSeconds,
       width,

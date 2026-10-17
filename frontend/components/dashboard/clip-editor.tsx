@@ -103,6 +103,8 @@ interface TextOverlay {
   x: number;
   y: number;
   size: number;
+  /** Wrap width as % of canvas width (default 90) — same math as the render. */
+  width?: number;
   color: string;
   bold: boolean;
   bg: boolean;
@@ -119,6 +121,51 @@ function formatClock(seconds: number) {
 function formatShort(seconds: number) {
   const s = Math.max(0, Math.round(seconds));
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
+
+/**
+ * "Words per screen" — flatten every cue into timed words (cues without word
+ * timings get times spread proportionally to word length) and re-chunk into
+ * groups of N words. Display-only: the edited cue text is untouched and the
+ * renderer regroups the same way from caption_words.
+ */
+function regroupCuesForDisplay(cues: SrtCue[], n: number): SrtCue[] {
+  if (!Number.isFinite(n) || n < 1) return cues;
+  const words: { word: string; start: number; end: number }[] = [];
+  for (const c of cues) {
+    const raw = c.text.trim().split(/\s+/).filter(Boolean);
+    if (raw.length === 0) continue;
+    const timed =
+      Array.isArray(c.words) && c.words.length > 0
+        ? c.words.map((w) => ({ word: w.word, start: w.start, end: w.end }))
+        : [];
+    if (timed.length > 0) {
+      words.push(...timed);
+    } else {
+      const start = Math.max(0, c.start);
+      const dur = Math.max(0.3, c.end - start);
+      const total = raw.reduce((s, w) => s + w.length, 0) || 1;
+      let t = start;
+      for (const w of raw) {
+        const d = (w.length / total) * dur;
+        words.push({ word: w, start: t, end: t + d });
+        t += d;
+      }
+    }
+  }
+  const out: SrtCue[] = [];
+  for (let i = 0; i < words.length; i += n) {
+    const chunk = words.slice(i, i + n);
+    if (chunk.length === 0) continue;
+    out.push({
+      id: `grp-${i}`,
+      start: chunk[0].start,
+      end: chunk[chunk.length - 1].end,
+      text: chunk.map((w) => w.word).join(" "),
+      words: chunk,
+    });
+  }
+  return out.length > 0 ? out : cues;
 }
 
 export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: string }) {
@@ -156,6 +203,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const snapRef = useRef({ x: false, y: false });
   const [position, setPosition] = useState<CaptionPosition>("bottom");
   const [size, setSize] = useState(0); // 0 = template default
+  // "Words per screen": regroup caption words into blocks of N words
+  // (0 = off — show each caption line as edited). Preview and the local
+  // render regroup identically from the saved caption_words field.
+  const [wordsPerCue, setWordsPerCue] = useState(0);
+  // Caption wrap width as % of canvas width (CapCut-style wider text box).
+  const [capWidth, setCapWidth] = useState(90);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
   const [blur, setBlur] = useState(true);
@@ -243,6 +296,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
         setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
         setSize(Number(found.caption_size) || 0);
+        setWordsPerCue(
+          Math.min(12, Math.max(0, Math.round(Number((found as any).caption_words) || 0)))
+        );
+        setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
         setVideoFit(found.video_fit === "contain" ? "contain" : "cover");
         setBlur(found.video_background_blur !== false);
@@ -265,6 +322,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 x: clamp(Number(o?.x) || 50, 2, 98),
                 y: clamp(Number(o?.y) || 50, 2, 98),
                 size: clamp(Number(o?.size) || 5, 1, 20),
+                width: clamp(Number(o?.width) || 90, 20, 100),
                 color: typeof o?.color === "string" && o.color ? o.color : "#ffffff",
                 bold: o?.bold !== false,
                 bg: o?.bg === true,
@@ -930,6 +988,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             ? { caption_x: Number(capX.toFixed(2)), caption_y: Number(capY.toFixed(2)) }
             : {}),
           caption_size: size,
+          caption_words: wordsPerCue,
+          caption_width: capWidth,
           video_scale: videoScale,
           video_x: Number(videoX.toFixed(2)),
           video_y: Number(videoY.toFixed(2)),
@@ -938,6 +998,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             x: Number(o.x.toFixed(2)),
             y: Number(o.y.toFixed(2)),
             size: Number(o.size.toFixed(2)),
+            width: Number((o.width ?? 90).toFixed(2)),
           })),
           output_aspect: aspect,
           video_fit: videoFit,
@@ -991,6 +1052,19 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const t = clipTime;
     return cues.find((c) => t >= c.start - 0.05 && t <= c.end + 0.05) ?? null;
   }, [cues, clipTime]);
+  // Words-per-screen display cues (see regroupCuesForDisplay) — only the
+  // live caption overlay uses these; the caption editor keeps the original
+  // lines so text edits stay per-line.
+  const displayCues = useMemo(
+    () => (wordsPerCue > 0 ? regroupCuesForDisplay(cues, wordsPerCue) : cues),
+    [cues, wordsPerCue]
+  );
+  const displayCue = useMemo(() => {
+    if (wordsPerCue <= 0) return activeCue;
+    return (
+      displayCues.find((c) => clipTime >= c.start - 0.05 && clipTime <= c.end + 0.05) ?? null
+    );
+  }, [displayCues, activeCue, clipTime, wordsPerCue]);
 
   // Music search filter (client-side over the loaded catalog page).
   const musicFiltered = useMemo(() => {
@@ -1218,10 +1292,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
               {/* Live caption overlay — karaoke with word animations, fully
                   draggable + scalable CapCut-style (box appears on hover) */}
-              {activeCue?.text.trim() && (
+              {displayCue?.text.trim() && (
                 <div
-                  key={activeCue.id}
-                  className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
+                  key={displayCue.id}
+                  className="pointer-events-none absolute inset-x-0 flex justify-center text-center"
                   style={{
                     fontFamily: fontDef.cssVar,
                     ...(captionAnim === "slideUp"
@@ -1254,6 +1328,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     )}
                     style={{
                       fontSize: `${previewFontSize}px`,
+                      maxWidth:
+                        canvasPx.w > 0
+                          ? `${((capWidth / 100) * canvasPx.w).toFixed(1)}px`
+                          : `${capWidth}%`,
                       lineHeight: 1.15,
                       fontWeight: 800,
                       ...(stroke
@@ -1270,10 +1348,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   >
                     {(() => {
                       const cueWords =
-                        Array.isArray(activeCue.words) && activeCue.words.length > 0
-                          ? activeCue.words
+                        Array.isArray(displayCue.words) && displayCue.words.length > 0
+                          ? displayCue.words
                           : null;
-                      if (!cueWords) return activeCue.text;
+                      if (!cueWords) return displayCue.text;
                       const activeIdx = cueWords.findIndex(
                         (w) => clipTime >= w.start - 0.05 && clipTime <= w.end + 0.05
                       );
@@ -1334,7 +1412,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       setTab("text");
                     }}
                     className={cn(
-                      "pointer-events-auto inline-block whitespace-pre rounded-md px-1.5 py-0.5 touch-none select-none",
+                      "pointer-events-auto inline-block whitespace-pre-wrap rounded-md px-1.5 py-0.5 touch-none select-none",
                       ovDragging && selectedOverlayId === ov.id
                         ? "cursor-grabbing"
                         : "cursor-grab",
@@ -1347,6 +1425,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         CAPTION_FONTS.find((f) => f.key === ov.font) ?? CAPTION_FONTS[0]
                       ).cssVar,
                       fontSize: `${(ov.size / 100) * canvasPx.h}px`,
+                      maxWidth:
+                        canvasPx.w > 0
+                          ? `${(((ov.width ?? 90) / 100) * canvasPx.w).toFixed(1)}px`
+                          : `${ov.width ?? 90}%`,
                       lineHeight: 1.2,
                       fontWeight: ov.bold ? 800 : 500,
                       color: ov.color,
@@ -1768,6 +1850,53 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
 
                 <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Words per screen
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">
+                      {wordsPerCue > 0 ? `${wordsPerCue} word${wordsPerCue === 1 ? "" : "s"}` : "Off"}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={12}
+                    step={1}
+                    value={wordsPerCue > 0 ? wordsPerCue : 1}
+                    onChange={(e) => setWordsPerCue(Number(e.target.value))}
+                    onDoubleClick={() => setWordsPerCue(0)}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Words per screen"
+                  />
+                  <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                    Show N words at a time · double-click the slider to turn off
+                  </p>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Caption width
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">{capWidth}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={30}
+                    max={100}
+                    step={5}
+                    value={capWidth}
+                    onChange={(e) => setCapWidth(Number(e.target.value))}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Caption width"
+                  />
+                  <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                    How wide the caption box gets before text wraps
+                  </p>
+                </div>
+
+                <div>
                   <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
                     Text colour
                   </p>
@@ -1902,6 +2031,29 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                               }
                               className="h-1 w-full accent-primary-500"
                               aria-label="Overlay size"
+                            />
+                          </div>
+
+                          <div>
+                            <div className="flex items-baseline justify-between pb-1">
+                              <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                                Width
+                              </p>
+                              <span className="text-[10px] tabular-nums text-zinc-500">
+                                {selectedOverlay.width ?? 90}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={20}
+                              max={100}
+                              step={5}
+                              value={selectedOverlay.width ?? 90}
+                              onChange={(e) =>
+                                patchOverlay(selectedOverlay.id, { width: Number(e.target.value) })
+                              }
+                              className="h-1 w-full accent-primary-500"
+                              aria-label="Overlay width"
                             />
                           </div>
                           <div className="flex flex-wrap items-center gap-2">

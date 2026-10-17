@@ -63,6 +63,11 @@ const effectShape = {
   // Free caption placement (% of canvas; null/omitted = preset placement).
   caption_x: z.coerce.number().finite().min(0).max(100).nullable().optional(),
   caption_y: z.coerce.number().finite().min(0).max(100).nullable().optional(),
+  // "Words per screen": regroup caption words into blocks of N (0 = show
+  // the SRT lines as edited).
+  caption_words: z.coerce.number().int().min(0).max(12).optional(),
+  // Caption wrap width as % of canvas width (20-100).
+  caption_width: z.coerce.number().finite().min(20).max(100).optional(),
   // Video zoom (50-300%) + pan offsets (% of canvas).
   video_scale: z.coerce.number().finite().min(50).max(300).optional(),
   video_x: z.coerce.number().finite().min(-100).max(100).optional(),
@@ -80,6 +85,7 @@ const effectShape = {
         color: z.string().regex(HEX_COLOR).optional(),
         bold: z.boolean().optional(),
         bg: z.boolean().optional(),
+        width: z.coerce.number().finite().min(20).max(100).optional(),
       })
     )
     .max(10)
@@ -276,6 +282,8 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "video_fit",
       "caption_x",
       "caption_y",
+      "caption_words",
+      "caption_width",
       "video_scale",
       "video_x",
       "video_y",
