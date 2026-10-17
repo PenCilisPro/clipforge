@@ -40,6 +40,7 @@ export interface Project {
   caption_style?: Clip["caption_style"];
   caption_font?: Clip["caption_font"];
   caption_color?: string;
+  caption_anim?: string | null;   // ← add this line
   caption_stroke?: boolean;
   caption_stroke_color?: string;
   caption_stroke_size?: number;
