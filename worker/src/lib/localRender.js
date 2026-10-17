@@ -399,6 +399,51 @@ async function ensureWatermark(url) {
   return dest;
 }
 
+/**
+ * Fetch a remote input to a local file BEFORE the encode starts, with
+ * retries. ffmpeg's own DNS/TLS stack is the flakiest link in the chain —
+ * VPN'd hosts, filtered DNS (Pi-hole/AdGuard can NXDOMAIN
+ * cloudflarestorage.com) and proxy-only networks all surface as "Failed
+ * to resolve hostname ... System error" — and a mid-render stream drop
+ * ruins the whole encode. Node fetches instead (the same helper the fonts
+ * and the watermark use); ffmpeg then reads plain local files, so the
+ * encode path never touches the network.
+ */
+async function fetchToTmp(url, label) {
+  const raw = String(url);
+  // Already-local input (plain path): pass through untouched — nothing to fetch.
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  const parsed = new URL(raw);
+  const ext = path.extname(parsed.pathname) || ".mp4";
+  const dest = tmpPath(
+    `in-${crypto.createHash("sha1").update(String(url)).digest("hex").slice(0, 12)}${ext}`
+  );
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await downloadToFile(String(url), dest);
+      return dest;
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      // Node's fetch (undici) flattens DNS failures to "fetch failed" and
+      // hides ENOTFOUND on err.cause — classify on both.
+      const cause = err && err.cause ? String(err.cause.code || err.cause.message || "") : "";
+      if (attempt >= 3) {
+        if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|Failed to resolve/i.test(`${msg} ${cause}`)) {
+          throw new Error(
+            `The worker machine could not reach ${parsed.hostname} (DNS lookup failed after 3 tries: ${msg}). ` +
+              `That is the machine's network, not ClipForge: disable VPN/proxy for the worker, ` +
+              `check DNS filters (Pi-hole/AdGuard can block cloudflarestorage.com), ` +
+              `or point the machine's DNS at 1.1.1.1 / 8.8.8.8.`
+          );
+        }
+        throw new Error(`Could not download the ${label} after 3 tries: ${msg}`);
+      }
+      console.warn(`[local-render] ${label} download failed (attempt ${attempt}/3): ${msg} — retrying`);
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+    }
+  }
+}
+
 function fmt(n) {
   return (Math.round(n * 1000) / 1000).toString();
 }
@@ -573,10 +618,20 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     .slice(0, 6);
 
   // -ss before -i is frame-accurate here because the output is re-encoded.
-  const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", String(sourceVideoUrl)];
+  // Remote inputs are fetched to TMP first (fetchToTmp): ffmpeg reads
+  // local files only, so its fragile DNS/TLS path never touches the
+  // encode and a short DNS hiccup retries instead of killing the render.
+  const remoteLocals = [];
+  const sourceLocal = await fetchToTmp(sourceVideoUrl, "source video");
+  remoteLocals.push(sourceLocal);
+  const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", sourceLocal];
 // -ss before -i is frame-accurate here (output is re-encoded) and stops the
 // overlay queue from buffering the b-roll from t=0.
-for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", String(b.src));
+for (const b of broll) {
+  const bLocal = await fetchToTmp(b.src, "b-roll clip");
+  remoteLocals.push(bLocal);
+  inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", bLocal);
+}
 
   let watermarkInput = null;
   let wmLocalPath = null;
@@ -590,7 +645,9 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i
   const useMusic = withMusic && musicTrack?.url;
   if (useMusic) {
     musicInput = 1 + broll.length + (watermarkInput != null ? 1 : 0);
-    inputs.push("-stream_loop", "-1", "-i", String(musicTrack.url));
+    const musicLocal = await fetchToTmp(musicTrack.url, "music track");
+    remoteLocals.push(musicLocal);
+    inputs.push("-stream_loop", "-1", "-i", musicLocal);
   }
 
   const graphFileRel = `graph-${path.basename(outputRel, ".mp4")}.txt`;
@@ -645,7 +702,7 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i
   try {
     await runFfmpeg(args, { cwd: TMP_DIR });
   } finally {
-    await cleanup(path.join(TMP_DIR, assRel), path.join(TMP_DIR, graphFileRel), wmLocalPath);
+    await cleanup(path.join(TMP_DIR, assRel), path.join(TMP_DIR, graphFileRel), wmLocalPath, ...remoteLocals);
   }
 }
 
