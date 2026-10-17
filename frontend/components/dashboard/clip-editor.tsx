@@ -1128,6 +1128,27 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       {(activeCue?.text ?? "").length}/120
                     </span>
                   </div>
+                  <div>
+  <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+    Animations
+  </p>
+  <div className="grid grid-cols-3 gap-2">
+    {CAPTION_ANIMS.map((a) => (
+      <button
+        key={a.id}
+        onClick={() => setCaptionAnim(a.id)}
+        className={cn(
+          "rounded-lg border px-3 py-2 text-sm transition-colors",
+          captionAnim === a.id
+            ? "border-primary-500 bg-primary-500/10 text-primary-200"
+            : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
+        )}
+      >
+        {a.label}
+      </button>
+    ))}
+  </div>
+</div>
                   <input
                     value={activeCue?.text ?? ""}
                     onChange={(e) => updateActiveCue(e.target.value.slice(0, 120))}
