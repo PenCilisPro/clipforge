@@ -40,9 +40,9 @@ import type { Clip, Project } from "@/lib/types";
 import { CAPTION_FONTS } from "@/lib/types";
 import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
+import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anim";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
-import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anim";
 
 type Tab = "frame" | "text" | "brand" | "music";
 type CaptionPosition = "top" | "middle" | "bottom";
@@ -119,12 +119,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [resetSrt, setResetSrt] = useState(false);
   const [font, setFont] = useState("anton");
   const [textColor, setTextColor] = useState("#ffffff");
-  const [position, setPosition] = useState<CaptionPosition>("bottom");
-    const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
-    const [capX, setCapX] = useState<number | null>(null); // % across, null = preset mode
+  const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
+  const [capX, setCapX] = useState<number | null>(null); // % across, null = preset mode
   const [capY, setCapY] = useState<number | null>(null); // % down, null = preset mode
   const [dragging, setDragging] = useState(false);
+  const [scaling, setScaling] = useState(false);
+  const [capHover, setCapHover] = useState(false);
   const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+  const canvasBoxRef = useRef<HTMLDivElement | null>(null);
+  const pendingRef = useRef<{ x: number; y: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const scaleRef = useRef<{ size0: number; d0: number } | null>(null);
+  const pendingSizeRef = useRef<number | null>(null);
+  const rafSizeRef = useRef<number | null>(null);
+  const [position, setPosition] = useState<CaptionPosition>("bottom");
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -186,9 +194,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setPlayheadSource(Number(found.start_time));
         setFont(found.caption_font ?? "anton");
         setTextColor(found.caption_color ?? "#ffffff");
+        setCaptionAnim((found.caption_anim as CaptionAnimId) ?? "pop");
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
-        setCaptionAnim((found as any).caption_anim ?? "pop");
-        
         setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
         setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
         setSize(Number(found.caption_size) || 0);
@@ -346,6 +353,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setEndTime(end);
     setPlayheadSource((prev) => clamp(prev, start, end));
   }, []);
+
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  }
+
+  // ---------- Caption drag & scale (CapCut-style) ----------
+  // Drag: pointer capture + rAF-throttled state (one render per frame
+  // instead of one per mousemove — that was the lag).
   function onCaptionPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -358,25 +379,91 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   function onCaptionPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
     const d = dragRef.current;
-    const box = previewBoxRef.current?.getBoundingClientRect();
+    const box = canvasBoxRef.current?.getBoundingClientRect();
     if (!d || !box) return;
-    setCapX(clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96));
-    setCapY(clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96));
+    const nx = clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96);
+    const ny = clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96);
+    pendingRef.current = { x: nx, y: ny };
+    if (rafRef.current == null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const p = pendingRef.current;
+        if (!p) return;
+        setCapX(p.x);
+        setCapY(p.y);
+      });
+    }
   }
 
   function onCaptionPointerUp() {
     dragRef.current = null;
     setDragging(false);
-  }
-  function togglePlay() {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      video.play().catch(() => {});
-    } else {
-      video.pause();
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    const p = pendingRef.current;
+    pendingRef.current = null;
+    if (p) {
+      setCapX(p.x);
+      setCapY(p.y);
     }
   }
+
+  // Scale: drag the white handle — distance from the caption's anchor point
+  // maps to caption size (20–160), so it saves & renders with zero new wiring.
+  function captionAnchor() {
+    const box = canvasBoxRef.current?.getBoundingClientRect();
+    if (!box) return null;
+    const ax = capX ?? 50;
+    const ay = capY ?? (position === "top" ? 12 : position === "middle" ? 50 : 88);
+    return {
+      cx: box.left + box.width * (ax / 100),
+      cy: box.top + box.height * (ay / 100),
+    };
+  }
+
+  function onScalePointerDown(e: React.PointerEvent<HTMLSpanElement>) {
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const a = captionAnchor();
+    if (!a) return;
+    scaleRef.current = {
+      size0: size > 0 ? size : 60,
+      d0: Math.max(24, Math.hypot(e.clientX - a.cx, e.clientY - a.cy)),
+    };
+    setScaling(true);
+  }
+
+  function onScalePointerMove(e: React.PointerEvent<HTMLSpanElement>) {
+    const s = scaleRef.current;
+    const a = captionAnchor();
+    if (!s || !a) return;
+    const d = Math.hypot(e.clientX - a.cx, e.clientY - a.cy);
+    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 20, 160);
+    if (rafSizeRef.current == null) {
+      rafSizeRef.current = requestAnimationFrame(() => {
+        rafSizeRef.current = null;
+        if (pendingSizeRef.current == null) return;
+        setSize(pendingSizeRef.current);
+      });
+    }
+  }
+
+  function onScalePointerUp() {
+    scaleRef.current = null;
+    setScaling(false);
+    if (rafSizeRef.current != null) {
+      cancelAnimationFrame(rafSizeRef.current);
+      rafSizeRef.current = null;
+    }
+    if (pendingSizeRef.current != null) {
+      setSize(pendingSizeRef.current);
+      pendingSizeRef.current = null;
+    }
+  }
+
 
   function stepFrame(dir: 1 | -1) {
     const video = videoRef.current;
@@ -583,7 +670,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     try {
       await apiFetch(`/api/clips/${clip.id}/edit`, {
         method: "POST",
-                body: {
+        body: {
           ...(nameDirtyRef.current ? { title: name.trim().slice(0, 200) } : {}),
           caption_font: font,
           caption_color: textColor,
@@ -613,7 +700,6 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 : { srt_content: cuesToSrtText(cues) }),
         },
       });
-      
       toast.success("Saved — re-render started", {
         description:
           dropped > 0
@@ -789,6 +875,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             className="relative flex min-h-0 flex-1 items-center justify-center"
           >
             <div
+              ref={canvasBoxRef}
               className="relative overflow-hidden rounded-lg bg-black shadow-2xl"
               style={{
                 aspectRatio: `${dims.w} / ${dims.h}`,
@@ -838,27 +925,42 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-              {/* Live caption overlay — karaoke word-pop when the cue carries
-                  word timings (auto-filled cues from the transcript do) */}
+              {/* Live caption overlay — karaoke with word animations, fully
+                  draggable + scalable CapCut-style (box appears on hover) */}
               {activeCue?.text.trim() && (
                 <div
+                  key={activeCue.id}
                   className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
-                      style={{
+                  style={{
                     fontFamily: fontDef.cssVar,
+                    ...(captionAnim === "slideUp"
+                      ? { animation: "cfSlideUp 200ms ease-out" }
+                      : {}),
                     ...(capY == null
                       ? position === "top"
                         ? { top: "8%" }
                         : position === "middle"
                           ? { top: "50%", transform: "translateY(-50%)" }
                           : { bottom: "8%" }
-                      : { left: `${capX}%`, right: "auto", top: `${capY}%`, bottom: "auto", transform: "translate(-50%, -50%)" }),
+                      : {
+                          left: `${capX}%`,
+                          right: "auto",
+                          top: `${capY}%`,
+                          bottom: "auto",
+                          transform: "translate(-50%, -50%)",
+                        }),
                   }}
                 >
                   <span
                     onPointerDown={onCaptionPointerDown}
                     onPointerMove={onCaptionPointerMove}
                     onPointerUp={onCaptionPointerUp}
-                    className={cn("pointer-events-auto inline-block touch-none", dragging ? "cursor-grabbing" : "cursor-grab")}
+                    onMouseEnter={() => setCapHover(true)}
+                    onMouseLeave={() => setCapHover(false)}
+                    className={cn(
+                      "pointer-events-auto relative inline-block touch-none select-none",
+                      dragging || scaling ? "cursor-grabbing" : "cursor-grab"
+                    )}
                     style={{
                       fontSize: `${previewFontSize}px`,
                       lineHeight: 1.15,
@@ -886,22 +988,37 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       );
                       return cueWords.map((w, i) => (
                         <span
-  key={i}
-  style={{
-    color:
-      i === activeIdx
-        ? "#ff5d1c"
-        : textColor.toLowerCase() === "#ffffff"
-          ? "#d9d9d9"
-          : textColor,
-    transition: "color 80ms linear",
-  }}
->
-  {w.word}
-  {i < cueWords.length - 1 ? " " : ""}
-</span>
+                          key={i}
+                          style={{
+                            color:
+                              i === activeIdx
+                                ? "#ff5d1c"
+                                : textColor.toLowerCase() === "#ffffff"
+                                  ? "#d9d9d9"
+                                  : textColor,
+                            ...wordAnimStyle(captionAnim, i === activeIdx, activeIdx !== -1),
+                          }}
+                        >
+                          {w.word}
+                          {i < cueWords.length - 1 ? " " : ""}
+                        </span>
                       ));
                     })()}
+                    {(capHover || dragging || scaling) && (
+                      <>
+                        <span className="pointer-events-none absolute left-0 top-0 h-3.5 w-3.5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                        <span className="pointer-events-none absolute right-0 top-0 h-3.5 w-3.5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                        <span className="pointer-events-none absolute bottom-0 left-0 h-3.5 w-3.5 border-b-[3px] border-l-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                        <span className="pointer-events-none absolute bottom-0 right-0 h-3.5 w-3.5 border-b-[3px] border-r-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                        <span
+                          onPointerDown={onScalePointerDown}
+                          onPointerMove={onScalePointerMove}
+                          onPointerUp={onScalePointerUp}
+                          className="pointer-events-auto absolute -bottom-2.5 -right-2.5 h-4 w-4 rounded-full border-2 border-black/70 bg-white shadow-md touch-none"
+                          style={{ cursor: "nwse-resize" }}
+                        />
+                      </>
+                    )}
                   </span>
                 </div>
               )}
@@ -1295,6 +1412,30 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                   <p className="pt-1.5 text-[10px] text-zinc-600">
                     White keeps the caption template's own default colour
+                  </p>
+                </div>
+                <div>
+                  <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                    Animation
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {CAPTION_ANIMS.map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setCaptionAnim(a.id)}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+                          captionAnim === a.id
+                            ? "border-primary-500 bg-primary-500/10 text-primary-200"
+                            : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/20"
+                        )}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pt-1.5 text-[10px] text-zinc-600">
+                    How caption words behave while they are spoken
                   </p>
                 </div>
               </div>
