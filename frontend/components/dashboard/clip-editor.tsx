@@ -42,6 +42,7 @@ import { cuesToSrtText, parseSrt, type SrtCue } from "@/lib/srt-client";
 import { clamp, cuesFromTranscript, MIN_CLIP_SECONDS } from "@/lib/timeline";
 import { cn, uuid } from "@/lib/utils";
 import { ClipTimeline } from "@/components/dashboard/clip-timeline";
+import { CAPTION_ANIMS, wordAnimStyle, type CaptionAnimId } from "@/lib/caption-anim";
 
 type Tab = "frame" | "text" | "brand" | "music";
 type CaptionPosition = "top" | "middle" | "bottom";
@@ -119,6 +120,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [font, setFont] = useState("anton");
   const [textColor, setTextColor] = useState("#ffffff");
   const [position, setPosition] = useState<CaptionPosition>("bottom");
+    const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
+    const [capX, setCapX] = useState<number | null>(null); // % across, null = preset mode
+  const [capY, setCapY] = useState<number | null>(null); // % down, null = preset mode
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -181,6 +187,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setFont(found.caption_font ?? "anton");
         setTextColor(found.caption_color ?? "#ffffff");
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
+        setCaptionAnim((found as any).caption_anim ?? "pop");
+        
+        setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
+        setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
         setSize(Number(found.caption_size) || 0);
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
         setVideoFit(found.video_fit === "contain" ? "contain" : "cover");
@@ -336,7 +346,28 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setEndTime(end);
     setPlayheadSource((prev) => clamp(prev, start, end));
   }, []);
+  function onCaptionPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const y0 = capY ?? (position === "top" ? 12 : position === "middle" ? 50 : 90);
+    dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
+    setCapX(capX ?? 50);
+    setCapY(y0);
+    setDragging(true);
+  }
 
+  function onCaptionPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
+    const d = dragRef.current;
+    const box = previewBoxRef.current?.getBoundingClientRect();
+    if (!d || !box) return;
+    setCapX(clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96));
+    setCapY(clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96));
+  }
+
+  function onCaptionPointerUp() {
+    dragRef.current = null;
+    setDragging(false);
+  }
   function togglePlay() {
     const video = videoRef.current;
     if (!video) return;
@@ -552,11 +583,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     try {
       await apiFetch(`/api/clips/${clip.id}/edit`, {
         method: "POST",
-        body: {
+                body: {
           ...(nameDirtyRef.current ? { title: name.trim().slice(0, 200) } : {}),
           caption_font: font,
           caption_color: textColor,
+          caption_anim: captionAnim,
           caption_position: position,
+          ...(capX != null && capY != null
+            ? { caption_x: Number(capX.toFixed(2)), caption_y: Number(capY.toFixed(2)) }
+            : {}),
           caption_size: size,
           output_aspect: aspect,
           video_fit: videoFit,
@@ -578,6 +613,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 : { srt_content: cuesToSrtText(cues) }),
         },
       });
+      
       toast.success("Saved — re-render started", {
         description:
           dropped > 0
@@ -807,16 +843,22 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               {activeCue?.text.trim() && (
                 <div
                   className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
-                  style={{
+                      style={{
                     fontFamily: fontDef.cssVar,
-                    ...(position === "top"
-                      ? { top: "8%" }
-                      : position === "middle"
-                        ? { top: "50%", transform: "translateY(-50%)" }
-                        : { bottom: "8%" }),
+                    ...(capY == null
+                      ? position === "top"
+                        ? { top: "8%" }
+                        : position === "middle"
+                          ? { top: "50%", transform: "translateY(-50%)" }
+                          : { bottom: "8%" }
+                      : { left: `${capX}%`, right: "auto", top: `${capY}%`, bottom: "auto", transform: "translate(-50%, -50%)" }),
                   }}
                 >
                   <span
+                    onPointerDown={onCaptionPointerDown}
+                    onPointerMove={onCaptionPointerMove}
+                    onPointerUp={onCaptionPointerUp}
+                    className={cn("pointer-events-auto inline-block touch-none", dragging ? "cursor-grabbing" : "cursor-grab")}
                     style={{
                       fontSize: `${previewFontSize}px`,
                       lineHeight: 1.15,
@@ -1217,8 +1259,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                   <input
                     type="range"
-                    min={30}
-                    max={120}
+                    min={20}
+                    max={160}
                     step={1}
                     value={size > 0 ? size : 60}
                     onChange={(e) => {
