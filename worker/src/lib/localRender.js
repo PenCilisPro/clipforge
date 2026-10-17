@@ -128,6 +128,7 @@ export function buildAssSubtitles({
   captionY = null,
   captionWords = 0,
   captionWidth = 0,
+  captionLetterSpacing = 0,
   textOverlays = [],
   durationSeconds = 0,
   width = 1080,
@@ -184,10 +185,16 @@ export function buildAssSubtitles({
   const capWrapPct = Number(captionWidth) > 0 ? clampNum(captionWidth, 20, 100, 90) : 0;
   const capMarginLR = capWrapPct > 0 ? Math.round((width * (100 - capWrapPct)) / 200) : 0;
 
-  const fspPx = def.letterSpacingPct
-    ? Math.round((parseFloat(def.letterSpacingPct) / 100) * fontSize * 10) / 10
-    : 0;
-  const fspTag = fspPx > 0 ? `{\\fsp${fspPx}}` : "";
+  // Letter spacing: the editor's caption_letter_spacing (percent of the
+  // caption font size, -10..100) overrides the style preset's own
+  // letterSpacingPct; 0/omitted keeps the preset look. \fsp accepts
+  // negatives (tighter tracking), matching the preview's CSS letter-spacing.
+  const lsPct =
+    Number(captionLetterSpacing) !== 0
+      ? clampNum(Number(captionLetterSpacing), -10, 100, 0)
+      : parseFloat(def.letterSpacingPct || 0) || 0;
+  const fspPx = lsPct ? Math.round((lsPct / 100) * fontSize * 10) / 10 : 0;
+  const fspTag = fspPx !== 0 ? `{\\fsp${fspPx}}` : "";
   const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
 
   const header = [
@@ -516,6 +523,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionY = null,
     captionWords = 0,
     captionWidth = 0,
+    captionLetterSpacing = 0,
     textOverlays = [],
     videoScale = 100,
     videoX = 0,
@@ -551,6 +559,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionY,
       captionWords,
       captionWidth,
+      captionLetterSpacing,
       textOverlays,
       durationSeconds,
       width,

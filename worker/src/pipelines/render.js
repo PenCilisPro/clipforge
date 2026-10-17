@@ -171,6 +171,8 @@ export async function processRender(job) {
       // "Words per screen" regrouping + caption wrap width (% of canvas).
       captionWords: Math.round(Number(clip.caption_words)) || 0,
       captionWidth: Number(clip.caption_width) || 0,
+      // Letter spacing as % of caption font size (0 = style default).
+      captionLetterSpacing: Number(clip.caption_letter_spacing) || 0,
       textOverlays: Array.isArray(clip.text_overlays) ? clip.text_overlays : [],
       videoScale: Number(clip.video_scale) || 100,
       videoX: Number(clip.video_x ?? 0),

@@ -157,6 +157,8 @@ export interface Clip {
   caption_words?: number | null;
   /** Caption wrap width as % of canvas width. */
   caption_width?: number | null;
+  /** Caption letter spacing as % of caption font size (0 = style default). */
+  caption_letter_spacing?: number | null;
   /** Standalone draggable text overlays rendered above the video. */
   text_overlays?: TextOverlay[] | null;
   srt_override: string | null;

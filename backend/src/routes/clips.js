@@ -68,6 +68,9 @@ const effectShape = {
   caption_words: z.coerce.number().int().min(0).max(12).optional(),
   // Caption wrap width as % of canvas width (20-100).
   caption_width: z.coerce.number().finite().min(20).max(100).optional(),
+  // Caption letter spacing as % of the caption font size (-10..100, 0 =
+  // style default).
+  caption_letter_spacing: z.coerce.number().finite().min(-10).max(100).optional(),
   // Video zoom (50-300%) + pan offsets (% of canvas).
   video_scale: z.coerce.number().finite().min(50).max(300).optional(),
   video_x: z.coerce.number().finite().min(-100).max(100).optional(),
@@ -284,6 +287,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_y",
       "caption_words",
       "caption_width",
+      "caption_letter_spacing",
       "video_scale",
       "video_x",
       "video_y",
@@ -338,7 +342,8 @@ const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, output_aspect, " +
-  "video_fit, video_background_blur, caption_x, caption_y, video_scale, video_x, video_y, " +
+  "video_fit, video_background_blur, caption_x, caption_y, caption_words, caption_width, " +
+  "caption_letter_spacing, video_scale, video_x, video_y, " +
   "text_overlays, srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
@@ -449,6 +454,9 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         video_background_blur: clip.video_background_blur,
         caption_x: clip.caption_x,
         caption_y: clip.caption_y,
+        caption_words: clip.caption_words,
+        caption_width: clip.caption_width,
+        caption_letter_spacing: clip.caption_letter_spacing,
         video_scale: clip.video_scale,
         video_x: clip.video_x,
         video_y: clip.video_y,
@@ -538,6 +546,9 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         video_background_blur: clip.video_background_blur,
         caption_x: clip.caption_x,
         caption_y: clip.caption_y,
+        caption_words: clip.caption_words,
+        caption_width: clip.caption_width,
+        caption_letter_spacing: clip.caption_letter_spacing,
         video_scale: clip.video_scale,
         video_x: clip.video_x,
         video_y: clip.video_y,

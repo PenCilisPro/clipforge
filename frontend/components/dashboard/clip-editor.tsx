@@ -209,6 +209,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [wordsPerCue, setWordsPerCue] = useState(0);
   // Caption wrap width as % of canvas width (CapCut-style wider text box).
   const [capWidth, setCapWidth] = useState(90);
+  // Letter spacing for captions, as % of the caption font size (CapCut-style
+  // "Spacing"). 0 = off — the caption style keeps its own default spacing.
+  const [letterSpacing, setLetterSpacing] = useState(0);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
   const [blur, setBlur] = useState(true);
@@ -300,6 +303,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           Math.min(12, Math.max(0, Math.round(Number((found as any).caption_words) || 0)))
         );
         setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
+        setLetterSpacing(
+          Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_letter_spacing) || 0)))
+        );
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
         setVideoFit(found.video_fit === "contain" ? "contain" : "cover");
         setBlur(found.video_background_blur !== false);
@@ -990,6 +996,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           caption_size: size,
           caption_words: wordsPerCue,
           caption_width: capWidth,
+          caption_letter_spacing: letterSpacing,
           video_scale: videoScale,
           video_x: Number(videoX.toFixed(2)),
           video_y: Number(videoY.toFixed(2)),
@@ -1332,6 +1339,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         canvasPx.w > 0
                           ? `${((capWidth / 100) * canvasPx.w).toFixed(1)}px`
                           : `${capWidth}%`,
+                      letterSpacing: `${(letterSpacing / 100) * previewFontSize}px`,
+                      marginRight: `${(-letterSpacing / 100) * previewFontSize}px`,
                       lineHeight: 1.15,
                       fontWeight: 800,
                       ...(stroke
@@ -1893,6 +1902,31 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   />
                   <p className="pt-1 text-[10px] leading-snug text-zinc-600">
                     How wide the caption box gets before text wraps
+                  </p>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Letter spacing
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">
+                      {letterSpacing === 0 ? "Off" : `${letterSpacing}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-10}
+                    max={100}
+                    step={5}
+                    value={letterSpacing}
+                    onChange={(e) => setLetterSpacing(Number(e.target.value))}
+                    onDoubleClick={() => setLetterSpacing(0)}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Letter spacing"
+                  />
+                  <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                    Space between caption letters · double-click the slider to reset
                   </p>
                 </div>
 
