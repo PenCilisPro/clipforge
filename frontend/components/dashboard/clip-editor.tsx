@@ -298,7 +298,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
         setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
         setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
-        setSize(Number(found.caption_size) || 0);
+        // Self-heal tiny saved sizes: below ~40px on the 1080-wide canvas the
+        // caption is unreadable in renders (usually an accidental inward drag
+        // of the corner scale handle). 0 stays "Auto" (style-preset default).
+        const savedSize = Number(found.caption_size) || 0;
+        setSize(savedSize === 0 ? 0 : Math.max(40, savedSize));
         setWordsPerCue(
           Math.min(12, Math.max(0, Math.round(Number((found as any).caption_words) || 0)))
         );
@@ -600,7 +604,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const a = captionAnchor();
     if (!s || !a) return;
     const d = Math.hypot(e.clientX - a.cx, e.clientY - a.cy);
-    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 20, 160);
+    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 40, 160);
     if (rafSizeRef.current == null) {
       rafSizeRef.current = requestAnimationFrame(() => {
         rafSizeRef.current = null;
@@ -1844,7 +1848,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                   <input
                     type="range"
-                    min={20}
+                    min={40}
                     max={160}
                     step={1}
                     value={size > 0 ? size : 60}
