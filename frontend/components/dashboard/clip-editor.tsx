@@ -209,7 +209,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         }
 
         // Manual overrides show up directly; otherwise fetch the stored SRT.
-        if (!found.srt_override) {
+                // Manual overrides show up directly; otherwise prefer word-timed
+        // transcript auto-fill over the flat stored SRT.
+        if (!found.srt_override && !loaded.transcript_json?.words?.length) {
           try {
             const playback = await apiFetch<{ srt_url: string | null }>(
               `/api/clips/${clipId}/playback`
