@@ -113,6 +113,8 @@ export function buildAssSubtitles({
   captionShadowSize = 6,
   captionPosition = "bottom",
   captionSize = 0,
+  captionX = null,
+  captionY = null,
   width = 1080,
   height = 1920,
 }) {
@@ -136,13 +138,20 @@ export function buildAssSubtitles({
   const shadow = boxed ? 0 : shadowOn ? Math.min(Number(captionShadowSize) || 6, 12) : 3;
   const backColour = boxed ? assColor(def.background) : shadowColor;
 
-  // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
-  // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
-  // (matching the cloud providers' 8% offset); centered captions use 0.
+  // Caption placement: free-drag percentages from the editor win; otherwise
+  // ASS alignment numpad — 2 bottom-center, 5 mid-center, 8 top-center with
+  // MarginV pinning the block 8% inside the edge (matching cloud providers).
   const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
-  const alignment = captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
-  const marginV =
-    captionPosition === "middle" ? 0 : Math.round(height * 0.08);
+  const freePos =
+    captionX != null && captionY != null
+      ? {
+          x: Math.round(width * (Number(captionX) / 100)),
+          y: Math.round(height * (Number(captionY) / 100)),
+        }
+      : null;
+  const posTag = freePos ? `{\\pos(${freePos.x},${freePos.y})}` : "";
+  const alignment = freePos ? 5 : captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
+  const marginV = freePos ? 0 : captionPosition === "middle" ? 0 : Math.round(height * 0.08);
 
   const fspPx = def.letterSpacingPct
     ? Math.round((parseFloat(def.letterSpacingPct) / 100) * fontSize * 10) / 10
@@ -161,8 +170,6 @@ export function buildAssSubtitles({
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
-    // block inside the edge, matching the cloud providers' placement.
     `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
     "",
     "[Events]",
@@ -183,7 +190,7 @@ export function buildAssSubtitles({
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
   const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${blurTag}${fspTag}${body}`);
+    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${posTag}${blurTag}${fspTag}${body}`);
   };
 
   for (const cue of usableCues) {
@@ -360,6 +367,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
   await fs.writeFile(
     path.join(TMP_DIR, assRel),
     buildAssSubtitles({
+      captionPosition,
+      captionX,
+      captionY,
       captionCues,
       captionFontKey,
       captionStyle,
@@ -370,7 +380,6 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionStrokeSize,
       captionShadowColor,
       captionShadowSize,
-      captionPosition,
       captionSize,
       width,
       height,

@@ -161,6 +161,8 @@ export async function processRender(job) {
       // Caption placement (top/middle/bottom) + explicit px size (0 =
       // template default), and the output canvas aspect from the editor.
       captionPosition: clip.caption_position ?? "bottom",
+      captionX: clip.caption_x ?? null,
+      captionY: clip.caption_y ?? null,
       captionSize: Number(clip.caption_size) || 0,
       outputAspect: clip.output_aspect ?? "9:16",
     };

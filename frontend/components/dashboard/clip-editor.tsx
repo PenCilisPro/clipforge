@@ -121,6 +121,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [textColor, setTextColor] = useState("#ffffff");
   const [captionAnim, setCaptionAnim] = useState<CaptionAnimId>("pop");
   const [position, setPosition] = useState<CaptionPosition>("bottom");
+  const [capX, setCapX] = useState<number | null>(null); // % across, null = preset mode
+const [capY, setCapY] = useState<number | null>(null); // % down,  null = preset mode
+const [dragging, setDragging] = useState(false);
+const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -339,7 +343,26 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setEndTime(end);
     setPlayheadSource((prev) => clamp(prev, start, end));
   }, []);
-
+function onCaptionPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
+  e.stopPropagation();
+  e.currentTarget.setPointerCapture(e.pointerId);
+  const y0 = capY ?? (position === "top" ? 12 : position === "middle" ? 50 : 90);
+  dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
+  setCapX(capX ?? 50);
+  setCapY(y0);
+  setDragging(true);
+}
+function onCaptionPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
+  const d = dragRef.current;
+  const box = previewBoxRef.current?.getBoundingClientRect();
+  if (!d || !box) return;
+  setCapX(clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96));
+  setCapY(clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96));
+}
+function onCaptionPointerUp() {
+  dragRef.current = null;
+  setDragging(false);
+}
   function togglePlay() {
     const video = videoRef.current;
     if (!video) return;
@@ -809,20 +832,26 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               {/* Live caption overlay — karaoke word-pop when the cue carries
                   word timings (auto-filled cues from the transcript do) */}
               {activeCue?.text.trim() && (
-                <div
-                  className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
-                  style={{
-                    fontFamily: fontDef.cssVar,
-                    ...(position === "top"
-                      ? { top: "8%" }
-                      : position === "middle"
-                        ? { top: "50%", transform: "translateY(-50%)" }
-                        : { bottom: "8%" }),
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: `${previewFontSize}px`,
+  <div
+    className="pointer-events-none absolute inset-x-0 flex justify-center px-[5%] text-center"
+    style={{
+      fontFamily: fontDef.cssVar,
+      ...(capY == null
+        ? position === "top"
+          ? { top: "8%" }
+          : position === "middle"
+            ? { top: "50%", transform: "translateY(-50%)" }
+            : { bottom: "8%" }
+        : { left: `${capX}%`, right: "auto", top: `${capY}%`, bottom: "auto", transform: "translate(-50%, -50%)" }),
+    }}
+  >
+    <span
+      onPointerDown={onCaptionPointerDown}
+      onPointerMove={onCaptionPointerMove}
+      onPointerUp={onCaptionPointerUp}
+      className={cn("inline-block touch-none", dragging ? "cursor-grabbing" : "cursor-grab")}
+      style={{
+        fontSize: `${previewFontSize}px`,
                       lineHeight: 1.15,
                       fontWeight: 800,
                       ...(stroke
