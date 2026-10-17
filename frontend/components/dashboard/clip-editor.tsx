@@ -127,11 +127,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [capHover, setCapHover] = useState(false);
   const dragRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const canvasBoxRef = useRef<HTMLDivElement | null>(null);
-  const pendingRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingRef = useRef<{ x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
   const rafRef = useRef<number | null>(null);
   const scaleRef = useRef<{ size0: number; d0: number } | null>(null);
   const pendingSizeRef = useRef<number | null>(null);
   const rafSizeRef = useRef<number | null>(null);
+  const [guides, setGuides] = useState({ shift: false, x: false, y: false });
+  const snapRef = useRef({ x: false, y: false });
   const [position, setPosition] = useState<CaptionPosition>("bottom");
   const [size, setSize] = useState(0); // 0 = template default
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
@@ -375,6 +377,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setCapX(capX ?? 50);
     setCapY(y0);
     setDragging(true);
+    snapRef.current = { x: false, y: false };
   }
 
   function onCaptionPointerMove(e: React.PointerEvent<HTMLSpanElement>) {
@@ -383,7 +386,22 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     if (!d || !box) return;
     const nx = clamp(d.x + ((e.clientX - d.px) / box.width) * 100, 4, 96);
     const ny = clamp(d.y + ((e.clientY - d.py) / box.height) * 100, 4, 96);
-    pendingRef.current = { x: nx, y: ny };
+    // Shift = CapCut-style center guides: magnetic snap to the middle axes
+    // with a wider release threshold so the lock never flickers at the edge.
+    const SNAP = 1.2;
+    const RELEASE = 2.6;
+    let ux = nx;
+    let uy = ny;
+    let gx = false;
+    let gy = false;
+    if (e.shiftKey) {
+      const thrX = snapRef.current.x ? RELEASE : SNAP;
+      const thrY = snapRef.current.y ? RELEASE : SNAP;
+      if (Math.abs(nx - 50) <= thrX) { ux = 50; gx = true; }
+      if (Math.abs(ny - 50) <= thrY) { uy = 50; gy = true; }
+    }
+    snapRef.current = { x: gx, y: gy };
+    pendingRef.current = { x: ux, y: uy, gx, gy, sh: e.shiftKey };
     if (rafRef.current == null) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
@@ -391,6 +409,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         if (!p) return;
         setCapX(p.x);
         setCapY(p.y);
+        setGuides({ shift: p.sh, x: p.gx, y: p.gy });
       });
     }
   }
@@ -408,6 +427,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setCapX(p.x);
       setCapY(p.y);
     }
+    setGuides({ shift: false, x: false, y: false });
+    snapRef.current = { x: false, y: false };
   }
 
   // Scale: drag the white handle — distance from the caption's anchor point
@@ -925,6 +946,27 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
+              {/* Center guide lines — hold Shift while dragging to snap */}
+              {dragging && guides.shift && (
+                <>
+                  <div
+                    className={cn(
+                      "pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors duration-100",
+                      guides.x
+                        ? "bg-primary-400 shadow-[0_0_8px_rgba(255,93,28,0.9)]"
+                        : "bg-white/25"
+                    )}
+                  />
+                  <div
+                    className={cn(
+                      "pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-100",
+                      guides.y
+                        ? "bg-primary-400 shadow-[0_0_8px_rgba(255,93,28,0.9)]"
+                        : "bg-white/25"
+                    )}
+                  />
+                </>
+              )}
               {/* Live caption overlay — karaoke with word animations, fully
                   draggable + scalable CapCut-style (box appears on hover) */}
               {activeCue?.text.trim() && (
