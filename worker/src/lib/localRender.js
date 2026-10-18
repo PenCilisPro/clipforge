@@ -36,6 +36,14 @@ const FONT_HOST_RE = /(^|\.)((cdn\.jsdelivr\.net)|(fonts\.gstatic\.com))$/i;
 
 const RENDER_THREADS = Math.max(1, Number(process.env.RENDER_THREADS) || 1);
 
+// Remote https inputs get reconnect flags: a single dropped HTTP range read
+// (or a resolver blip mid-encode) otherwise sinks a render that streams a
+// long source for its whole duration. Same pattern extractRawPcm already
+// uses for the transcription extraction.
+const REMOTE_INPUT_FLAGS = [
+  "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
+];
+
 // Encode quality for the local provider. "fast" + CRF 18 is a clear sharpness
 // upgrade over the old veryfast/20 while staying within the 40-min job
 // ceiling on the constrained container (single-threaded, ~1.5-2x encode time).
@@ -393,10 +401,10 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     .slice(0, 6);
 
   // -ss before -i is frame-accurate here because the output is re-encoded.
-  const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", String(sourceVideoUrl)];
+  const inputs = ["-ss", fmt(sourceTrimSeconds), ...REMOTE_INPUT_FLAGS, "-i", String(sourceVideoUrl)];
 // -ss before -i is frame-accurate here (output is re-encoded) and stops the
 // overlay queue from buffering the b-roll from t=0.
-for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", String(b.src));
+for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...REMOTE_INPUT_FLAGS, "-i", String(b.src));
 
   let watermarkInput = null;
   let wmLocalPath = null;
@@ -470,6 +478,28 @@ export function buildRenderSpec(params) {
   return params;
 }
 
+// The container's resolver can fail in windows — ffmpeg then dies opening
+// the R2 input ("Failed to resolve hostname … System error") before reading
+// a single frame, while every SDK call keeps working because it rides warm
+// pooled connections. ffmpeg needs a fresh DNS lookup per render, so only
+// it sees the blip. Retry the attempt with backoff: cheap once the resolver
+// recovers, fast-fatal when it stays down (the job runner keeps its own
+// retries on top).
+const NET_OPEN_ERR_RE = /Failed to resolve hostname|Input\/output error/i;
+async function withNetRetry(run) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      if (attempt >= 3 || !NET_OPEN_ERR_RE.test(String(err?.message))) throw err;
+      console.warn(
+        `[local-render] input open failed (resolver blip?) — retrying ${attempt + 1}/3 in ${attempt * 15}s`
+      );
+      await new Promise((r) => setTimeout(r, attempt * 15000));
+    }
+  }
+}
+
 /**
  * Render the whole clip inline. Returns the local render id; the finished MP4
  * sits at <TMP_DIR>/render-<id>.mp4 until finalize moves it into R2.
@@ -490,7 +520,7 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const retryHeight = Math.round(height / 1.5 / 2) * 2;
 
   try {
-    await renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true });
+    await withNetRetry(() => renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true }));
   } catch (err) {
         if (/SIGKILL/i.test(err.message)) {
       console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
