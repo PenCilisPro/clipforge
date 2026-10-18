@@ -71,6 +71,8 @@ const effectShape = {
   // Caption letter spacing as % of the caption font size (-10..100, 0 =
   // style default).
   caption_letter_spacing: z.coerce.number().finite().min(-10).max(100).optional(),
+  // Caption animation preset from the editor Text tab (caption-anim.ts ids).
+  caption_anim: z.enum(["none", "pop", "bounce", "shake", "fade", "typewriter", "slideUp"]).optional(),
   // Video zoom (50-300%) + pan offsets (% of canvas).
   video_scale: z.coerce.number().finite().min(50).max(300).optional(),
   video_x: z.coerce.number().finite().min(-100).max(100).optional(),
@@ -288,6 +290,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_words",
       "caption_width",
       "caption_letter_spacing",
+      "caption_anim",
       "video_scale",
       "video_x",
       "video_y",
@@ -343,7 +346,7 @@ const CLIP_COPY_COLUMNS =
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, output_aspect, " +
   "video_fit, video_background_blur, caption_x, caption_y, caption_words, caption_width, " +
-  "caption_letter_spacing, video_scale, video_x, video_y, " +
+  "caption_letter_spacing, caption_anim, video_scale, video_x, video_y, " +
   "text_overlays, srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
@@ -457,6 +460,7 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_words: clip.caption_words,
         caption_width: clip.caption_width,
         caption_letter_spacing: clip.caption_letter_spacing,
+        caption_anim: clip.caption_anim,
         video_scale: clip.video_scale,
         video_x: clip.video_x,
         video_y: clip.video_y,
@@ -549,6 +553,7 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_words: clip.caption_words,
         caption_width: clip.caption_width,
         caption_letter_spacing: clip.caption_letter_spacing,
+        caption_anim: clip.caption_anim,
         video_scale: clip.video_scale,
         video_x: clip.video_x,
         video_y: clip.video_y,

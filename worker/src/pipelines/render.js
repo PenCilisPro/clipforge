@@ -173,6 +173,9 @@ export async function processRender(job) {
       captionWidth: Number(clip.caption_width) || 0,
       // Letter spacing as % of caption font size (0 = style default).
       captionLetterSpacing: Number(clip.caption_letter_spacing) || 0,
+      // Caption animation preset (editor Text tab). Defaults to pop — the
+      // editor's own load default — for clips saved before the field existed.
+      captionAnim: clip.caption_anim ?? "pop",
       textOverlays: Array.isArray(clip.text_overlays) ? clip.text_overlays : [],
       videoScale: Number(clip.video_scale) || 100,
       videoX: Number(clip.video_x ?? 0),

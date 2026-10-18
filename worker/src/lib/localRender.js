@@ -29,10 +29,10 @@ import os from "node:os";
  * Visual parity with the cloud providers: 1080x1920 output, either a
  * center-crop of the source (videoFit "cover") or the full frame letterboxed
  * over a blurred zoomed copy of itself (videoFit "contain"),
- * caption cues as ASS subtitles with word-sync accenting (one dialogue event
- * per spoken word, the active word recolored — same scheme as the Creatomate
- * text elements), b-roll cutaways full-screen with fades, music bed at 15%,
- * and the optional logo watermark.
+ * caption cues as ASS subtitles with word-sync highlighting and the editor's
+ * caption animations (pop/bounce/shake/fade/typewriter/slide-up — the same
+ * presets caption-anim.ts previews), b-roll cutaways full-screen with fades,
+ * music bed at 15%, and the optional logo watermark.
  */
 
 const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
@@ -132,12 +132,6 @@ function styleDef(style) {
   return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
 }
 
-/** Resolve text color — mirrors resolveTextColor in creatomate.js. */
-function resolveTextColor(style, textColor) {
-  const def = styleDef(style);
-  return textColor && textColor.toLowerCase() !== "#ffffff" ? textColor : def.color;
-}
-
 /**
  * Build the ASS subtitle file content. Cues with word timings produce one
  * dialogue event per spoken word (the event runs until the next word starts,
@@ -161,6 +155,7 @@ export function buildAssSubtitles({
   captionWords = 0,
   captionWidth = 0,
   captionLetterSpacing = 0,
+  captionAnim = "pop",
   textOverlays = [],
   durationSeconds = 0,
   width = 1080,
@@ -168,37 +163,47 @@ export function buildAssSubtitles({
 }) {
   const font = captionFont(captionFontKey);
   const def = styleDef(captionStyle);
-  const primary = assColor(resolveTextColor(captionStyle, captionTextColor));
-  const accentColor = assColor(def.accentColor ?? "#ffffff");
-  const dimTag = "{\\1a&H38&}"; // ~78% opacity on the text only
+  // Preview parity: the editor hardcodes the active word to #ff5d1c and the
+  // inactive words to #d9d9d9 (white text) / the picked color otherwise —
+  // the style presets' own text/accent colors are never previewed.
+  const popAccent = assColor("#ff5d1c");
+  const primary = assColor(
+    String(captionTextColor).toLowerCase() === "#ffffff" ? "#d9d9d9" : captionTextColor
+  );
 
   const strokeOn = captionStroke === true;
   const shadowOn = captionShadow === true;
   const outlineColor = assColor(captionStrokeColor || "#000000");
   const shadowColor = assColor(captionShadowColor || "#000000");
 
-  // Box styles render via BorderStyle 3 (opaque box in BackColour); text-only
-  // styles get an outline/shadow instead, with a soft classic-style shadow
-  // baked in for readability on bright footage.
-  const boxed = Boolean(def.background);
-  const borderStyle = boxed ? 3 : 1;
-  const outline = boxed ? 0 : strokeOn ? Math.min(Number(captionStrokeSize) || 4, 10) : 0;
-  const shadow = boxed ? 0 : shadowOn ? Math.min(Number(captionShadowSize) || 6, 12) : 3;
-  const backColour = boxed ? assColor(def.background) : shadowColor;
+  // Caption size parity: the editor previews Auto (0) as ~60px and self-heals
+  // saved sizes below 40 up to 40 on load — the render mirrors both so the
+  // burned size matches what the editor showed, not the raw saved row.
+  const sizeParam = captionSize > 0 ? Math.max(40, Math.round(Number(captionSize))) : 60;
+  const fontSize = resolveCaptionFontSize(captionStyle, sizeParam);
+
+  // Preview parity: text-only rendering (the editor preview draws no style
+  // box), so always BorderStyle 1. Stroke/shadow depths follow the preview's
+  // CSS math — stroke = size x fontPx / 256, shadow = size x fontPx / 192 —
+  // and no baked-in shadow when the toggle is off (the preview has none).
+  const outline = strokeOn
+    ? Math.max(1, Math.round((Math.min(Number(captionStrokeSize) || 4, 10) * fontSize) / 256))
+    : 0;
+  const shadow = shadowOn
+    ? Math.max(1, Math.round((Math.min(Number(captionShadowSize) || 6, 12) * fontSize) / 192))
+    : 0;
+  const backColour = shadowColor;
+  const borderStyle = 1;
 
   // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
   // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
   // (matching the cloud providers' 8% offset); centered captions use 0.
-  const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
   // Free-drag caption position (percent of canvas) overrides the preset
   // placement: alignment 5 (middle center) anchors the block on \pos(x, y),
   // so a saved caption_x/caption_y renders pixel-for-pixel like the preview.
-  const freePos =
-    captionX != null && captionY != null
-      ? `{\\pos(${Math.round(width * (clampNum(captionX, 0, 100) / 100))},${Math.round(
-          height * (clampNum(captionY, 0, 100) / 100)
-        )})}`
-      : "";
+  const posX = Math.round(width * (clampNum(captionX, 0, 100) / 100));
+  const posY = Math.round(height * (clampNum(captionY, 0, 100) / 100));
+  const freePos = captionX != null && captionY != null ? `{\\pos(${posX},${posY})}` : "";
   const alignment = freePos
     ? 5
     : captionPosition === "top"
@@ -214,8 +219,20 @@ export function buildAssSubtitles({
 
   // Caption wrap width (% of canvas) — per-event MarginL/R override the style
   // margins so lines wrap at the same width as the preview's caption box.
-  const capWrapPct = Number(captionWidth) > 0 ? clampNum(captionWidth, 20, 100, 90) : 0;
-  const capMarginLR = capWrapPct > 0 ? Math.round((width * (100 - capWrapPct)) / 200) : 0;
+  // Free-drag parity: the preview's absolutely-positioned caption box
+  // shrink-wraps to the canvas space right of its untransformed left edge,
+  // so its usable wrap width is min(captionWidth%, 100 - captionX%), still
+  // centered on the dragged point — asymmetric margins reproduce that.
+  const capWrapPct =
+    Number(captionWidth) > 0 ? clampNum(captionWidth, 20, 100, 90) : freePos ? 90 : 0;
+  let capMarginL = capWrapPct > 0 ? Math.round((width * (100 - capWrapPct)) / 200) : 0;
+  let capMarginR = capMarginL;
+  if (freePos && capWrapPct > 0) {
+    const cx = clampNum(captionX, 0, 100);
+    const wrapW = Math.min(capWrapPct, 100 - cx);
+    capMarginL = Math.max(0, Math.round((width * (cx - wrapW / 2)) / 100));
+    capMarginR = Math.max(0, Math.round((width * (100 - cx - wrapW / 2)) / 100));
+  }
 
   // Letter spacing: the editor's caption_letter_spacing (percent of the
   // caption font size, -10..100) overrides the style preset's own
@@ -228,6 +245,13 @@ export function buildAssSubtitles({
   const fspPx = lsPct ? Math.round((lsPct / 100) * fontSize * 10) / 10 : 0;
   const fspTag = fspPx !== 0 ? `{\\fsp${fspPx}}` : "";
   const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
+
+  // Caption animation — the editor Text tab's "Animation" picker, saved as
+  // caption_anim. Defaults to pop (the editor's own load default) so clips
+  // saved before the field was persisted animate exactly like the preview.
+  const ANIM_IDS = new Set(["none", "pop", "bounce", "shake", "fade", "typewriter", "slideup"]);
+  const animRaw = String(captionAnim ?? "pop").trim().toLowerCase();
+  const anim = ANIM_IDS.has(animRaw) ? animRaw : "pop";
 
   const header = [
     "[Script Info]",
@@ -242,7 +266,7 @@ export function buildAssSubtitles({
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
     // block inside the edge, matching the cloud providers' placement.
-    `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
+    `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},-1,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
   ];
 
   // Custom text overlays: one style + one full-duration \pos event each, on
@@ -350,8 +374,18 @@ export function buildAssSubtitles({
       ? cue.words.map((w) => assText(w.text))
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
-  const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,${capMarginLR},${capMarginLR},0,,${freePos}${blurTag}${fspTag}${body}`);
+  // Slide-up (slideUp) entrance: each cue block rises 40px over 200ms as it
+  // appears — via \move when the caption is free-dragged (anchor known), a
+  // quick fade-in otherwise. Only a cue's FIRST event animates; word events
+  // after it stay at rest, matching the preview's per-block key remount.
+  const pushEvent = (start, end, body, entrance = false) => {
+    const slideIn = anim === "slideup" && entrance;
+    const posPart = slideIn
+      ? freePos
+        ? `{\\move(${posX},${posY + 40},${posX},${posY},0,200)}`
+        : "{\\fad(200,0)}"
+      : freePos;
+    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,${capMarginL},${capMarginR},0,,${posPart}${blurTag}${fspTag}${body}`);
   };
 
   for (const cue of grouped) {
@@ -359,8 +393,8 @@ export function buildAssSubtitles({
       // Static cue: one event spanning the whole cue.
       const start = Math.max(0, Number(cue.start) || 0);
       const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
-      const words = wordsOf(cue).map((w) => (def.uppercase ? w.toUpperCase() : w));
-      pushEvent(start, end, words.join(" "));
+      const words = wordsOf(cue); // no text-transform: the preview never uppercases
+      pushEvent(start, end, words.join(" "), true);
       continue;
     }
     const cueEnd = Math.max(Number(cue.start) || 0, Number(cue.end) || 0);
@@ -374,16 +408,30 @@ export function buildAssSubtitles({
         Math.max(start + 0.08, nextStart ?? cueEnd),
         Math.max(cueEnd, start + 0.08)
       );
-      const words = wordsOf(cue).map((word) => (def.uppercase ? word.toUpperCase() : word));
+      const words = wordsOf(cue);
+      // Per-word ASS inline tags: every word carries its own full tag set, so
+      // the active word's color/scale never bleeds into its neighbours. The
+      // tags mirror caption-anim.ts's preview transforms.
       const body = words
         .map((word, j) => {
-          if (def.accent === "dim") {
-            return j === i ? word : `${dimTag}${word}{\\1a&H00&}`;
+          if (j === i) {
+            let tag = `{\\c${popAccent}`;
+            if (anim === "pop") tag += "\\fscx115\\fscy115";
+            else if (anim === "bounce") tag += "\\fscx125\\fscy125";
+            else if (anim === "shake")
+              tag +=
+                "\\t(0,75,\\frz1.6)\\t(75,150,\\frz-1.6)\\t(150,225,\\frz1.2)\\t(225,300,\\frz0)";
+            else if (anim === "fade" || anim === "typewriter") tag += "\\alpha&H00&";
+            return `${tag}}${word}`;
           }
-          return j === i ? `{\\c${accentColor}}${word}{\\c${primary}}` : word;
+          if (anim === "fade") return `{\\c${primary}\\alpha&H8C&}${word}`; // 45% opacity
+          if (anim === "typewriter") return `{\\c${primary}\\alpha&HFF&}${word}`; // hidden, keeps its space
+          if ((anim === "pop" || anim === "bounce") && j === i + 1)
+            return `{\\fscx100\\fscy100\\c${primary}}${word}`; // stop the scale bleed
+          return `{\\c${primary}}${word}`;
         })
         .join(" ");
-      pushEvent(start, end, body);
+      pushEvent(start, end, body, i === 0);
     }
   }
 
@@ -601,6 +649,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionWords = 0,
     captionWidth = 0,
     captionLetterSpacing = 0,
+    captionAnim = "pop",
     textOverlays = [],
     videoScale = 100,
     videoX = 0,
@@ -637,6 +686,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionWords,
       captionWidth,
       captionLetterSpacing,
+      captionAnim,
       textOverlays,
       durationSeconds,
       width,
