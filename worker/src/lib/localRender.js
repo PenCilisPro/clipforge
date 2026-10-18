@@ -58,6 +58,13 @@ const RENDER_PRESET = X264_PRESETS.has(requestedPreset) ? requestedPreset : "fas
 const RENDER_CRF = Math.min(30, Math.max(12, Number(process.env.RENDER_CRF) || 18));
 const RENDER_AUDIO_BITRATE = String(process.env.RENDER_AUDIO_BITRATE ?? "").trim() || "192k";
 
+// x264 lookahead frames. Each buffered frame costs ~10 MB of encoder RSS at
+// 1080x1920, so the constrained container runs 10 (down from the x264
+// default of 20 — measured ~19% less peak memory for the encode). Bigger
+// boxes can raise it via RENDER_LOOKAHEAD for marginally better rate
+// accuracy at scene cuts.
+const RENDER_LOOKAHEAD = Math.min(40, Math.max(0, Number(process.env.RENDER_LOOKAHEAD) || 10));
+
 /** "#rrggbb" / "rgba(...)" → ASS &HAABBGGRR (alpha 00 = opaque, FF = clear). */
 function assColor(value) {
   const raw = String(value).trim();
@@ -462,12 +469,7 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
   }
     args.push(
     "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF),
-    // Lookahead frames are the encoder's biggest RAM consumer at 1080x1920
-    // (~25 MB per frame): 20 → 10 measured 524 → 425 MB peak RSS with no
-    // visible quality change at CRF 18. The platform OOM-kills the whole pod
-    // mid-encode — long before the in-code SIGKILL fallback can fire — so the
-    // FIRST attempt has to fit the container. Override with RENDER_LOOKAHEAD.
-    "-x264-params", `rc-lookahead=${Number(process.env.RENDER_LOOKAHEAD) || 10}:sync-lookahead=0`,
+    "-x264-params", `rc-lookahead=${RENDER_LOOKAHEAD},sync-lookahead=0`,
     "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", RENDER_AUDIO_BITRATE,
     "-movflags", "+faststart",
@@ -507,15 +509,19 @@ async function withNetRetry(run) {
   }
 }
 
-// ffmpeg's DNS resolution fails deterministically in this container — the
-// static ffmpeg binary's resolver cannot look up ANY hostname (musl-based
-// Node resolves the same hosts fine the whole time, which is why every SDK
-// call keeps working). Retrying can't fix that, so ffmpeg must never resolve
-// a hostname at all: this loopback proxy fetches the real URLs with Node and
-// pipes the bytes straight through, and every remote input in the spec is
-// rewritten to a http://127.0.0.1 URL before ffmpeg sees it. Range requests
-// are forwarded, so -ss input seeking still lands on exact offsets. Nothing
-// is buffered to disk — memory stays flat regardless of source size.
+// ---------------------------------------------------------------- loopback
+// media proxy — ffmpeg does ZERO DNS from here on. The container's resolver
+// deterministically breaks for the static ffmpeg binary while Node's own
+// resolution keeps working (SDK traffic rides the same resolver fine), so
+// every remote input is rewritten to http://127.0.0.1:<port>/media?... — a
+// numeric IP needs no lookup. The proxy's Node fetch streams the real https
+// target through byte-for-byte: Range headers forwarded (so -ss input
+// seeking stays frame-accurate via 206/content-range), accept-encoding
+// identity (fetch would otherwise decompress gzip while the forwarded
+// content-length still described the compressed size → mid-stream
+// truncation), and a per-process random token so nothing else on the box
+// can use it. Pure pipe, zero buffering — the ~1 GiB temp-disk budget is
+// untouched.
 const PROXY_TOKEN = crypto.randomBytes(16).toString("hex");
 
 function startLocalProxy() {
@@ -532,10 +538,6 @@ function startLocalProxy() {
           res.writeHead(400).end();
           return;
         }
-        // Forward only the range header — it is all ffmpeg sends for seeks —
-        // and ask for an uncompressed body so the piped bytes and the
-        // forwarded content-length always agree (fetch decompresses gzip
-        // transparently, which would otherwise truncate the response).
         const headers = { "accept-encoding": "identity" };
         if (req.headers.range) headers.range = req.headers.range;
         const upstream = await fetch(target, { headers, redirect: "follow" });
@@ -548,9 +550,16 @@ function startLocalProxy() {
         res.writeHead(upstream.status, out);
         if (upstream.body) {
           const stream = Readable.fromWeb(upstream.body);
-          // If ffmpeg dies (OOM kill, timeout) the socket closes — abort the
-          // upstream download too instead of pulling the rest into the void.
+          // Client gone (OOM kill, ffmpeg crash, fallback teardown): abort the
+          // upstream download so no zombie transfer keeps pulling bytes.
           res.on("close", () => stream.destroy());
+          // pipe() does NOT forward errors — an upstream failure mid-stream
+          // would otherwise be an unhandled 'error' event and take the whole
+          // worker down with it. Log and end the response instead.
+          stream.on("error", (err) => {
+            console.warn(`[local-render] proxy stream failed: ${err?.message ?? err}`);
+            res.destroy();
+          });
           stream.pipe(res);
         } else {
           res.end();
@@ -566,25 +575,24 @@ function startLocalProxy() {
   });
 }
 
-/** Rewrite every remote media URL in the spec to a localhost proxy URL. */
+/** Rewrite every remote https input to its loopback proxy URL; local paths
+ *  (fonts, watermarks) pass through untouched. */
 function proxiedSpec(spec, proxy) {
   const port = proxy.address().port;
-  const toLocal = (url) => {
-    const raw = String(url ?? "");
-    if (!/^https:\/\//i.test(raw)) return raw;
+  const proxyUrl = (target) => {
+    const raw = String(target ?? "");
+    if (!/^https:\/\//i.test(raw)) return target;
     return `http://127.0.0.1:${port}/media?t=${PROXY_TOKEN}&u=${encodeURIComponent(raw)}`;
   };
-  return {
-    ...spec,
-    sourceVideoUrl: toLocal(spec.sourceVideoUrl),
-    brollClips: (Array.isArray(spec.brollClips) ? spec.brollClips : []).map((b) => ({
-      ...b,
-      src: toLocal(b.src),
-    })),
-    musicTrack: spec.musicTrack?.url
-      ? { ...spec.musicTrack, url: toLocal(spec.musicTrack.url) }
-      : spec.musicTrack,
-  };
+  const out = { ...spec };
+  out.sourceVideoUrl = proxyUrl(spec.sourceVideoUrl);
+  if (Array.isArray(out.brollClips)) {
+    out.brollClips = out.brollClips.map((b) => ({ ...b, src: proxyUrl(b.src) }));
+  }
+  if (out.musicTrack?.url) {
+    out.musicTrack = { ...out.musicTrack, url: proxyUrl(out.musicTrack.url) };
+  }
+  return out;
 }
 
 /**
@@ -607,16 +615,20 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const retryHeight = Math.round(height / 1.5 / 2) * 2;
 
   const proxy = await startLocalProxy();
+  const localSpec = proxiedSpec(spec, proxy);
+
+  // Progress heartbeat: the last line before ANY container death tells us
+  // exactly how far the encode got and what Node's own footprint was —
+  // without it an OOM kill or platform restart is indistinguishable from a
+  // silent hang.
+  const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    const rss = Math.round(process.memoryUsage().rss / 1048576);
+    console.log(`[local-render] encoding ${seconds}s — node RSS ${rss} MB`);
+  }, 15000);
+
   try {
-    const localSpec = proxiedSpec(spec, proxy);
-    // Crash-loop visibility: when the platform kills the whole pod mid-encode
-    // there is no error anywhere in the logs, so heartbeat the encode — the
-    // last line before a restart shows how far it got and what Node held.
-    const startedAt = Date.now();
-    const beat = setInterval(() => {
-      const rss = Math.round(process.memoryUsage().rss / 1048576);
-      console.log(`[local-render] encoding ${Math.round((Date.now() - startedAt) / 1000)}s — node RSS ${rss} MB`);
-    }, 15000);
     try {
       await withNetRetry(() => renderOnce(localSpec, outputRel, { width: 1080, height: 1920, withMusic: true }));
     } catch (err) {
@@ -624,19 +636,18 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
         console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
         await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
         await renderOnce(localSpec, outputRel, { width: retryWidth, height: retryHeight, withMusic: true });
-      } else if (spec.musicTrack?.url && /amix|0:a|Stream map/i.test(err.message)) {
+      } else if (localSpec.musicTrack?.url && /amix|0:a|Stream map/i.test(err.message)) {
         console.warn("[local-render] audio mix failed (source may have no audio track) — retrying without music");
         await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
         await renderOnce(localSpec, outputRel, { width, height, withMusic: false });
       } else {
         throw err;
       }
-    } finally {
-      clearInterval(beat);
     }
   } finally {
+    clearInterval(heartbeat);
     proxy.closeAllConnections?.();
-    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((r) => proxy.close(r));
   }
   return renderId;
 }
