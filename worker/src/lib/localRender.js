@@ -9,6 +9,8 @@ import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } fr
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import os from "node:os";
 
 /**
  * Local render provider — ffmpeg runs on the worker itself.
@@ -52,6 +54,36 @@ const requestedPreset = String(process.env.RENDER_PRESET ?? "").toLowerCase();
 const RENDER_PRESET = X264_PRESETS.has(requestedPreset) ? requestedPreset : "fast";
 const RENDER_CRF = Math.min(30, Math.max(12, Number(process.env.RENDER_CRF) || 18));
 const RENDER_AUDIO_BITRATE = String(process.env.RENDER_AUDIO_BITRATE ?? "").trim() || "192k";
+
+// ---- Low-memory mode -------------------------------------------------------
+// The encode shares its container with the backend, the worker and Redis. On
+// small instances the container gets OOM-killed mid-encode: the whole service
+// restarts and the clip is stranded on "Rendering" until recovery retries it
+// (into the same wall). The dominant avoidable consumer is the x264 ENCODER:
+// without an output-side -threads flag it spawns ~1.5 threads per CPU core,
+// and every thread holds frame buffers. The decode side was already capped;
+// the encoder never was. Low-memory mode caps encoder threads + lookahead —
+// both quality-neutral — whenever the effective container memory is small.
+// Force on with FFMPEG_LOW_MEM=1, force off with FFMPEG_LOW_MEM=0.
+function containerMemoryBytes() {
+  // os.totalmem() reports the HOST's RAM inside a container, so read the
+  // cgroup limit first (v2 then v1); fall back to os.totalmem().
+  try {
+    const v2 = readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim();
+    if (v2 && v2 !== "max") return Number(v2);
+  } catch {}
+  try {
+    const v1 = readFileSync("/sys/fs/cgroup/memory/memory.limit_in_bytes", "utf8").trim();
+    const n = Number(v1);
+    if (n > 0 && n < Number.MAX_SAFE_INTEGER) return n;
+  } catch {}
+  return os.totalmem();
+}
+
+const LOW_MEM_ENV = String(process.env.FFMPEG_LOW_MEM ?? "").trim();
+const LOW_MEM =
+  LOW_MEM_ENV === "1" ||
+  (LOW_MEM_ENV !== "0" && containerMemoryBytes() <= 2.5 * 1024 * 1024 * 1024);
 
 /** "#rrggbb" / "rgba(...)" → ASS &HAABBGGRR (alpha 00 = opaque, FF = clear). */
 function assColor(value) {
@@ -677,9 +709,12 @@ for (const b of broll) {
     await fs.writeFile(path.join(TMP_DIR, graphFileRel), graph, "utf8");
   }
 
+  if (LOW_MEM) {
+    console.log("[local-render] low-memory mode: encoder threads + lookahead capped (small container)");
+  }
   const args = [
    "-threads", String(Math.min(RENDER_THREADS, 4)),
-    "-filter_threads", "2",
+    "-filter_threads", LOW_MEM ? "1" : "2",
     ...inputs,
     "-t", fmt(durationSeconds),
     "-filter_complex_script", graphFileRel,
@@ -690,9 +725,14 @@ for (const b of broll) {
   } else {
     args.push("-map", "0:a?");
   }
-    args.push(
+  // Encoder-side cap: a -threads BEFORE the inputs only limits decoding —
+  // libx264 kept auto-spawning ~1.5 threads per CPU core, which is what
+  // pushed small containers over their memory limit mid-encode. Quality-
+  // neutral: threads and lookahead change speed/memory, not the pixels.
+  args.push(
+    "-threads", String(LOW_MEM ? Math.min(RENDER_THREADS, 2) : Math.max(1, Math.min(RENDER_THREADS, 4))),
     "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF),
-    "-x264-params", "rc-lookahead=20",
+    "-x264-params", LOW_MEM ? "rc-lookahead=12" : "rc-lookahead=20",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", RENDER_AUDIO_BITRATE,
     "-movflags", "+faststart",
