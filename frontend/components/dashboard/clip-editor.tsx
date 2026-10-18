@@ -231,7 +231,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoY, setVideoY] = useState(0);
   const [panning, setPanning] = useState(false);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
-  const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingPanRef = useRef<{ x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
   const rafPanRef = useRef<number | null>(null);
   const panMovedRef = useRef(false);
 
@@ -644,9 +644,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   function onVideoPointerDown(e: React.PointerEvent<HTMLVideoElement>) {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    panRef.current = { px: e.clientX, py: e.clientY, x: videoX, y: videoY };
-    panMovedRef.current = false;
+        panMovedRef.current = false;
     setPanning(true);
+    snapRef.current = { x: false, y: false };
   }
 
   function onVideoPointerMove(e: React.PointerEvent<HTMLVideoElement>) {
@@ -656,11 +656,25 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     if (!panMovedRef.current && Math.hypot(e.clientX - p.px, e.clientY - p.py) > 4) {
       panMovedRef.current = true;
     }
-    const mp = videoMaxPan();
-    pendingPanRef.current = {
-      x: clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp),
-      y: clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp),
-    };
+        const mp = videoMaxPan();
+    const nx = clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp);
+    const ny = clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp);
+    // Shift = same magnetic center snap the captions use. The video's rest
+    // point is 0 (pan offsets are relative to the centered frame), not 50.
+    const SNAP = 1.2;
+    const RELEASE = 2.6;
+    let ux = nx;
+    let uy = ny;
+    let gx = false;
+    let gy = false;
+    if (e.shiftKey) {
+      const thrX = snapRef.current.x ? RELEASE : SNAP;
+      const thrY = snapRef.current.y ? RELEASE : SNAP;
+      if (Math.abs(nx) <= thrX) { ux = 0; gx = true; }
+      if (Math.abs(ny) <= thrY) { uy = 0; gy = true; }
+    }
+    snapRef.current = { x: gx, y: gy };
+    pendingPanRef.current = { x: ux, y: uy, gx, gy, sh: e.shiftKey };
     if (rafPanRef.current == null) {
       rafPanRef.current = requestAnimationFrame(() => {
         rafPanRef.current = null;
@@ -668,6 +682,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         if (!q) return;
         setVideoX(q.x);
         setVideoY(q.y);
+        setGuides({ shift: q.sh, x: q.gx, y: q.gy });
       });
     }
   }
@@ -679,12 +694,14 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       cancelAnimationFrame(rafPanRef.current);
       rafPanRef.current = null;
     }
-    const q = pendingPanRef.current;
+        const q = pendingPanRef.current;
     pendingPanRef.current = null;
     if (q) {
       setVideoX(q.x);
       setVideoY(q.y);
     }
+    setGuides({ shift: false, x: false, y: false });
+    snapRef.current = { x: false, y: false };
   }
 
   // Click-to-pause still works — a drag swallows the click that follows it.
@@ -1288,7 +1305,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
 
               {/* Center guide lines — hold Shift while dragging to snap */}
-              {(dragging || ovDragging) && guides.shift && (
+              {(dragging || ovDragging || panning) && guides.shift && (
                 <>
                   <div
                     className={cn(
