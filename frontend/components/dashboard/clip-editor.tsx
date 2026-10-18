@@ -302,7 +302,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         // caption is unreadable in renders (usually an accidental inward drag
         // of the corner scale handle). 0 stays "Auto" (style-preset default).
         const savedSize = Number(found.caption_size) || 0;
-        setSize(savedSize === 0 ? 0 : Math.max(40, savedSize));
+        setSize(savedSize === 0 ? 0 : Math.max(20, savedSize));
         setWordsPerCue(
           Math.min(12, Math.max(0, Math.round(Number((found as any).caption_words) || 0)))
         );
@@ -604,7 +604,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const a = captionAnchor();
     if (!s || !a) return;
     const d = Math.hypot(e.clientX - a.cx, e.clientY - a.cy);
-    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 40, 160);
+    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 20, 200);
     if (rafSizeRef.current == null) {
       rafSizeRef.current = requestAnimationFrame(() => {
         rafSizeRef.current = null;
@@ -1092,10 +1092,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   /** Caption font size scaled from the 1080px canvas to the preview box. */
   const previewFontSize = useMemo(() => {
-    const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
-    const scale = previewWidth > 0 ? previewWidth / dims.w : 0.25;
-    return canvasSize * scale;
-  }, [size, previewWidth, dims.w]);
+  const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
+  const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
+  return canvasSize * scale;
+}, [size, canvasPx.w, dims.w]);
 
   // ---------- Render ----------
   if (loading) {
@@ -1848,8 +1848,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                   <input
                     type="range"
-                    min={40}
-                    max={160}
+                    min={20}
+                    max={200}
                     step={1}
                     value={size > 0 ? size : 60}
                     onChange={(e) => {
