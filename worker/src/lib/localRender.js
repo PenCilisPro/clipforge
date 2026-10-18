@@ -156,6 +156,7 @@ export function buildAssSubtitles({
   captionWidth = 0,
   captionLetterSpacing = 0,
   captionAnim = "pop",
+  captionScale = 1,
   textOverlays = [],
   durationSeconds = 0,
   width = 1080,
@@ -181,6 +182,18 @@ export function buildAssSubtitles({
   // burned size matches what the editor showed, not the raw saved row.
   const sizeParam = captionSize > 0 ? Math.max(40, Math.round(Number(captionSize))) : 60;
   const fontSize = resolveCaptionFontSize(captionStyle, sizeParam);
+
+  // Caption scale — the editor's corner-handle factor (0.4-3, default 1).
+  // The preview scales the caption live; the render bakes the same factor
+  // into every per-word tag. The Task-18 animation tags hardcoded \\fscx115
+  // and the scale never reached the ASS at all (no passthrough, no tags),
+  // so handle-scaled previews burned at base size. sc() returns "" when the
+  // clip is unscaled (scale 1), keeping that output byte-identical.
+  const capScale = Math.min(3, Math.max(0.4, Number(captionScale) || 1));
+  const sc = (pct) =>
+    capScale === 1
+      ? ""
+      : `\\fscx${Math.round(pct * capScale)}\\fscy${Math.round(pct * capScale)}`;
 
   // Preview parity: text-only rendering (the editor preview draws no style
   // box), so always BorderStyle 1. Stroke/shadow depths follow the preview's
@@ -394,7 +407,7 @@ export function buildAssSubtitles({
       const start = Math.max(0, Number(cue.start) || 0);
       const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
       const words = wordsOf(cue); // no text-transform: the preview never uppercases
-      pushEvent(start, end, words.join(" "), true);
+      pushEvent(start, end, (sc(100) ? `{${sc(100)}}` : "") + words.join(" "), true);
       continue;
     }
     const cueEnd = Math.max(Number(cue.start) || 0, Number(cue.end) || 0);
@@ -415,20 +428,23 @@ export function buildAssSubtitles({
       const body = words
         .map((word, j) => {
           if (j === i) {
+            // Active word: pop/bounce scale ON TOP of the caption scale
+            // (115%/125% OF base). Other anims ride at base scale.
             let tag = `{\\c${popAccent}`;
-            if (anim === "pop") tag += "\\fscx115\\fscy115";
-            else if (anim === "bounce") tag += "\\fscx125\\fscy125";
+            if (anim === "pop") tag += sc(115) || "\\fscx115\\fscy115";
+            else if (anim === "bounce") tag += sc(125) || "\\fscx125\\fscy125";
             else if (anim === "shake")
               tag +=
+                sc(100) +
                 "\\t(0,75,\\frz1.6)\\t(75,150,\\frz-1.6)\\t(150,225,\\frz1.2)\\t(225,300,\\frz0)";
-            else if (anim === "fade" || anim === "typewriter") tag += "\\alpha&H00&";
+            else if (anim === "fade" || anim === "typewriter") tag += sc(100) + "\\alpha&H00&";
             return `${tag}}${word}`;
           }
-          if (anim === "fade") return `{\\c${primary}\\alpha&H8C&}${word}`; // 45% opacity
-          if (anim === "typewriter") return `{\\c${primary}\\alpha&HFF&}${word}`; // hidden, keeps its space
+          if (anim === "fade") return `{${sc(100)}\\c${primary}\\alpha&H8C&}${word}`; // 45% opacity
+          if (anim === "typewriter") return `{${sc(100)}\\c${primary}\\alpha&HFF&}${word}`; // hidden, keeps its space
           if ((anim === "pop" || anim === "bounce") && j === i + 1)
-            return `{\\fscx100\\fscy100\\c${primary}}${word}`; // stop the scale bleed
-          return `{\\c${primary}}${word}`;
+            return `{${sc(100) || "\\fscx100\\fscy100"}\\c${primary}}${word}`; // stop the scale bleed (back to BASE, not 100)
+          return `{${sc(100)}\\c${primary}}${word}`;
         })
         .join(" ");
       pushEvent(start, end, body, i === 0);
@@ -650,6 +666,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionWidth = 0,
     captionLetterSpacing = 0,
     captionAnim = "pop",
+    captionScale = 1,
     textOverlays = [],
     videoScale = 100,
     videoX = 0,
@@ -687,6 +704,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionWidth,
       captionLetterSpacing,
       captionAnim,
+      captionScale,
       textOverlays,
       durationSeconds,
       width,

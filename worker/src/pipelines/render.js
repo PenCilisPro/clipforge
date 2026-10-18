@@ -176,6 +176,10 @@ export async function processRender(job) {
       // Caption animation preset (editor Text tab). Defaults to pop — the
       // editor's own load default — for clips saved before the field existed.
       captionAnim: clip.caption_anim ?? "pop",
+      // Caption scale from the editor's corner handle (0.4-3, 1 = unscaled).
+      // This passthrough was lost in the Task-18 rewrite — handle-scaled
+      // previews rendered at base size.
+      captionScale: Number(clip.caption_scale) || 1,
       textOverlays: Array.isArray(clip.text_overlays) ? clip.text_overlays : [],
       videoScale: Number(clip.video_scale) || 100,
       videoX: Number(clip.video_x ?? 0),
