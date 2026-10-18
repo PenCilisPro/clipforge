@@ -12,10 +12,11 @@
  * video zoom/pan, and draggable text overlays.
 
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ChevronDown,
   ChevronLeft,
   Frame as FrameIcon,
   Info,
@@ -168,6 +169,29 @@ function regroupCuesForDisplay(cues: SrtCue[], n: number): SrtCue[] {
   return out.length > 0 ? out : cues;
 }
 
+// Collapsible drawer for the Text tab — tap the header to expand/collapse
+// the size & spacing controls underneath it.
+function CollapsibleSection({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-b border-white/5 pb-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between py-2.5 text-left"
+      >
+        <span className="text-[13px] font-bold uppercase tracking-widest text-zinc-200">{title}</span>
+        <ChevronDown
+          className={cn(
+            "h-4 w-4 text-zinc-400 transition-transform duration-200",
+            open && "rotate-180 text-primary-400"
+          )}
+        />
+      </button>
+      {open && <div className="space-y-5 pt-1">{children}</div>}
+    </div>
+  );
+}
+
 export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: string }) {
   const router = useRouter();
 
@@ -212,6 +236,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // Letter spacing for captions, as % of the caption font size (CapCut-style
   // "Spacing"). 0 = off — the caption style keeps its own default spacing.
   const [letterSpacing, setLetterSpacing] = useState(0);
+  // Word spacing for captions: extra literal spaces between words (0-5).
+  // ASS has no word-spacing property, so the preview and the local render
+  // both join words with repeated spaces — identical on both sides.
   const [wordSpacing, setWordSpacing] = useState(0);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -230,7 +257,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoX, setVideoX] = useState(0);
   const [videoY, setVideoY] = useState(0);
   const [panning, setPanning] = useState(false);
-    // Which preview element's selection box is pinned (tap = press once, not hold).
+  // Which preview element's selection box is pinned (tap = press once, not hold).
   const [activeBox, setActiveBox] = useState<"caption" | "frame" | null>(null);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const pendingPanRef = useRef<{ x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
@@ -301,7 +328,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
         setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
         setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
-        // Self-heal tiny saved sizes: below ~40px on the 1080-wide canvas the
+        // Self-heal tiny saved sizes: below ~20px on the 1080-wide canvas the
         // caption is unreadable in renders (usually an accidental inward drag
         // of the corner scale handle). 0 stays "Auto" (style-preset default).
         const savedSize = Number(found.caption_size) || 0;
@@ -311,11 +338,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         );
         setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
         setLetterSpacing(
-          
           Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_letter_spacing) || 0)))
-        );
-        setWordSpacing(
-          Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_word_spacing) || 0)))
         );
         setWordSpacing(Math.max(0, Math.min(5, Math.round(Number((found as any).caption_word_spacing) || 0))));
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
@@ -526,7 +549,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
     setCapX(capX ?? 50);
     setCapY(y0);
-        setDragging(true);
+    setDragging(true);
     setActiveBox("caption");
     snapRef.current = { x: false, y: false };
   }
@@ -647,7 +670,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   function onVideoPointerDown(e: React.PointerEvent<HTMLVideoElement>) {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-            panMovedRef.current = false;
+    panRef.current = { px: e.clientX, py: e.clientY, x: videoX, y: videoY };
+    panMovedRef.current = false;
     setPanning(true);
     setActiveBox("frame");
     snapRef.current = { x: false, y: false };
@@ -660,7 +684,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     if (!panMovedRef.current && Math.hypot(e.clientX - p.px, e.clientY - p.py) > 4) {
       panMovedRef.current = true;
     }
-        const mp = videoMaxPan();
+    const mp = videoMaxPan();
     const nx = clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp);
     const ny = clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp);
     // Shift = same magnetic center snap the captions use. The video's rest
@@ -698,7 +722,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       cancelAnimationFrame(rafPanRef.current);
       rafPanRef.current = null;
     }
-        const q = pendingPanRef.current;
+    const q = pendingPanRef.current;
     pendingPanRef.current = null;
     if (q) {
       setVideoX(q.x);
@@ -1071,6 +1095,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setSaving(false);
     }
   }
+
   // A tap (press, not hold) pins the box on the video or caption — clicking
   // anywhere that isn't the video/caption clears it again.
   useEffect(() => {
@@ -1082,6 +1107,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     window.addEventListener("pointerdown", onDocDown);
     return () => window.removeEventListener("pointerdown", onDocDown);
   }, []);
+
   // S splits at the playhead (ignored while typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1128,12 +1154,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   const selectedOverlay = overlays.find((o) => o.id === selectedOverlayId) ?? null;
 
-  /** Caption font size scaled from the 1080px canvas to the preview box. */
+  /** Caption font size scaled from the 1080px canvas to the preview box.
+   *  Scale basis is the REAL 9:16 canvas box (canvasPx), not the outer
+   *  panel — the panel is wider, which made previews look bigger than
+   *  the final render. Same ratio the renderer uses, so they match. */
   const previewFontSize = useMemo(() => {
-  const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
-  const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
-  return canvasSize * scale;
-}, [size, canvasPx.w, dims.w]);
+    const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
+    const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
+    return canvasSize * scale;
+  }, [size, canvasPx.w, dims.w]);
 
   // ---------- Render ----------
   if (loading) {
@@ -1308,6 +1337,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     onPointerDown={onVideoPointerDown}
                     onPointerMove={onVideoPointerMove}
                     onPointerUp={onVideoPointerUp}
+                    data-selectable="true"
                     onClick={onVideoClick}
                   />
                 </>
@@ -1332,21 +1362,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   <div
                     className={cn(
                       "pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-100",
-                                                                  guides.y
+                      guides.y
                         ? "bg-primary-400 shadow-[0_0_8px_rgba(255,93,28,0.9)]"
                         : "bg-white/25"
                     )}
                   />
-                </>
-              )}
-              {/* Selection box around the frame while dragging the video —
-                  same corner brackets the captions show */}
-              {(panning || activeBox === "frame") && (
-                <>
-                  <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
-                  <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
-                  <span className="pointer-events-none absolute bottom-0 left-0 h-5 w-5 border-b-[3px] border-l-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
-                  <span className="pointer-events-none absolute bottom-0 right-0 h-5 w-5 border-b-[3px] border-r-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                 </>
               )}
               {/* Selection box around the frame while dragging the video —
@@ -1386,7 +1406,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   }}
                 >
                   <span
-                                        onPointerDown={onCaptionPointerDown}
+                    onPointerDown={onCaptionPointerDown}
                     onPointerMove={onCaptionPointerMove}
                     onPointerUp={onCaptionPointerUp}
                     data-selectable="true"
@@ -1424,7 +1444,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         Array.isArray(displayCue.words) && displayCue.words.length > 0
                           ? displayCue.words
                           : null;
-                      if (!cueWords) return displayCue.text;
+                      if (!cueWords) {
+                        return wordSpacing > 0
+                          ? displayCue.text.split(" ").join(" ".repeat(1 + wordSpacing))
+                          : displayCue.text;
+                      }
                       const activeIdx = cueWords.findIndex(
                         (w) => clipTime >= w.start - 0.05 && clipTime <= w.end + 0.05
                       );
@@ -1897,6 +1921,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                 </div>
 
+                <CollapsibleSection title="Text">
                 <div>
                   <div className="flex items-baseline justify-between pb-2">
                     <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -1993,6 +2018,32 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     Space between caption letters · double-click the slider to reset
                   </p>
                 </div>
+
+                <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Word spacing
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">
+                      {wordSpacing === 0 ? "Off" : `+${wordSpacing}`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={5}
+                    step={1}
+                    value={wordSpacing}
+                    onChange={(e) => setWordSpacing(Number(e.target.value))}
+                    onDoubleClick={() => setWordSpacing(0)}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Word spacing"
+                  />
+                  <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                    Extra space between words · double-click the slider to turn off
+                  </p>
+                </div>
+                </CollapsibleSection>
 
                 <div>
                   <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
