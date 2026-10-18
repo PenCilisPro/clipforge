@@ -4,6 +4,8 @@ import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } fr
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
+import { Readable } from "node:stream";
 
 /**
  * Local render provider — ffmpeg runs on the worker itself.
@@ -500,6 +502,86 @@ async function withNetRetry(run) {
   }
 }
 
+// ffmpeg's DNS resolution fails deterministically in this container — the
+// static ffmpeg binary's resolver cannot look up ANY hostname (musl-based
+// Node resolves the same hosts fine the whole time, which is why every SDK
+// call keeps working). Retrying can't fix that, so ffmpeg must never resolve
+// a hostname at all: this loopback proxy fetches the real URLs with Node and
+// pipes the bytes straight through, and every remote input in the spec is
+// rewritten to a http://127.0.0.1 URL before ffmpeg sees it. Range requests
+// are forwarded, so -ss input seeking still lands on exact offsets. Nothing
+// is buffered to disk — memory stays flat regardless of source size.
+const PROXY_TOKEN = crypto.randomBytes(16).toString("hex");
+
+function startLocalProxy() {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(async (req, res) => {
+      try {
+        const u = new URL(req.url, "http://127.0.0.1");
+        const target = u.searchParams.get("u");
+        if (u.pathname !== "/media" || u.searchParams.get("t") !== PROXY_TOKEN) {
+          res.writeHead(403).end();
+          return;
+        }
+        if (!/^https:\/\//i.test(target ?? "")) {
+          res.writeHead(400).end();
+          return;
+        }
+        // Forward only the range header — it is all ffmpeg sends for seeks —
+        // and ask for an uncompressed body so the piped bytes and the
+        // forwarded content-length always agree (fetch decompresses gzip
+        // transparently, which would otherwise truncate the response).
+        const headers = { "accept-encoding": "identity" };
+        if (req.headers.range) headers.range = req.headers.range;
+        const upstream = await fetch(target, { headers, redirect: "follow" });
+        const out = {};
+        for (const h of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+          const v = upstream.headers.get(h);
+          if (v != null) out[h] = v;
+        }
+        if (upstream.headers.has("content-encoding")) delete out["content-length"];
+        res.writeHead(upstream.status, out);
+        if (upstream.body) {
+          const stream = Readable.fromWeb(upstream.body);
+          // If ffmpeg dies (OOM kill, timeout) the socket closes — abort the
+          // upstream download too instead of pulling the rest into the void.
+          res.on("close", () => stream.destroy());
+          stream.pipe(res);
+        } else {
+          res.end();
+        }
+      } catch (err) {
+        console.warn(`[local-render] proxy fetch failed: ${err?.message ?? err}`);
+        if (!res.headersSent) res.writeHead(502);
+        res.end();
+      }
+    });
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+}
+
+/** Rewrite every remote media URL in the spec to a localhost proxy URL. */
+function proxiedSpec(spec, proxy) {
+  const port = proxy.address().port;
+  const toLocal = (url) => {
+    const raw = String(url ?? "");
+    if (!/^https:\/\//i.test(raw)) return raw;
+    return `http://127.0.0.1:${port}/media?t=${PROXY_TOKEN}&u=${encodeURIComponent(raw)}`;
+  };
+  return {
+    ...spec,
+    sourceVideoUrl: toLocal(spec.sourceVideoUrl),
+    brollClips: (Array.isArray(spec.brollClips) ? spec.brollClips : []).map((b) => ({
+      ...b,
+      src: toLocal(b.src),
+    })),
+    musicTrack: spec.musicTrack?.url
+      ? { ...spec.musicTrack, url: toLocal(spec.musicTrack.url) }
+      : spec.musicTrack,
+  };
+}
+
 /**
  * Render the whole clip inline. Returns the local render id; the finished MP4
  * sits at <TMP_DIR>/render-<id>.mp4 until finalize moves it into R2.
@@ -519,20 +601,27 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const retryWidth = Math.round(width / 1.5 / 2) * 2;
   const retryHeight = Math.round(height / 1.5 / 2) * 2;
 
+  const proxy = await startLocalProxy();
   try {
-    await withNetRetry(() => renderOnce(spec, outputRel, { width: 1080, height: 1920, withMusic: true }));
-  } catch (err) {
-        if (/SIGKILL/i.test(err.message)) {
-      console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
-      await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
-      await renderOnce(spec, outputRel, { width: retryWidth, height: retryHeight, withMusic: true });
-    } else if (spec.musicTrack?.url && /amix|0:a|Stream map/i.test(err.message)) {
-      console.warn("[local-render] audio mix failed (source may have no audio track) — retrying without music");
-      await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
-      await renderOnce(spec, outputRel, { width, height, withMusic: false });
-    } else {
-      throw err;
+    const localSpec = proxiedSpec(spec, proxy);
+    try {
+      await withNetRetry(() => renderOnce(localSpec, outputRel, { width: 1080, height: 1920, withMusic: true }));
+    } catch (err) {
+      if (/SIGKILL/i.test(err.message)) {
+        console.warn("[local-render] OOM-killed — retrying at half resolution with a lighter encode");
+        await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
+        await renderOnce(localSpec, outputRel, { width: retryWidth, height: retryHeight, withMusic: true });
+      } else if (spec.musicTrack?.url && /amix|0:a|Stream map/i.test(err.message)) {
+        console.warn("[local-render] audio mix failed (source may have no audio track) — retrying without music");
+        await fs.rm(path.join(TMP_DIR, outputRel), { force: true });
+        await renderOnce(localSpec, outputRel, { width, height, withMusic: false });
+      } else {
+        throw err;
+      }
     }
+  } finally {
+    proxy.closeAllConnections?.();
+    await new Promise((resolve) => proxy.close(resolve));
   }
   return renderId;
 }
