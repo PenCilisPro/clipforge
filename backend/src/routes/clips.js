@@ -60,39 +60,6 @@ const layoutShape = {
 };
 const effectShape = {
   ...layoutShape,
-  // Free caption placement (% of canvas; null/omitted = preset placement).
-  caption_x: z.coerce.number().finite().min(0).max(100).nullable().optional(),
-  caption_y: z.coerce.number().finite().min(0).max(100).nullable().optional(),
-  // "Words per screen": regroup caption words into blocks of N (0 = show
-  // the SRT lines as edited).
-  caption_words: z.coerce.number().int().min(0).max(12).optional(),
-  // Caption wrap width as % of canvas width (20-100).
-  caption_width: z.coerce.number().finite().min(20).max(100).optional(),
-  // Caption letter spacing as % of the caption font size (-10..100, 0 =
-  // style default).
-  caption_letter_spacing: z.coerce.number().finite().min(-10).max(100).optional(),
-  // Video zoom (50-300%) + pan offsets (% of canvas).
-  video_scale: z.coerce.number().finite().min(50).max(300).optional(),
-  video_x: z.coerce.number().finite().min(-100).max(100).optional(),
-  video_y: z.coerce.number().finite().min(-100).max(100).optional(),
-  // Standalone draggable text overlays (rendered above the video).
-  text_overlays: z
-    .array(
-      z.object({
-        id: z.string().max(64).optional(),
-        text: z.string().max(200),
-        font: z.enum(CAPTION_FONTS).optional(),
-        x: z.coerce.number().finite().min(0).max(100).optional(),
-        y: z.coerce.number().finite().min(0).max(100).optional(),
-        size: z.coerce.number().finite().min(1).max(30).optional(),
-        color: z.string().regex(HEX_COLOR).optional(),
-        bold: z.boolean().optional(),
-        bg: z.boolean().optional(),
-        width: z.coerce.number().finite().min(20).max(100).optional(),
-      })
-    )
-    .max(10)
-    .optional(),
   caption_stroke: z.boolean().optional(),
   caption_shadow: z.boolean().optional(),
   caption_stroke_color: z.string().regex(HEX_COLOR).optional(),
@@ -105,6 +72,10 @@ const effectShape = {
   caption_position: z.enum(["top", "middle", "bottom"]).optional(),
   // Explicit caption font size in px; 0 = template default.
   caption_size: z.coerce.number().int().min(0).max(200).optional(),
+  // Extra literal spaces between caption words (0 = off, max 5).
+  caption_word_spacing: z.coerce.number().int().min(0).max(5).optional(),
+  // Letter spacing as % of the caption font size (editor "Spacing" control).
+  caption_letter_spacing: z.coerce.number().int().min(-10).max(100).optional(),
   // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
   output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
@@ -281,17 +252,10 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_color",
       "caption_position",
       "caption_size",
+      "caption_word_spacing",
+      "caption_letter_spacing",
       "output_aspect",
       "video_fit",
-      "caption_x",
-      "caption_y",
-      "caption_words",
-      "caption_width",
-      "caption_letter_spacing",
-      "video_scale",
-      "video_x",
-      "video_y",
-      "text_overlays",
     ]) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
@@ -341,10 +305,9 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, output_aspect, " +
-  "video_fit, video_background_blur, caption_x, caption_y, caption_words, caption_width, " +
-  "caption_letter_spacing, video_scale, video_x, video_y, " +
-  "text_overlays, srt_override, broll_json";
+  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, output_aspect, " +
+  "video_fit, video_background_blur, " +
+  "srt_override, broll_json";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
 // referenced as storage:user-uploads/<uid>/broll/<file>.
@@ -449,18 +412,10 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_shadow_size: clip.caption_shadow_size,
         caption_position: clip.caption_position,
         caption_size: clip.caption_size,
-        output_aspect: clip.output_aspect,
+        caption_word_spacing: clip.caption_word_spacing ?? 0,
+        caption_letter_spacing: clip.caption_letter_spacing ?? 0,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
-        caption_x: clip.caption_x,
-        caption_y: clip.caption_y,
-        caption_words: clip.caption_words,
-        caption_width: clip.caption_width,
-        caption_letter_spacing: clip.caption_letter_spacing,
-        video_scale: clip.video_scale,
-        video_x: clip.video_x,
-        video_y: clip.video_y,
-        text_overlays: clip.text_overlays,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
         // exist on every clip row (Firestore can't query absent fields).
         storage_path: null,
@@ -541,18 +496,10 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_shadow_size: clip.caption_shadow_size,
         caption_position: clip.caption_position,
         caption_size: clip.caption_size,
-        output_aspect: clip.output_aspect,
+        caption_word_spacing: clip.caption_word_spacing ?? 0,
+        caption_letter_spacing: clip.caption_letter_spacing ?? 0,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
-        caption_x: clip.caption_x,
-        caption_y: clip.caption_y,
-        caption_words: clip.caption_words,
-        caption_width: clip.caption_width,
-        caption_letter_spacing: clip.caption_letter_spacing,
-        video_scale: clip.video_scale,
-        video_x: clip.video_x,
-        video_y: clip.video_y,
-        text_overlays: clip.text_overlays,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
         status: "queued",
@@ -625,6 +572,12 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_color ? { caption_color: body.caption_color } : {}),
         ...(body.caption_position ? { caption_position: body.caption_position } : {}),
         ...(body.caption_size !== undefined ? { caption_size: body.caption_size } : {}),
+        ...(body.caption_word_spacing !== undefined
+          ? { caption_word_spacing: body.caption_word_spacing }
+          : {}),
+        ...(body.caption_letter_spacing !== undefined
+          ? { caption_letter_spacing: body.caption_letter_spacing }
+          : {}),
         ...(body.output_aspect ? { output_aspect: body.output_aspect } : {}),
         ...(body.video_fit ? { video_fit: body.video_fit } : {}),
         ...(body.video_background_blur !== undefined

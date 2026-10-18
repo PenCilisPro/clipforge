@@ -212,6 +212,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // Letter spacing for captions, as % of the caption font size (CapCut-style
   // "Spacing"). 0 = off — the caption style keeps its own default spacing.
   const [letterSpacing, setLetterSpacing] = useState(0);
+  const [wordSpacing, setWordSpacing] = useState(0);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
   const [blur, setBlur] = useState(true);
@@ -302,14 +303,19 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         // caption is unreadable in renders (usually an accidental inward drag
         // of the corner scale handle). 0 stays "Auto" (style-preset default).
         const savedSize = Number(found.caption_size) || 0;
-        setSize(savedSize === 0 ? 0 : Math.max(40, savedSize));
+        setSize(savedSize === 0 ? 0 : Math.max(20, savedSize));
         setWordsPerCue(
           Math.min(12, Math.max(0, Math.round(Number((found as any).caption_words) || 0)))
         );
         setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
         setLetterSpacing(
+          
           Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_letter_spacing) || 0)))
         );
+        setWordSpacing(
+          Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_word_spacing) || 0)))
+        );
+        setWordSpacing(Math.max(0, Math.min(5, Math.round(Number((found as any).caption_word_spacing) || 0))));
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
         setVideoFit(found.video_fit === "contain" ? "contain" : "cover");
         setBlur(found.video_background_blur !== false);
@@ -604,7 +610,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const a = captionAnchor();
     if (!s || !a) return;
     const d = Math.hypot(e.clientX - a.cx, e.clientY - a.cy);
-    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 40, 160);
+    pendingSizeRef.current = clamp(Math.round(s.size0 * (d / s.d0)), 20, 200);
     if (rafSizeRef.current == null) {
       rafSizeRef.current = requestAnimationFrame(() => {
         rafSizeRef.current = null;
@@ -1001,6 +1007,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           caption_words: wordsPerCue,
           caption_width: capWidth,
           caption_letter_spacing: letterSpacing,
+          caption_word_spacing: wordSpacing,
           video_scale: videoScale,
           video_x: Number(videoX.toFixed(2)),
           video_y: Number(videoY.toFixed(2)),
@@ -1092,10 +1099,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   /** Caption font size scaled from the 1080px canvas to the preview box. */
   const previewFontSize = useMemo(() => {
-    const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
-    const scale = previewWidth > 0 ? previewWidth / dims.w : 0.25;
-    return canvasSize * scale;
-  }, [size, previewWidth, dims.w]);
+  const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
+  const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
+  return canvasSize * scale;
+}, [size, canvasPx.w, dims.w]);
 
   // ---------- Render ----------
   if (loading) {
@@ -1347,6 +1354,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       marginRight: `${(-letterSpacing / 100) * previewFontSize}px`,
                       lineHeight: 1.15,
                       fontWeight: 800,
+                      whiteSpace: "pre-wrap",
                       ...(stroke
                         ? {
                             WebkitTextStroke: `${((strokeSize * previewFontSize) / 64) / 4}px ${strokeColor}`,
@@ -1382,7 +1390,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                           }}
                         >
                           {w.word}
-                          {i < cueWords.length - 1 ? " " : ""}
+                          {i < cueWords.length - 1 ? " ".repeat(1 + wordSpacing) : ""}
                         </span>
                       ));
                     })()}
@@ -1848,8 +1856,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                   <input
                     type="range"
-                    min={40}
-                    max={160}
+                    min={20}
+                    max={200}
                     step={1}
                     value={size > 0 ? size : 60}
                     onChange={(e) => {

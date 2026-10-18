@@ -40,11 +40,10 @@ export function wordAnimStyle(
         transition: "color 80ms linear",
       };
     case "fade":
-      return {
-        display: "inline-block",
-        opacity: !hasActive || isActive ? 1 : 0.45,
-        transition: "color 80ms linear, opacity 120ms linear",
-      };
+  return {
+    display: "inline-block",
+    transition: "color 80ms linear",
+  };
     case "typewriter":
       return {
         display: "inline-block",
