@@ -212,6 +212,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // Letter spacing for captions, as % of the caption font size (CapCut-style
   // "Spacing"). 0 = off — the caption style keeps its own default spacing.
   const [letterSpacing, setLetterSpacing] = useState(0);
+  const [wordSpacing, setWordSpacing] = useState(0);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
   const [blur, setBlur] = useState(true);
@@ -308,8 +309,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         );
         setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
         setLetterSpacing(
+          
           Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_letter_spacing) || 0)))
         );
+        setWordSpacing(
+          Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_word_spacing) || 0)))
+        );
+        setWordSpacing(Math.max(0, Math.min(5, Math.round(Number((found as any).caption_word_spacing) || 0))));
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
         setVideoFit(found.video_fit === "contain" ? "contain" : "cover");
         setBlur(found.video_background_blur !== false);
@@ -1001,6 +1007,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           caption_words: wordsPerCue,
           caption_width: capWidth,
           caption_letter_spacing: letterSpacing,
+          caption_word_spacing: wordSpacing,
           video_scale: videoScale,
           video_x: Number(videoX.toFixed(2)),
           video_y: Number(videoY.toFixed(2)),
@@ -1347,6 +1354,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       marginRight: `${(-letterSpacing / 100) * previewFontSize}px`,
                       lineHeight: 1.15,
                       fontWeight: 800,
+                      whiteSpace: "pre-wrap",
                       ...(stroke
                         ? {
                             WebkitTextStroke: `${((strokeSize * previewFontSize) / 64) / 4}px ${strokeColor}`,
@@ -1382,7 +1390,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                           }}
                         >
                           {w.word}
-                          {i < cueWords.length - 1 ? " " : ""}
+                          {i < cueWords.length - 1 ? " ".repeat(1 + wordSpacing) : ""}
                         </span>
                       ));
                     })()}

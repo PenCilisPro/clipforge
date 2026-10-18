@@ -162,28 +162,8 @@ export async function processRender(job) {
       // template default), and the output canvas aspect from the editor.
       captionPosition: clip.caption_position ?? "bottom",
       captionSize: Number(clip.caption_size) || 0,
-      // Free-drag caption position (% of canvas; null = preset placement),
-      // custom text overlays and video zoom/pan from the editor. The local
-      // provider renders all of these; cloud providers pick only the keys
-      // their spec builders know, so the extras are ignored there.
-      captionX: clip.caption_x ?? null,
-      captionY: clip.caption_y ?? null,
-      // "Words per screen" regrouping + caption wrap width (% of canvas).
-      captionWords: Math.round(Number(clip.caption_words)) || 0,
-      captionWidth: Number(clip.caption_width) || 0,
-      // Letter spacing as % of caption font size (0 = style default).
+      captionWordSpacing: Number(clip.caption_word_spacing) || 0,
       captionLetterSpacing: Number(clip.caption_letter_spacing) || 0,
-      // Caption animation preset (editor Text tab). Defaults to pop — the
-      // editor's own load default — for clips saved before the field existed.
-      captionAnim: clip.caption_anim ?? "pop",
-      // Caption scale from the editor's corner handle (0.4-3, 1 = unscaled).
-      // This passthrough was lost in the Task-18 rewrite — handle-scaled
-      // previews rendered at base size.
-      captionScale: Number(clip.caption_scale) || 1,
-      textOverlays: Array.isArray(clip.text_overlays) ? clip.text_overlays : [],
-      videoScale: Number(clip.video_scale) || 100,
-      videoX: Number(clip.video_x ?? 0),
-      videoY: Number(clip.video_y ?? 0),
       outputAspect: clip.output_aspect ?? "9:16",
     };
 
