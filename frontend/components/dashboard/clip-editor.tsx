@@ -230,6 +230,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoX, setVideoX] = useState(0);
   const [videoY, setVideoY] = useState(0);
   const [panning, setPanning] = useState(false);
+    // Which preview element's selection box is pinned (tap = press once, not hold).
+  const [activeBox, setActiveBox] = useState<"caption" | "frame" | null>(null);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
   const pendingPanRef = useRef<{ x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
   const rafPanRef = useRef<number | null>(null);
@@ -524,7 +526,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
     setCapX(capX ?? 50);
     setCapY(y0);
-    setDragging(true);
+        setDragging(true);
+    setActiveBox("caption");
     snapRef.current = { x: false, y: false };
   }
 
@@ -644,8 +647,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   function onVideoPointerDown(e: React.PointerEvent<HTMLVideoElement>) {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-        panMovedRef.current = false;
+            panMovedRef.current = false;
     setPanning(true);
+    setActiveBox("frame");
     snapRef.current = { x: false, y: false };
   }
 
@@ -1067,7 +1071,17 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setSaving(false);
     }
   }
-
+  // A tap (press, not hold) pins the box on the video or caption — clicking
+  // anywhere that isn't the video/caption clears it again.
+  useEffect(() => {
+    const onDocDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest("[data-selectable]")) return;
+      setActiveBox(null);
+    };
+    window.addEventListener("pointerdown", onDocDown);
+    return () => window.removeEventListener("pointerdown", onDocDown);
+  }, []);
   // S splits at the playhead (ignored while typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1327,7 +1341,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
               {/* Selection box around the frame while dragging the video —
                   same corner brackets the captions show */}
-              {panning && (
+              {(panning || activeBox === "frame") && (
                 <>
                   <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                   <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
@@ -1337,7 +1351,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
               {/* Selection box around the frame while dragging the video —
                   same corner brackets the captions show */}
-              {panning && (
+              {(panning || activeBox === "frame") && (
                 <>
                   <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                   <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
@@ -1372,9 +1386,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   }}
                 >
                   <span
-                    onPointerDown={onCaptionPointerDown}
+                                        onPointerDown={onCaptionPointerDown}
                     onPointerMove={onCaptionPointerMove}
                     onPointerUp={onCaptionPointerUp}
+                    data-selectable="true"
                     onMouseEnter={() => setCapHover(true)}
                     onMouseLeave={() => setCapHover(false)}
                     className={cn(
@@ -1431,7 +1446,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         </span>
                       ));
                     })()}
-                    {(capHover || dragging || scaling) && (
+                    {(capHover || dragging || scaling || activeBox === "caption") && (
                       <>
                         <span className="pointer-events-none absolute left-0 top-0 h-3.5 w-3.5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                         <span className="pointer-events-none absolute right-0 top-0 h-3.5 w-3.5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
