@@ -449,7 +449,7 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
 
   const args = [
    "-threads", String(Math.min(RENDER_THREADS, 4)),
-    "-filter_threads", "2",
+    "-filter_threads", "1",
     ...inputs,
     "-t", fmt(durationSeconds),
     "-filter_complex_script", graphFileRel,
@@ -462,7 +462,12 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
   }
     args.push(
     "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF),
-    "-x264-params", "rc-lookahead=20",
+    // Lookahead frames are the encoder's biggest RAM consumer at 1080x1920
+    // (~25 MB per frame): 20 → 10 measured 524 → 425 MB peak RSS with no
+    // visible quality change at CRF 18. The platform OOM-kills the whole pod
+    // mid-encode — long before the in-code SIGKILL fallback can fire — so the
+    // FIRST attempt has to fit the container. Override with RENDER_LOOKAHEAD.
+    "-x264-params", `rc-lookahead=${Number(process.env.RENDER_LOOKAHEAD) || 10}:sync-lookahead=0`,
     "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", RENDER_AUDIO_BITRATE,
     "-movflags", "+faststart",
@@ -604,6 +609,14 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
   const proxy = await startLocalProxy();
   try {
     const localSpec = proxiedSpec(spec, proxy);
+    // Crash-loop visibility: when the platform kills the whole pod mid-encode
+    // there is no error anywhere in the logs, so heartbeat the encode — the
+    // last line before a restart shows how far it got and what Node held.
+    const startedAt = Date.now();
+    const beat = setInterval(() => {
+      const rss = Math.round(process.memoryUsage().rss / 1048576);
+      console.log(`[local-render] encoding ${Math.round((Date.now() - startedAt) / 1000)}s — node RSS ${rss} MB`);
+    }, 15000);
     try {
       await withNetRetry(() => renderOnce(localSpec, outputRel, { width: 1080, height: 1920, withMusic: true }));
     } catch (err) {
@@ -618,6 +631,8 @@ export async function submitRender(spec, _webhookUrl, meta = {}) {
       } else {
         throw err;
       }
+    } finally {
+      clearInterval(beat);
     }
   } finally {
     proxy.closeAllConnections?.();
