@@ -1318,11 +1318,31 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   <div
                     className={cn(
                       "pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-100",
-                      guides.y
+                                                                  guides.y
                         ? "bg-primary-400 shadow-[0_0_8px_rgba(255,93,28,0.9)]"
                         : "bg-white/25"
                     )}
                   />
+                </>
+              )}
+              {/* Selection box around the frame while dragging the video —
+                  same corner brackets the captions show */}
+              {panning && (
+                <>
+                  <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 left-0 h-5 w-5 border-b-[3px] border-l-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 right-0 h-5 w-5 border-b-[3px] border-r-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                </>
+              )}
+              {/* Selection box around the frame while dragging the video —
+                  same corner brackets the captions show */}
+              {panning && (
+                <>
+                  <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 left-0 h-5 w-5 border-b-[3px] border-l-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 right-0 h-5 w-5 border-b-[3px] border-r-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                 </>
               )}
               {/* Live caption overlay — karaoke with word animations, fully
