@@ -2083,8 +2083,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                             </div>
                             <input
                               type="range"
-                              min={20}
-                              max={100}
+                              min={10}
+                              max={200}
                               step={5}
                               value={selectedOverlay.width ?? 90}
                               onChange={(e) =>
