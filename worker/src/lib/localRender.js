@@ -1,9 +1,4 @@
-import {
-  RENDER_STYLES,
-  CAPTION_FONTS,
-  captionFont,
-  resolveCaptionFontSize,
-} from "./captions.js";
+import { RENDER_STYLES, captionFont, resolveCaptionFontSize } from "./captions.js";
 import { aspectDimensions } from "./canvas.js";
 import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } from "./ffmpeg.js";
 import fs from "node:fs/promises";
@@ -90,26 +85,17 @@ function assText(text) {
   return String(text).replace(/[{}\\]/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** Clamp to [lo, hi] with a numeric fallback for junk values. */
-function clampNum(value, lo, hi, fallback = 0) {
-  const n = Number(value);
-  return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : fallback));
-}
-
 function styleDef(style) {
   return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
-}
-
-/** Resolve text color — mirrors resolveTextColor in creatomate.js. */
-function resolveTextColor(style, textColor) {
-  const def = styleDef(style);
-  return textColor && textColor.toLowerCase() !== "#ffffff" ? textColor : def.color;
 }
 
 /**
  * Build the ASS subtitle file content. Cues with word timings produce one
  * dialogue event per spoken word (the event runs until the next word starts,
  * so there are no gap flashes); cues without timings produce one event each.
+ * Color parity with the editor preview: active word = #ff5d1c, every other
+ * word = the user's caption color at FULL opacity — no dimming, no
+ * template-color substitution.
  */
 export function buildAssSubtitles({
   captionCues = [],
@@ -124,21 +110,19 @@ export function buildAssSubtitles({
   captionShadowSize = 6,
   captionPosition = "bottom",
   captionSize = 0,
-  captionX = null,
-  captionY = null,
-  captionWords = 0,
-  captionWidth = 0,
+  captionWordSpacing = 0,
   captionLetterSpacing = 0,
-  textOverlays = [],
-  durationSeconds = 0,
   width = 1080,
   height = 1920,
 }) {
   const font = captionFont(captionFontKey);
   const def = styleDef(captionStyle);
-  const primary = assColor(resolveTextColor(captionStyle, captionTextColor));
-  const accentColor = assColor(def.accentColor ?? "#ffffff");
-  const dimTag = "{\\1a&H38&}"; // ~78% opacity on the text only
+  // Literal user color — the preview renders textColor as-is, so the render
+  // must too (the old white→style-color swap made "white" captions render
+  // gray/off-white on several template styles).
+  const primary = assColor(captionTextColor || "#ffffff");
+  // The preview highlights the active word with a fixed accent — mirror it.
+  const accentColor = assColor("#ff5d1c");
 
   const strokeOn = captionStroke === true;
   const shadowOn = captionShadow === true;
@@ -158,43 +142,21 @@ export function buildAssSubtitles({
   // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
   // (matching the cloud providers' 8% offset); centered captions use 0.
   const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
-  // Free-drag caption position (percent of canvas) overrides the preset
-  // placement: alignment 5 (middle center) anchors the block on \pos(x, y),
-  // so a saved caption_x/caption_y renders pixel-for-pixel like the preview.
-  const freePos =
-    captionX != null && captionY != null
-      ? `{\\pos(${Math.round(width * (clampNum(captionX, 0, 100) / 100))},${Math.round(
-          height * (clampNum(captionY, 0, 100) / 100)
-        )})}`
-      : "";
-  const alignment = freePos
-    ? 5
-    : captionPosition === "top"
-      ? 8
-      : captionPosition === "middle"
-        ? 5
-        : 2;
-  const marginV = freePos
-    ? 0
-    : captionPosition === "middle"
-      ? 0
-      : Math.round(height * 0.08);
+  const alignment = captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
+  const marginV =
+    captionPosition === "middle" ? 0 : Math.round(height * 0.08);
 
-  // Caption wrap width (% of canvas) — per-event MarginL/R override the style
-  // margins so lines wrap at the same width as the preview's caption box.
-  const capWrapPct = Number(captionWidth) > 0 ? clampNum(captionWidth, 20, 100, 90) : 0;
-  const capMarginLR = capWrapPct > 0 ? Math.round((width * (100 - capWrapPct)) / 200) : 0;
-
-  // Letter spacing: the editor's caption_letter_spacing (percent of the
-  // caption font size, -10..100) overrides the style preset's own
-  // letterSpacingPct; 0/omitted keeps the preset look. \fsp accepts
-  // negatives (tighter tracking), matching the preview's CSS letter-spacing.
-  const lsPct =
-    Number(captionLetterSpacing) !== 0
-      ? clampNum(Number(captionLetterSpacing), -10, 100, 0)
-      : parseFloat(def.letterSpacingPct || 0) || 0;
-  const fspPx = lsPct ? Math.round((lsPct / 100) * fontSize * 10) / 10 : 0;
+  // Clip-level letter spacing (% of font size) stacks on the style's own
+  // spacing; 0 keeps the style default. Word spacing = extra literal spaces
+  // between words — the only word-gap mechanism ASS supports, and the
+  // preview renders the SAME repeated spaces, so both stay identical.
+  const fspPx = Math.round(
+    (((parseFloat(def.letterSpacingPct) || 0) + (Number(captionLetterSpacing) || 0)) / 100) *
+      fontSize *
+      10
+  ) / 10;
   const fspTag = fspPx !== 0 ? `{\\fsp${fspPx}}` : "";
+  const wordGap = " ".repeat(1 + Math.max(0, Math.min(5, Math.round(Number(captionWordSpacing) || 0))));
   const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
 
   const header = [
@@ -211,103 +173,14 @@ export function buildAssSubtitles({
     // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
     // block inside the edge, matching the cloud providers' placement.
     `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
-
-  // Custom text overlays: one style + one full-duration \pos event each, on
-  // layer 1 so they paint above the captions. BorderStyle 3 paints the
-  // optional dark box (OutlineColour doubles as the box fill at ~71%
-  // opacity); unboxed text gets a soft drop shadow instead.
-  const ovStyles = [];
-  const ovEvents = [];
-  const ovList = (Array.isArray(textOverlays) ? textOverlays : [])
-    .filter((o) => o && String(o.text ?? "").trim().length > 0)
-    .slice(0, 10);
-  ovList.forEach((o, i) => {
-    const fontKey =
-      o.font && Object.prototype.hasOwnProperty.call(CAPTION_FONTS, o.font) ? o.font : "poppins";
-    const fs = Math.max(10, Math.round((height * clampNum(o.size, 1, 30, 5)) / 100));
-    const color = assColor(/^#[0-9a-fA-F]{6}$/.test(String(o.color)) ? o.color : "#ffffff");
-    const boxed = o.bg === true;
-    const ox = Math.round(width * (clampNum(o.x, 0, 100, 50) / 100));
-    const oy = Math.round(height * (clampNum(o.y, 0, 100, 50) / 100));
-    // Wrap width (% of canvas): per-event margins so multi-line overlay text
-    // wraps at the same width as the editor preview box.
-    const ovML = Math.round((width * (100 - clampNum(o.width, 20, 100, 90))) / 200);
-    ovStyles.push(
-      `Style: Ov${i},${captionFont(fontKey).family},${fs},${color},&H000000FF,` +
-        `${boxed ? "&H4A000000" : "&H00000000"},&H00000000,${o.bold === false ? 0 : -1},` +
-        `0,0,0,100,100,0,0,${boxed ? 3 : 1},${boxed ? 8 : 0},${boxed ? 0 : 2},5,40,40,0,1`
-    );
-    const body =
-      String(o.text)
-        .split(/\r?\n/)
-        .map((line) => assText(line))
-        .filter(Boolean)
-        .slice(0, 4)
-        .join("\\N") || "Text";
-    ovEvents.push(
-      `Dialogue: 1,${assTime(0)},${assTime(Math.max(0.1, Number(durationSeconds) || 0))},` +
-        `Ov${i},,${ovML},${ovML},0,,{\\pos(${ox},${oy})}${body}`
-    );
-  });
 
   const lines = [];
   const usableCues = (Array.isArray(captionCues) ? captionCues : []).slice(0, 400);
-
-  // "Words per screen" (caption_words): flatten every timed word and re-chunk
-  // into groups of N so the render shows exactly the same words per caption
-  // block as the editor preview. Cues without word timings get times spread
-  // proportionally to word length. Chunk words carry both .text and .word so
-  // the existing event builders keep working unchanged.
-  const nWords = Math.round(Number(captionWords) || 0);
-  let grouped = usableCues;
-  if (nWords >= 1 && nWords <= 12 && usableCues.length > 0) {
-    const flat = [];
-    for (const cue of usableCues) {
-      const start = Math.max(0, Number(cue.start) || 0);
-      const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
-      const timed = Array.isArray(cue.words)
-        ? cue.words
-            .map((w) => {
-              const word = assText((w && (w.text ?? w.word)) ?? "");
-              return {
-                text: word,
-                word,
-                start: Math.max(0, Number(w && w.start) || 0),
-                end: Math.max(0, Number(w && w.end) || 0),
-              };
-            })
-            .filter((w) => w.text.length > 0)
-        : [];
-      if (timed.length > 0) {
-        flat.push(...timed);
-      } else {
-        const raw = assText(cue.text).split(/\s+/).filter(Boolean);
-        const total = raw.reduce((s, w) => s + w.length, 0) || 1;
-        const dur = Math.max(0.3, end - start);
-        let t = start;
-        for (const w of raw) {
-          const d = (w.length / total) * dur;
-          flat.push({ text: w, word: w, start: t, end: t + d });
-          t += d;
-        }
-      }
-    }
-    if (flat.length > 0) {
-      grouped = [];
-      for (let i = 0; i < flat.length; i += nWords) {
-        const chunk = flat.slice(i, i + nWords);
-        grouped.push({
-          start: chunk[0].start,
-          end: chunk[chunk.length - 1].end,
-          text: chunk.map((w) => w.text).join(" "),
-          words: chunk,
-        });
-      }
-    }
-  }
-
-  const wordTotal = grouped.reduce(
+  const wordTotal = usableCues.reduce(
     (sum, cue) => sum + (Array.isArray(cue.words) ? cue.words.length : 0),
     0
   );
@@ -319,16 +192,16 @@ export function buildAssSubtitles({
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
   const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,${capMarginLR},${capMarginLR},0,,${freePos}${blurTag}${fspTag}${body}`);
+    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${blurTag}${fspTag}${body}`);
   };
 
-  for (const cue of grouped) {
+  for (const cue of usableCues) {
     if (!wordSync || !Array.isArray(cue.words) || cue.words.length === 0) {
       // Static cue: one event spanning the whole cue.
       const start = Math.max(0, Number(cue.start) || 0);
       const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
       const words = wordsOf(cue).map((w) => (def.uppercase ? w.toUpperCase() : w));
-      pushEvent(start, end, words.join(" "));
+      pushEvent(start, end, words.join(wordGap));
       continue;
     }
     const cueEnd = Math.max(Number(cue.start) || 0, Number(cue.end) || 0);
@@ -344,27 +217,15 @@ export function buildAssSubtitles({
       );
       const words = wordsOf(cue).map((word) => (def.uppercase ? word.toUpperCase() : word));
       const body = words
-        .map((word, j) => {
-          if (def.accent === "dim") {
-            return j === i ? word : `${dimTag}${word}{\\1a&H00&}`;
-          }
-          return j === i ? `{\\c${accentColor}}${word}{\\c${primary}}` : word;
-        })
-        .join(" ");
+        .map((word, j) =>
+          j === i ? `{\\c${accentColor}}${word}{\\c${primary}}` : word
+        )
+        .join(wordGap);
       pushEvent(start, end, body);
     }
   }
 
-  return [
-    ...header,
-    ...ovStyles,
-    "",
-    "[Events]",
-    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ...lines,
-    ...ovEvents,
-    "",
-  ].join("\n");
+  return [...header, ...lines, ""].join("\n");
 }
 
 /** Fetch the caption TTF into the shared fonts dir (cached by family). */
@@ -399,51 +260,6 @@ async function ensureWatermark(url) {
   return dest;
 }
 
-/**
- * Fetch a remote input to a local file BEFORE the encode starts, with
- * retries. ffmpeg's own DNS/TLS stack is the flakiest link in the chain —
- * VPN'd hosts, filtered DNS (Pi-hole/AdGuard can NXDOMAIN
- * cloudflarestorage.com) and proxy-only networks all surface as "Failed
- * to resolve hostname ... System error" — and a mid-render stream drop
- * ruins the whole encode. Node fetches instead (the same helper the fonts
- * and the watermark use); ffmpeg then reads plain local files, so the
- * encode path never touches the network.
- */
-async function fetchToTmp(url, label) {
-  const raw = String(url);
-  // Already-local input (plain path): pass through untouched — nothing to fetch.
-  if (!/^https?:\/\//i.test(raw)) return raw;
-  const parsed = new URL(raw);
-  const ext = path.extname(parsed.pathname) || ".mp4";
-  const dest = tmpPath(
-    `in-${crypto.createHash("sha1").update(String(url)).digest("hex").slice(0, 12)}${ext}`
-  );
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await downloadToFile(String(url), dest);
-      return dest;
-    } catch (err) {
-      const msg = String(err && err.message ? err.message : err);
-      // Node's fetch (undici) flattens DNS failures to "fetch failed" and
-      // hides ENOTFOUND on err.cause — classify on both.
-      const cause = err && err.cause ? String(err.cause.code || err.cause.message || "") : "";
-      if (attempt >= 3) {
-        if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|Failed to resolve/i.test(`${msg} ${cause}`)) {
-          throw new Error(
-            `The worker machine could not reach ${parsed.hostname} (DNS lookup failed after 3 tries: ${msg}). ` +
-              `That is the machine's network, not ClipForge: disable VPN/proxy for the worker, ` +
-              `check DNS filters (Pi-hole/AdGuard can block cloudflarestorage.com), ` +
-              `or point the machine's DNS at 1.1.1.1 / 8.8.8.8.`
-          );
-        }
-        throw new Error(`Could not download the ${label} after 3 tries: ${msg}`);
-      }
-      console.warn(`[local-render] ${label} download failed (attempt ${attempt}/3): ${msg} — retrying`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-  }
-}
-
 function fmt(n) {
   return (Math.round(n * 1000) / 1000).toString();
 }
@@ -458,9 +274,6 @@ function buildFilterGraph({
   watermarkInput = null,
   videoFit = "cover",
   videoBackgroundBlur = true,
-  videoScale = 100,
-  videoX = 0,
-  videoY = 0,
 }) {
   const parts = [];
   // Lanczos resampling: bilinear (the default) visibly softens the 1080x1920
@@ -493,24 +306,6 @@ function buildFilterGraph({
   } else {
     parts.push(
       `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
-    );
-  }
-  // Editor video transform: zoom the composited base frame, then pan it.
-  // Overlaying the scaled frame on a black canvas handles both zoom-in
-  // (overflow clips at the canvas edge) and zoom-out / pan (black shows past
-  // the edges) — the same math as the editor preview's CSS translate+scale.
-  const zt = Math.min(3, Math.max(0.5, (Number(videoScale) || 100) / 100));
-  const panX = Math.round(width * (clampNum(videoX, -100, 100) / 100));
-  const panY = Math.round(height * (clampNum(videoY, -100, 100) / 100));
-  if (Math.abs(zt - 1) > 0.001 || panX !== 0 || panY !== 0) {
-    const bgDur = Math.max(1, Number(durationSeconds) || 1) + 1;
-    parts.push(
-      `[base]scale=trunc(iw*${fmt(zt)}/2)*2:trunc(ih*${fmt(zt)}/2)*2:flags=lanczos,setsar=1[zt]`
-    );
-    parts.push(`color=c=black:s=${width}x${height}:r=30:d=${fmt(bgDur)}[ztbg]`);
-    parts.push(
-      `[ztbg][zt]overlay=x=(W-w)/2` + (panX < 0 ? "" : "+") + panX +
-      `:y=(H-h)/2` + (panY < 0 ? "" : "+") + panY + `:eof_action=pass,setsar=1[base]`
     );
   }
   let prev = "base";
@@ -563,27 +358,12 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     videoBackgroundBlur = true,
     captionPosition = "bottom",
     captionSize = 0,
-    outputAspect = "9:16",
-    captionX = null,
-    captionY = null,
-    captionWords = 0,
-    captionWidth = 0,
+    captionWordSpacing = 0,
     captionLetterSpacing = 0,
-    textOverlays = [],
-    videoScale = 100,
-    videoX = 0,
-    videoY = 0,
+    outputAspect = "9:16",
   } = spec;
 
   await ensureFont(captionFontKey);
-  // Overlay fonts must sit in the fonts dir before libass resolves styles.
-  for (const key of new Set(
-    (Array.isArray(textOverlays) ? textOverlays : [])
-      .slice(0, 10)
-      .map((o) => (o && typeof o.font === "string" && o.font ? o.font : "poppins"))
-  )) {
-    await ensureFont(key).catch(() => {});
-  }
   const assRel = `captions-${path.basename(outputRel, ".mp4")}.ass`;
   await fs.writeFile(
     path.join(TMP_DIR, assRel),
@@ -600,13 +380,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionShadowSize,
       captionPosition,
       captionSize,
-      captionX,
-      captionY,
-      captionWords,
-      captionWidth,
+      captionWordSpacing,
       captionLetterSpacing,
-      textOverlays,
-      durationSeconds,
       width,
       height,
     }),
@@ -618,20 +393,10 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     .slice(0, 6);
 
   // -ss before -i is frame-accurate here because the output is re-encoded.
-  // Remote inputs are fetched to TMP first (fetchToTmp): ffmpeg reads
-  // local files only, so its fragile DNS/TLS path never touches the
-  // encode and a short DNS hiccup retries instead of killing the render.
-  const remoteLocals = [];
-  const sourceLocal = await fetchToTmp(sourceVideoUrl, "source video");
-  remoteLocals.push(sourceLocal);
-  const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", sourceLocal];
+  const inputs = ["-ss", fmt(sourceTrimSeconds), "-i", String(sourceVideoUrl)];
 // -ss before -i is frame-accurate here (output is re-encoded) and stops the
 // overlay queue from buffering the b-roll from t=0.
-for (const b of broll) {
-  const bLocal = await fetchToTmp(b.src, "b-roll clip");
-  remoteLocals.push(bLocal);
-  inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", bLocal);
-}
+for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), "-i", String(b.src));
 
   let watermarkInput = null;
   let wmLocalPath = null;
@@ -645,9 +410,7 @@ for (const b of broll) {
   const useMusic = withMusic && musicTrack?.url;
   if (useMusic) {
     musicInput = 1 + broll.length + (watermarkInput != null ? 1 : 0);
-    const musicLocal = await fetchToTmp(musicTrack.url, "music track");
-    remoteLocals.push(musicLocal);
-    inputs.push("-stream_loop", "-1", "-i", musicLocal);
+    inputs.push("-stream_loop", "-1", "-i", String(musicTrack.url));
   }
 
   const graphFileRel = `graph-${path.basename(outputRel, ".mp4")}.txt`;
@@ -660,9 +423,6 @@ for (const b of broll) {
     watermarkInput,
     videoFit,
     videoBackgroundBlur,
-    videoScale,
-    videoX,
-    videoY,
   });
   if (useMusic) {
     // One filtergraph file holds the video chain and the audio mix together
@@ -702,7 +462,7 @@ for (const b of broll) {
   try {
     await runFfmpeg(args, { cwd: TMP_DIR });
   } finally {
-    await cleanup(path.join(TMP_DIR, assRel), path.join(TMP_DIR, graphFileRel), wmLocalPath, ...remoteLocals);
+    await cleanup(path.join(TMP_DIR, assRel), path.join(TMP_DIR, graphFileRel), wmLocalPath);
   }
 }
 
