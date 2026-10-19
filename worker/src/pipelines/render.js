@@ -172,6 +172,10 @@ export async function processRender(job) {
         typeof clip.caption_anim === "string" && clip.caption_anim.trim()
           ? clip.caption_anim.trim()
           : "pop",
+      // Caption wrap width (editor slider, % of canvas — the live preview's
+      // max-width box). The local ASS renderer turns it into symmetric
+      // wrap margins; the cloud providers ignore it.
+      captionWidth: Number(clip.caption_width) || 90,
       outputAspect: clip.output_aspect ?? "9:16",
     };
 

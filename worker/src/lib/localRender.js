@@ -1,4 +1,4 @@
-import { RENDER_STYLES, captionFont, resolveCaptionFontSize } from "./captions.js";
+import { RENDER_STYLES, captionFont } from "./captions.js";
 import { aspectDimensions } from "./canvas.js";
 import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } from "./ffmpeg.js";
 import fs from "node:fs/promises";
@@ -23,11 +23,14 @@ import { Readable } from "node:stream";
  *
  * Visual parity with the cloud providers: 1080x1920 output, either a
  * center-crop of the source (videoFit "cover") or the full frame letterboxed
- * over a blurred zoomed copy of itself (videoFit "contain"),
- * caption cues as ASS subtitles with word-sync accenting (one dialogue event
- * per spoken word, the active word recolored — same scheme as the Creatomate
- * text elements), b-roll cutaways full-screen with fades, music bed at 15%,
- * and the optional logo watermark.
+ * over a blurred zoomed copy of itself (videoFit "contain"), caption cues as
+ * ASS subtitles with word-sync accenting (one dialogue event per spoken
+ * word), b-roll cutaways full-screen with fades, music bed at 15%, and the
+ * optional logo watermark.
+ *
+ * Caption parity target is the CLIP EDITOR'S LIVE PREVIEW (the overlay the
+ * user drags/scales while editing) — see buildAssSubtitles for the exact
+ * size/color/stroke/shadow/spacing/position/animation rules it mirrors.
  */
 
 const RENDER_ID_RE = /^[A-Za-z0-9-]+$/;
@@ -106,13 +109,78 @@ function styleDef(style) {
   return RENDER_STYLES[style] ?? RENDER_STYLES.classic;
 }
 
+// Editor-preview parity constants — the clip editor's live caption overlay
+// (frontend/components/dashboard/clip-editor.tsx + lib/caption-anim.ts) is
+// the ground truth the local render must match.
+const PREVIEW_DEFAULT_FONT_SIZE = 60; // the overlay's "Auto" size on the 1080 canvas
+const PREVIEW_ACCENT_COLOR = "#ff5d1c"; // fixed active-word accent
+const PREVIEW_INACTIVE_WHITE = "#d9d9d9"; // inactive words when color = "template default"
+
+// Active-word accent per BOXED template. The editor overlay draws no box, so
+// its fixed orange accent always reads — but burned into a same-hue template
+// box (karaoke's orange-on-orange) or a light one (highlighter's yellow) it
+// disappears. Each entry mirrors that template's own accent chip from the
+// template cards (caption-preview.tsx ACCENTS): white text on karaoke's
+// orange slab, near-black on green-screen/highlighter, white on neon/ocean/
+// bubblegum slabs, yellow on royal violet. Unboxed styles keep the overlay's
+// orange verbatim. A custom text color doesn't change this — the accent must
+// contrast the BOX, not the text color.
+const TEMPLATE_ACCENT_COLORS = {
+  karaoke: "#ffffff",
+  neon: "#ffffff",
+  "green-screen": "#000000",
+  highlighter: "#111827",
+  ocean: "#ffffff",
+  bubblegum: "#ffffff",
+  royal: "#fde047",
+};
+
 /**
- * Build the ASS subtitle file content. Cues with word timings produce one
- * dialogue event per spoken word (the event runs until the next word starts,
- * so there are no gap flashes); cues without timings produce one event each.
- * Color parity with the editor preview: active word = #ff5d1c, every other
- * word = the user's caption color at FULL opacity — no dimming, no
- * template-color substitution.
+ * Build the ASS subtitle file content. Everything mirrors the editor's live
+ * caption overlay so a local render lands where the user previewed it:
+ *
+ *   size      — the overlay draws the slider px straight on the 1080-wide
+ *               canvas and treats 0 ("Auto") as 60px. Same rule here; the
+ *               old per-template defaults (56-68px) never matched preview.
+ *   color     — '#ffffff' is the editor's "template default" sentinel: the
+ *               overlay then draws inactive words in #d9d9d9 and the active
+ *               word in the fixed accent #ff5d1c. Other colors pass through
+ *               literally.
+ *   stroke    — outline px = caption_stroke_size × fontSize / 256 (the
+ *               overlay's WebkitTextStroke ratio), clamped to [1, 8].
+ *   shadow    — offset px = caption_shadow_size × fontSize / 192 (the
+ *               overlay's textShadow ratio), clamped to [1, 12]; \blur
+ *               stands in for the CSS blur radius, and only then — the
+ *               preview stroke is crisp, and blur would wash the 1-3px
+ *               outline away.
+ *   spacing   — letter spacing = slider % × fontSize (the overlay's exact
+ *               formula; the old render stacked template tracking on top).
+ *               Word spacing = literal extra spaces, same as the overlay.
+ *   width     — the overlay wraps text at caption_width % of the canvas;
+ *               MarginL/MarginR park the remaining band symmetrically.
+ *   position  — top/middle/bottom presets at 8% / center, and the drag
+ *               position (caption_x/caption_y, block CENTER) as \an5\pos,
+ *               matching the overlay's translate(-50%,-50%) anchor.
+ *   templates — boxed templates render via BorderStyle 3: libass paints the
+ *               box in OutlineColour expanded by Outline px (frame-verified
+ *               with ffmpeg 7.1: with Outline 0 the box degenerates to the
+ *               glyph bbox and disappears — the old output silently lost
+ *               every template box). Padding scales with the font. A user
+ *               stroke can't coexist with the box (single Outline field), so
+ *               the box wins, like the cloud providers.
+ *   animation — one dialogue event per spoken word; libass applies inline
+ *               \t transforms only to the text FOLLOWING the tag (verified),
+ *               so the active word scales/colors inside the line exactly
+ *               like the overlay's per-word CSS:
+ *                 pop        → scale to 1.15 with a 130ms spring settle
+ *                 bounce     → scale to 1.25 over 190ms
+ *                 shake      → line wobble re-triggered on every word
+ *                 fade       → 80ms color crossfade on the active word
+ *                 typewriter → words after the active one stay hidden
+ *                 slideUp    → line rises 200ms once per cue (\move when a
+ *                              drag position exists; fade + settle otherwise,
+ *                              because \move would drop the wrap margins)
+ *                 none       → accent snap only
  */
 export function buildAssSubtitles({
   captionCues = [],
@@ -132,38 +200,64 @@ export function buildAssSubtitles({
   captionX = null,
   captionY = null,
   captionAnim = "none",
+  captionWidth = 90,
   width = 1080,
   height = 1920,
 }) {
   const font = captionFont(captionFontKey);
   const def = styleDef(captionStyle);
-  // Literal user color — the preview renders textColor as-is, so the render
-  // must too (the old white→style-color swap made "white" captions render
-  // gray/off-white on several template styles).
-  const primary = assColor(captionTextColor || "#ffffff");
-  // The preview highlights the active word with a fixed accent — mirror it.
-  const accentColor = assColor("#ff5d1c");
+  // Boxed templates (karaoke, highlighter, …) render via BorderStyle 3; the
+  // flag also picks the readable per-template accent color below.
+  const boxed = Boolean(def.background);
 
+  // ---- size -----------------------------------------------------------------
+  const sizeOverride = Number(captionSize);
+  const fontSize =
+    Number.isFinite(sizeOverride) && sizeOverride > 0
+      ? Math.min(Math.round(sizeOverride), 200)
+      : PREVIEW_DEFAULT_FONT_SIZE;
+
+  // ---- colors -----------------------------------------------------------------
+  const isTemplateDefaultWhite =
+    String(captionTextColor ?? "#ffffff").trim().toLowerCase() === "#ffffff";
+  const primaryHex = isTemplateDefaultWhite
+    ? PREVIEW_INACTIVE_WHITE
+    : String(captionTextColor || "#ffffff");
+  const primary = assColor(primaryHex);
+  const accentColor = assColor(boxed
+    ? (TEMPLATE_ACCENT_COLORS[captionStyle] ?? PREVIEW_ACCENT_COLOR)
+    : PREVIEW_ACCENT_COLOR);
+
+  // ---- stroke / shadow ----------------------------------------------------------
   const strokeOn = captionStroke === true;
   const shadowOn = captionShadow === true;
-  const outlineColor = assColor(captionStrokeColor || "#000000");
-  const shadowColor = assColor(captionShadowColor || "#000000");
+  const round1 = (n) => Math.round(n * 10) / 10;
+  const strokePx = strokeOn
+    ? Math.min(8, Math.max(1, round1(((Number(captionStrokeSize) || 4) * fontSize) / 256)))
+    : 0;
+  const shadowPx = shadowOn
+    ? Math.min(12, Math.max(1, round1(((Number(captionShadowSize) || 6) * fontSize) / 192)))
+    : 0;
 
-  // Box styles render via BorderStyle 3 (opaque box in BackColour); text-only
-  // styles get an outline/shadow instead, with a soft classic-style shadow
-  // baked in for readability on bright footage.
-  const boxed = Boolean(def.background);
+  // ---- template boxes + style line ---------------------------------------------
   const borderStyle = boxed ? 3 : 1;
-  const outline = boxed ? 0 : strokeOn ? Math.min(Number(captionStrokeSize) || 4, 10) : 0;
-  const shadow = boxed ? 0 : shadowOn ? Math.min(Number(captionShadowSize) || 6, 12) : 3;
-  const backColour = boxed ? assColor(def.background) : shadowColor;
+  const boxPad = Math.max(6, Math.round(fontSize * 0.22));
+  const outline = boxed ? boxPad : strokePx;
+  const shadow = shadowOn ? shadowPx : 0;
+  const outlineColour = boxed
+    ? assColor(def.background)
+    : strokeOn
+      ? assColor(captionStrokeColor || "#000000")
+      : "&H00000000";
+  const backColour = assColor(captionShadowColor || "#000000");
 
-  // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
-  // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
-  // (matching the cloud providers' 8% offset); centered captions use 0.
-  // Custom drag position (editor caption_x/caption_y: % of canvas, the block
-  // CENTER — the preview anchors with translate(-50%,-50%), mirrored by ASS
-  // \an5). Present => overrides the top/middle/bottom preset entirely.
+  // ---- placement ------------------------------------------------------------
+  // ASS alignment numpad — 2 bottom-center, 5 mid-center, 8 top-center.
+  // MarginV pins the block 8% inside the top/bottom edge (matching the
+  // editor presets: bottom 8%, top 8%, middle centered); centered captions
+  // use 0. Custom drag position (editor caption_x/caption_y: % of canvas,
+  // the block CENTER — the preview anchors with translate(-50%,-50%),
+  // mirrored by ASS \an5). Present => overrides the preset entirely.
   // NB: Number(null) === 0, so the null check must come first — otherwise a
   // missing position silently becomes \pos(0,0) (top-left corner).
   const hasCustomPos =
@@ -177,7 +271,6 @@ export function buildAssSubtitles({
         y: Math.round((Math.min(100, Math.max(0, Number(captionY))) / 100) * height),
       }
     : null;
-  const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
   const alignment = hasCustomPos
     ? 5
     : captionPosition === "top"
@@ -191,48 +284,95 @@ export function buildAssSubtitles({
       ? 0
       : Math.round(height * 0.08);
 
-  // Clip-level letter spacing (% of font size) stacks on the style's own
-  // spacing; 0 keeps the style default. Word spacing = extra literal spaces
-  // between words — the only word-gap mechanism ASS supports, and the
-  // preview renders the SAME repeated spaces, so both stay identical.
-  const fspPx = Math.round(
-    (((parseFloat(def.letterSpacingPct) || 0) + (Number(captionLetterSpacing) || 0)) / 100) *
-      fontSize *
-      10
-  ) / 10;
+  // ---- wrap width -----------------------------------------------------------
+  // The overlay wraps the caption at caption_width % of the canvas; ASS wrap
+  // width = MarginL/MarginR, so park the remainder symmetrically. (\pos
+  // events ignore margins — a drag-positioned block keeps the overlay's
+  // centered max-width behavior regardless.)
+  const widthPct = Math.min(100, Math.max(20, Number(captionWidth) || 90));
+  const marginLR = Math.max(0, Math.round(((100 - widthPct) / 200) * width));
+
+  // ---- typography -----------------------------------------------------------
+  // Letter spacing follows the overlay exactly: slider % × fontSize. Word
+  // spacing = extra literal spaces between words — the only word-gap
+  // mechanism ASS supports, and the overlay renders the SAME repeated
+  // spaces, so both stay identical.
+  const fspPx = round1(((Number(captionLetterSpacing) || 0) / 100) * fontSize);
   const fspTag = fspPx !== 0 ? `{\\fsp${fspPx}}` : "";
   const wordGap = " ".repeat(1 + Math.max(0, Math.min(5, Math.round(Number(captionWordSpacing) || 0))));
-  const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
+  // Soften the drop shadow only for unboxed styles (boxed events get a hard
+  // offset shadow box, which reads like the overlay's box shadow anyway).
+  const blurTag = shadowOn && !boxed ? "{\\blur1.5}" : "";
 
-  // Caption animation (editor caption_anim). Per-word karaoke color is always
-  // on (active word = accent); motion rides on the FIRST event of each cue so
-  // the line animates once per line instead of pulsing on every word. Shake
-  // re-triggers on every word like the preview. ASS has no per-word transforms
-  // inside one event, so whole-line motion is the non-strobing equivalent of
-  // the per-word CSS preview.
+  // ---- animations (editor caption_anim → per-word ASS markup) ---------------
+  // Per-word karaoke color is always on (active word = accent). Motion
+  // splits by template type:
+  //   Unboxed (classic, minimal-mono): pop/bounce ride ON THE ACTIVE WORD
+  //   via inline \t — libass scopes inline transforms to the text following
+  //   the tag (frame-verified), exactly like the overlay's per-word CSS.
+  //   Boxed templates: a scaled word makes libass draw a taller
+  //   BorderStyle-3 box patch behind just that word (frame-verified
+  //   glitch), so pop/bounce degrade to a uniform line entrance per cue —
+  //   the box scales cleanly and the accent still tracks the voice word by
+  //   word. Shake stays a line wobble per word for both (uniform rotation
+  //   never splits the box). NB: every ASS tag below is written with a
+  //   double backslash — template literals eat single ones as escapes.
   const anim = String(captionAnim ?? "none").trim().toLowerCase();
   const posTag = posPx ? `{\\an5\\pos(${posPx.x},${posPx.y})}` : "";
-  const introTag = (isCueStart) => {
-    if (anim === "none") return "";
-    if (!isCueStart && anim !== "shake") return "";
-    switch (anim) {
-      case "pop":
-        return "{\\fscx40\\fscy40\\t(0,140,\\fscx100\\fscy100)}";
-      case "bounce":
-        return "{\\fscx60\\fscy60\\t(0,120,\\fscx112\\fscy112)\\t(120,260,\\fscx100\\fscy100)}";
-      case "fade":
-        return "{\\fad(200,0)}";
-      case "slideup":
-        return posPx
-          ? `{\\move(${posPx.x},${Math.min(height - 2, posPx.y + Math.round(height * 0.04))},${posPx.x},${posPx.y},0,220)}`
-          : "{\\fad(180,0)\\t(0,220,\\fscy88)\\t(220,360,\\fscy100)}";
-      case "shake":
-        return "{\\t(0,60,\\frz1.6)\\t(60,120,\\frz-1.6)\\t(120,180,\\frz0)}";
-      case "typewriter":
-        return "";
-      default:
-        return "";
+  const wordScaleAnim = !boxed && (anim === "pop" || anim === "bounce");
+
+  const activeWordOpen = () => {
+    if (wordScaleAnim) {
+      if (anim === "pop") {
+        // Overlay: scale 1.15, 120ms spring — grow slightly past the
+        // target, settle back.
+        return `{\\t(0,60,\\fscx119\\fscy119)\\t(60,130,\\fscx115\\fscy115)\\c${accentColor}}`;
+      }
+      // Overlay bounce: scale 1.25, 180ms.
+      return `{\\t(0,80,\\fscx129\\fscy129)\\t(80,190,\\fscx125\\fscy125)\\c${accentColor}}`;
     }
+    if (anim === "fade") {
+      // Overlay: color crossfade only, 80ms — no motion.
+      return `{\\t(0,80,\\c${accentColor})}`;
+    }
+    // shake / typewriter / slideUp / none / boxed pop-bounce: instant
+    // accent; motion (if any) comes from the line-level intro below.
+    return `{\\c${accentColor}}`;
+  };
+  // Restore the inline state after the active word so the rest of the line
+  // renders in the inactive color at normal scale. Skipped when nothing
+  // follows (event end or typewriter tail).
+  const activeWordClose = (isLast) => {
+    if (isLast) return "";
+    if (wordScaleAnim) return `{\\fscx100\\fscy100\\c${primary}}`;
+    return `{\\c${primary}}`;
+  };
+
+  // Shake: the overlay wobbles the active word ±2px for 300ms on every word
+  // change. ASS cannot translate a single word, so the line pivots a degree
+  // or so instead — same rhythm, non-strobing.
+  const shakeIntro =
+    "{\\t(0,70,\\frz1.4)\\t(70,140,\\frz-1.4)\\t(140,210,\\frz0.7)\\t(210,290,\\frz0)}";
+  // slideUp: the overlay's container rises 14px (preview scale ≈ 2% of the
+  // canvas height) with a fade over 200ms, replayed once per cue. With a
+  // drag position that is a real \move; without one, \move would drop the
+  // wrap margins, so it degrades to a fade + settle.
+  const slideUpIntro = posPx
+    ? `{\\move(${posPx.x},${Math.min(height - 2, posPx.y + Math.round(height * 0.021))},${posPx.x},${posPx.y},0,200)\\fad(200,0)}`
+    : "{\\fad(180,0)\\t(0,200,\\fscy92)\\t(200,340,\\fscy100)}";
+  // Boxed pop/bounce: uniform line entrance at each cue start (per-word
+  // scaling would tear the template box — see above).
+  const boxedEntranceIntro =
+    anim === "bounce"
+      ? "{\\fscx70\\fscy70\\t(0,110,\\fscx112\\fscy112)\\t(110,240,\\fscx100\\fscy100)}"
+      : "{\\fscx62\\fscy62\\t(0,150,\\fscx100\\fscy100)}";
+  const lineIntro = (isCueStart) => {
+    if (anim === "shake") return shakeIntro;
+    if (anim === "slideUp" && isCueStart) return slideUpIntro;
+    if (boxed && (anim === "pop" || anim === "bounce") && isCueStart) {
+      return boxedEntranceIntro;
+    }
+    return "";
   };
 
   const header = [
@@ -246,9 +386,10 @@ export function buildAssSubtitles({
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    // Alignment (2 bottom / 5 middle / 8 top, all center) + MarginV pin the
-    // block inside the edge, matching the cloud providers' placement.
-    `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${strokeOn ? outlineColor : "&H00000000"},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},60,60,${marginV},1`,
+    // BorderStyle 3 paints the template box from OutlineColour expanded by
+    // Outline px (the box padding); BorderStyle 1 strokes the glyphs. The
+    // BackColour drop stands in for the overlay's textShadow.
+    `Style: Cap,${font.family},${fontSize},${primary},&H000000FF,${outlineColour},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${outline},${shadow},${alignment},${marginLR},${marginLR},${marginV},1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -278,11 +419,13 @@ export function buildAssSubtitles({
 
   for (const cue of usableCues) {
     if (!wordSync || !Array.isArray(cue.words) || cue.words.length === 0) {
-      // Static cue: one event spanning the whole cue.
+      // Static cue: one event spanning the whole cue. The overlay draws no
+      // accent without word timings, so the render doesn't either; only the
+      // slideUp intro still plays (there it is a container animation).
       const start = Math.max(0, Number(cue.start) || 0);
       const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
       const words = wordsOf(cue).map((w) => (def.uppercase ? w.toUpperCase() : w));
-      pushEvent(start, end, words.join(wordGap), introTag(true));
+      pushEvent(start, end, words.join(wordGap), lineIntro(true));
       continue;
     }
     const cueEnd = Math.max(Number(cue.start) || 0, Number(cue.end) || 0);
@@ -297,15 +440,18 @@ export function buildAssSubtitles({
         Math.max(cueEnd, start + 0.08)
       );
       const words = wordsOf(cue).map((word) => (def.uppercase ? word.toUpperCase() : word));
-      // Typewriter: words after the active one stay invisible (mirrors the
-      // preview's visibility switch); every other animation shows the line.
+      // Typewriter keeps the overlay's reveal: words after the active one
+      // stay hidden (they still occupy space in the overlay; ASS can't
+      // reserve mid-line space, so the line grows — the standard equivalent).
       const visible = anim === "typewriter" ? words.slice(0, i + 1) : words;
       const body = visible
         .map((word, j) =>
-          j === i ? `{\\c${accentColor}}${word}{\\c${primary}}` : word
+          j === i
+            ? `${activeWordOpen()}${word}${activeWordClose(j === visible.length - 1)}`
+            : word
         )
         .join(wordGap);
-      pushEvent(start, end, body, introTag(i === 0));
+      pushEvent(start, end, body, lineIntro(i === 0));
     }
   }
 
@@ -447,6 +593,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionX = null,
     captionY = null,
     captionAnim = "none",
+    captionWidth = 90,
     outputAspect = "9:16",
   } = spec;
 
@@ -472,6 +619,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionX,
       captionY,
       captionAnim,
+      captionWidth,
       width,
       height,
     }),
