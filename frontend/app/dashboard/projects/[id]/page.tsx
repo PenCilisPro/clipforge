@@ -273,26 +273,48 @@ export default function ProjectDetailPage() {
     // Firestore realtime channel below is supposed to cover this, but its
     // transport dies too often to be trusted — without polling the UI sits
     // on "processing" forever even after clips finish rendering.
-    const pollTimer = setInterval(() => {
-      if (statusRef.current !== "pending" && statusRef.current !== "processing") return;
-      apiFetch<{ project: Project & { clips?: Clip[]; jobs?: Job[] } }>(
-        `/api/projects/${projectId}`
-      )
-        .then(({ project: fresh }) => {
-          if (!fresh) return;
-          statusRef.current = fresh.status;
-          setProject(fresh);
-          setClips(fresh.clips ?? []);
-          setJobs(fresh.jobs ?? []);
-        })
-        .catch(() => {
-          // backend hiccup — the next tick retries
-        });
-    }, 5000);
+    //
+    // Self-scheduling loop instead of setInterval: the old version fired a
+    // fresh request every 5s WITHOUT awaiting the previous one, so during a
+    // slow render requests piled up server-side (observed: single GETs
+    // sitting 310-519s in a hung Firebase call, tokens expiring in queue,
+    // 401 storms + gateway "CORS" errors). Now: one request in flight, a
+    // hard 20s abort, and 5s → 10s → 20s → 30s backoff while the backend
+    // struggles, resetting to 5s on the first healthy answer.
+    let pollCancelled = false;
+    let pollMisses = 0;
+    const pollDelays = [5000, 10000, 20000, 30000];
+    let pollHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const pollOnce = async () => {
+      if (pollCancelled) return;
+      if (statusRef.current === "pending" || statusRef.current === "processing") {
+        try {
+          const { project: fresh } = await apiFetch<{
+            project: Project & { clips?: Clip[]; jobs?: Job[] };
+          }>(`/api/projects/${projectId}`, { timeoutMs: 20000 });
+          pollMisses = 0;
+          if (fresh) {
+            statusRef.current = fresh.status;
+            setProject(fresh);
+            setClips(fresh.clips ?? []);
+            setJobs(fresh.jobs ?? []);
+          }
+        } catch {
+          // backend hiccup or deadline hit — back off and retry
+          pollMisses = Math.min(pollMisses + 1, pollDelays.length - 1);
+        }
+      }
+      if (!pollCancelled) {
+        pollHandle = setTimeout(pollOnce, pollDelays[pollMisses]);
+      }
+    };
+    pollHandle = setTimeout(pollOnce, pollDelays[0]);
 
     return () => {
+      pollCancelled = true;
       unsub();
-      if (pollTimer) clearInterval(pollTimer);
+      if (pollHandle) clearTimeout(pollHandle);
       if (channel) supabase.removeChannel(channel);
     };
   }, [projectId, reloadKey]);

@@ -32,7 +32,7 @@ export class ApiError extends Error {
  */
 export async function apiFetch<T = unknown>(
   path: string,
-  options: { method?: string; body?: unknown } = {}
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {}
 ): Promise<T> {
   const supabase = createClient();
 
@@ -49,6 +49,18 @@ export async function apiFetch<T = unknown>(
     const session = (await supabase.auth.getSession()).data.session;
     if (!session) throw new Error("Not signed in");
 
+    // Hard per-attempt deadline. During a local render the backend can be
+    // so starved that requests sat 300-519s in a Firebase/Firestore hang —
+    // long enough for the token to expire mid-request and for the gateway
+    // to cut the socket with a CORS-less error page. Aborting client-side
+    // keeps the UI responsive; callers (e.g. the status poller) back off
+    // and retry on their own schedule.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = options.timeoutMs ? new AbortController() : undefined;
+    if (controller) {
+      timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    }
+
     try {
       res = await fetch(`${API_URL}${path}`, {
         method,
@@ -57,14 +69,24 @@ export async function apiFetch<T = unknown>(
           Authorization: `Bearer ${session.access_token}`,
         },
         body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller?.signal,
       });
     } catch (err) {
+      // An aborted request means WE gave up on the deadline — rethrow
+      // immediately (no transport retry): piling more requests onto a
+      // starved backend only makes the starvation worse.
+      const abort = err as { name?: string; code?: string } | null;
+      if (abort?.name === "AbortError" || abort?.code === "ABORT_ERR") {
+        throw new ApiError(`Request timed out after ${options.timeoutMs}ms`, 0);
+      }
       // Only genuine transport failures throw here; HTTP error statuses
       // don't. Retrying won't help a dead connection pattern, but a
       // single missed response during a backend restart resolves itself.
       if (attempt >= maxAttempts) throw err;
       await new Promise((r) => setTimeout(r, 500 * attempt * attempt));
       continue;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
 
     if (res.status === 401 && !refreshedOn401) {

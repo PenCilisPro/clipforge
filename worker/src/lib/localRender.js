@@ -46,15 +46,20 @@ const REMOTE_INPUT_FLAGS = [
   "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
 ];
 
-// Encode quality for the local provider. "fast" + CRF 18 is a clear sharpness
-// upgrade over the old veryfast/20 while staying within the 40-min job
-// ceiling on the constrained container (single-threaded, ~1.5-2x encode time).
-// Beefier workers can push RENDER_PRESET=medium|slow and RENDER_CRF=16.
+// Encode quality for the local provider. The render shares a ~0.2 vCPU
+// container with the API + Redis: at preset "fast" a 1080x1920 encode ran
+// 16+ min without finishing (heartbeat elapsed 962s and climbing) — headed
+// straight for the 35-min ffmpeg timeout, while every encode second starved
+// the container. "veryfast" is ~2-2.5x cheaper per frame and visually near
+// identical at CRF 18 (x264 veryfast mostly skips the slowest ref/motion
+// search stages; CRF still hits the same quality target, files run ~10%
+// larger). Beefier workers can push RENDER_PRESET=fast|medium and
+// RENDER_CRF=16 — the env overrides below always win.
 const X264_PRESETS = new Set([
   "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
 ]);
 const requestedPreset = String(process.env.RENDER_PRESET ?? "").toLowerCase();
-const RENDER_PRESET = X264_PRESETS.has(requestedPreset) ? requestedPreset : "fast";
+const RENDER_PRESET = X264_PRESETS.has(requestedPreset) ? requestedPreset : "veryfast";
 const RENDER_CRF = Math.min(30, Math.max(12, Number(process.env.RENDER_CRF) || 18));
 const RENDER_AUDIO_BITRATE = String(process.env.RENDER_AUDIO_BITRATE ?? "").trim() || "192k";
 

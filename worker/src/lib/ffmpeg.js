@@ -44,6 +44,11 @@ const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 35 * 60 * 100
 // (busybox-less images fall back to a plain spawn automatically).
 const FFMPEG_NICE = process.env.FFMPEG_NICE === "0" ? false : true;
 
+// Warn ONCE when the nice applet is missing from the image (busybox-less
+// distroless-style bases) — a silent fallback made it impossible to tell
+// from container logs whether encodes were actually running at low priority.
+let warnedNiceMissing = false;
+
 /** Run a raw ffmpeg command (spawn) and reject on non-zero exit. */
 export function runFfmpeg(args, { cwd } = {}) {
   const run = (useNice) =>
@@ -78,7 +83,16 @@ export function runFfmpeg(args, { cwd } = {}) {
         clearTimeout(timer);
         // Some minimal images ship busybox without the nice applet — fall
         // back to a plain spawn once instead of failing every ffmpeg call.
-        if (useNice && err?.code === "ENOENT") err.fallbackToPlain = true;
+        if (useNice && err?.code === "ENOENT") {
+          err.fallbackToPlain = true;
+          if (!warnedNiceMissing) {
+            warnedNiceMissing = true;
+            console.warn(
+              "[ffmpeg] 'nice' not found in this image — encodes will run at NORMAL CPU priority. "
+                + "Install busybox/coreutils or set FFMPEG_NICE=0 to silence this warning."
+            );
+          }
+        }
         reject(err);
       });
     });
