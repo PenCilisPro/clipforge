@@ -50,6 +50,15 @@ if [ "$ROLE" = "worker" ]; then
     echo "[start] ROLE=worker but worker entry not found" >&2
     exit 1
   }
+  # A worker-only container has no local Redis. Without REDIS_URL the driver
+  # defaults to 127.0.0.1:6379, connects to nothing and the queue silently
+  # never drains — fail loudly at boot instead of haunting the logs.
+  if [ -z "$REDIS_URL" ]; then
+    echo "[start] FATAL: ROLE=worker requires REDIS_URL pointing at the API" \
+         "service's internal Redis (e.g. redis://<api-internal-address>:6379)." \
+         "Refusing to start with the useless 127.0.0.1 default." >&2
+    exit 1
+  fi
   # Foreground supervision: PID 1 stays alive, crashes restart after 5s.
   while :; do
     node "$WORKER_ENTRY"
@@ -58,13 +67,32 @@ if [ "$ROLE" = "worker" ]; then
   done
 fi
 
-redis-server \
-  --port 6379 \
-  --save "" \
-  --appendonly no \
-  --maxmemory 96mb \
-  --maxmemory-policy noeviction \
-  --daemonize yes
+# Redis 7's protected mode refuses every non-loopback client — that includes
+# a ROLE=worker container reaching this queue over Northflank's private
+# network. --protected-mode no is safe here because the port must only ever
+# be published as an INTERNAL (project-private) port — never public. For
+# defense in depth set REDIS_PASSWORD on BOTH services; workers then connect
+# with redis://:<password>@<internal-address>:6379.
+if [ -n "$REDIS_PASSWORD" ]; then
+  redis-server \
+    --port 6379 \
+    --requirepass "$REDIS_PASSWORD" \
+    --save "" \
+    --appendonly no \
+    --maxmemory 96mb \
+    --maxmemory-policy noeviction \
+    --protected-mode no \
+    --daemonize yes
+else
+  redis-server \
+    --port 6379 \
+    --save "" \
+    --appendonly no \
+    --maxmemory 96mb \
+    --maxmemory-policy noeviction \
+    --protected-mode no \
+    --daemonize yes
+fi
 
 if [ "$ROLE" != "api" ]; then
   # Supervise-loop: if the worker crashes, restart it after a short pause so
