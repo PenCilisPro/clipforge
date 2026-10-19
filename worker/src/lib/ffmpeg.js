@@ -11,7 +11,6 @@ const FFMPEG_PATH = process.env.FFMPEG_PATH_OVERRIDE || ffmpegStatic;
 console.log("[ffmpeg] using binary:", FFMPEG_PATH);
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
 ffmpeg.setFfprobePath(ffprobeStatic.path);
-console.log("[ffmpeg] using binary:", FFMPEG_PATH);
 
 export const TMP_DIR = process.env.TMP_DIR ?? "/tmp/clipforge";
 
@@ -27,37 +26,65 @@ export function tmpPath(name) {
 // ffmpeg must never hold a worker slot forever — a hung or thrashing encode
 // would otherwise deadlock the whole pipeline (this shipped once: every clip
 // sat in "rendering" for days with no error recorded anywhere).
-const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 15 * 60 * 1000;
+// 35 min, not the old 15: the 1080x1920 encode on a ~0.2 vCPU container is
+// extremely slow (observed 12+ min and still encoding), and the render JOB
+// itself dies at JOB_TIMEOUT_MS = 40 min (src/index.js) — ffmpeg's own kill
+// must fire first so the job fails with a real ffmpeg reason (and the
+// SIGKILL fallbacks below can still engage) instead of a bare wrapper
+// timeout. Set FFMPEG_TIMEOUT_MS to override.
+const FFMPEG_TIMEOUT_MS = Number(process.env.FFMPEG_TIMEOUT_MS) || 35 * 60 * 1000;
+
+// Run every ffmpeg at the LOWEST CPU priority. A local encode saturates a
+// small container's only vCPU: API responses stretched to minutes, platform
+// health checks timed out, the service got restarted mid-render — and the
+// gateway's 502 pages carry no CORS headers, so the browser shows CORS
+// errors while the backend config was never wrong. nice 19 costs the encode
+// almost nothing when the box is idle but guarantees the API, Redis and
+// health probes stay scheduable while it runs. Set FFMPEG_NICE=0 to disable
+// (busybox-less images fall back to a plain spawn automatically).
+const FFMPEG_NICE = process.env.FFMPEG_NICE === "0" ? false : true;
 
 /** Run a raw ffmpeg command (spawn) and reject on non-zero exit. */
 export function runFfmpeg(args, { cwd } = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(
-      FFMPEG_PATH,
-      ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", ...args],
-      { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) }
-    );
-    let stderr = "";
-    proc.stderr.on("data", (chunk) => {
-      stderr = (stderr + chunk.toString()).slice(-8000);
+  const run = (useNice) =>
+    new Promise((resolve, reject) => {
+      const prefix = useNice ? ["nice", "-n", "19", FFMPEG_PATH] : [FFMPEG_PATH];
+      const proc = spawn(
+        prefix[0],
+        [...prefix.slice(1), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", ...args],
+        { stdio: ["ignore", "ignore", "pipe"], ...(cwd ? { cwd } : {}) }
+      );
+      let stderr = "";
+      proc.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk.toString()).slice(-8000);
+      });
+      const timer = setTimeout(() => {
+        proc.kill("SIGKILL");
+        // The message deliberately names the signal: submitRender's and
+        // trimSegment's /SIGKILL/i fallbacks treat a kill as an overload
+        // signal — a timeout IS one, so the lighter-encode retry engages
+        // instead of failing the clip outright.
+        reject(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60000)} min and was killed by signal SIGKILL: ${stderr.slice(-400)}`));
+      }, FFMPEG_TIMEOUT_MS);
+      proc.on("close", (code, signal) => {
+        clearTimeout(timer);
+        code === 0
+          ? resolve()
+          : code === null
+            ? reject(new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`))
+            : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
+      });
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        // Some minimal images ship busybox without the nice applet — fall
+        // back to a plain spawn once instead of failing every ffmpeg call.
+        if (useNice && err?.code === "ENOENT") err.fallbackToPlain = true;
+        reject(err);
+      });
     });
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60000)} min: ${stderr.slice(-400)}`));
-    }, FFMPEG_TIMEOUT_MS);
-        proc.on("close", (code, signal) => {
-      clearTimeout(timer);
-      code === 0
-        ? resolve()
-        : code === null
-          ? reject(new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`))
-          : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
-    });
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
+  return run(FFMPEG_NICE).catch((err) =>
+    err?.fallbackToPlain ? run(false) : Promise.reject(err)
+  );
 }
 
 export function probeDurationSeconds(filePath) {
