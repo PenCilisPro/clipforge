@@ -76,6 +76,13 @@ const effectShape = {
   caption_word_spacing: z.coerce.number().int().min(0).max(5).optional(),
   // Letter spacing as % of the caption font size (editor "Spacing" control).
   caption_letter_spacing: z.coerce.number().int().min(-10).max(100).optional(),
+  // Caption animation id (editor Animation picker); rendered as ASS motion
+  // tags by the local/Modal renderer. Free-form (max 32) so the frontend can
+  // add new animations without a backend deploy.
+  caption_anim: z.string().trim().max(32).optional(),
+  // Custom caption anchor from the drag handle: % of canvas, block center.
+  caption_x: z.coerce.number().finite().min(0).max(100).optional(),
+  caption_y: z.coerce.number().finite().min(0).max(100).optional(),
   // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
   output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
@@ -254,6 +261,9 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_size",
       "caption_word_spacing",
       "caption_letter_spacing",
+      "caption_anim",
+      "caption_x",
+      "caption_y",
       "output_aspect",
       "video_fit",
     ]) {
@@ -305,7 +315,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, output_aspect, " +
+  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_anim, caption_x, caption_y, output_aspect, " +
   "video_fit, video_background_blur, " +
   "srt_override, broll_json";
 
@@ -578,6 +588,9 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_letter_spacing !== undefined
           ? { caption_letter_spacing: body.caption_letter_spacing }
           : {}),
+        ...(body.caption_anim !== undefined ? { caption_anim: body.caption_anim } : {}),
+        ...(body.caption_x !== undefined ? { caption_x: body.caption_x } : {}),
+        ...(body.caption_y !== undefined ? { caption_y: body.caption_y } : {}),
         ...(body.output_aspect ? { output_aspect: body.output_aspect } : {}),
         ...(body.video_fit ? { video_fit: body.video_fit } : {}),
         ...(body.video_background_blur !== undefined

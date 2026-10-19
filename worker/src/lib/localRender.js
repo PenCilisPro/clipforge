@@ -129,6 +129,9 @@ export function buildAssSubtitles({
   captionSize = 0,
   captionWordSpacing = 0,
   captionLetterSpacing = 0,
+  captionX = null,
+  captionY = null,
+  captionAnim = "none",
   width = 1080,
   height = 1920,
 }) {
@@ -158,10 +161,35 @@ export function buildAssSubtitles({
   // Caption placement: ASS alignment numpad — 2 bottom-center, 5 mid-center,
   // 8 top-center. MarginV pins the block 8% inside the top/bottom edge
   // (matching the cloud providers' 8% offset); centered captions use 0.
+  // Custom drag position (editor caption_x/caption_y: % of canvas, the block
+  // CENTER — the preview anchors with translate(-50%,-50%), mirrored by ASS
+  // \an5). Present => overrides the top/middle/bottom preset entirely.
+  // NB: Number(null) === 0, so the null check must come first — otherwise a
+  // missing position silently becomes \pos(0,0) (top-left corner).
+  const hasCustomPos =
+    captionX != null &&
+    captionY != null &&
+    Number.isFinite(Number(captionX)) &&
+    Number.isFinite(Number(captionY));
+  const posPx = hasCustomPos
+    ? {
+        x: Math.round((Math.min(100, Math.max(0, Number(captionX))) / 100) * width),
+        y: Math.round((Math.min(100, Math.max(0, Number(captionY))) / 100) * height),
+      }
+    : null;
   const fontSize = resolveCaptionFontSize(captionStyle, captionSize);
-  const alignment = captionPosition === "top" ? 8 : captionPosition === "middle" ? 5 : 2;
-  const marginV =
-    captionPosition === "middle" ? 0 : Math.round(height * 0.08);
+  const alignment = hasCustomPos
+    ? 5
+    : captionPosition === "top"
+      ? 8
+      : captionPosition === "middle"
+        ? 5
+        : 2;
+  const marginV = hasCustomPos
+    ? 0
+    : captionPosition === "middle"
+      ? 0
+      : Math.round(height * 0.08);
 
   // Clip-level letter spacing (% of font size) stacks on the style's own
   // spacing; 0 keeps the style default. Word spacing = extra literal spaces
@@ -175,6 +203,37 @@ export function buildAssSubtitles({
   const fspTag = fspPx !== 0 ? `{\\fsp${fspPx}}` : "";
   const wordGap = " ".repeat(1 + Math.max(0, Math.min(5, Math.round(Number(captionWordSpacing) || 0))));
   const blurTag = shadowOn || strokeOn ? "{\\blur2}" : "";
+
+  // Caption animation (editor caption_anim). Per-word karaoke color is always
+  // on (active word = accent); motion rides on the FIRST event of each cue so
+  // the line animates once per line instead of pulsing on every word. Shake
+  // re-triggers on every word like the preview. ASS has no per-word transforms
+  // inside one event, so whole-line motion is the non-strobing equivalent of
+  // the per-word CSS preview.
+  const anim = String(captionAnim ?? "none").trim().toLowerCase();
+  const posTag = posPx ? `{\\an5\\pos(${posPx.x},${posPx.y})}` : "";
+  const introTag = (isCueStart) => {
+    if (anim === "none") return "";
+    if (!isCueStart && anim !== "shake") return "";
+    switch (anim) {
+      case "pop":
+        return "{\\fscx40\\fscy40\\t(0,140,\\fscx100\\fscy100)}";
+      case "bounce":
+        return "{\\fscx60\\fscy60\\t(0,120,\\fscx112\\fscy112)\\t(120,260,\\fscx100\\fscy100)}";
+      case "fade":
+        return "{\\fad(200,0)}";
+      case "slideup":
+        return posPx
+          ? `{\\move(${posPx.x},${Math.min(height - 2, posPx.y + Math.round(height * 0.04))},${posPx.x},${posPx.y},0,220)}`
+          : "{\\fad(180,0)\\t(0,220,\\fscy88)\\t(220,360,\\fscy100)}";
+      case "shake":
+        return "{\\t(0,60,\\frz1.6)\\t(60,120,\\frz-1.6)\\t(120,180,\\frz0)}";
+      case "typewriter":
+        return "";
+      default:
+        return "";
+    }
+  };
 
   const header = [
     "[Script Info]",
@@ -208,8 +267,13 @@ export function buildAssSubtitles({
       ? cue.words.map((w) => assText(w.text))
       : assText(cue.text).split(/\s+/).filter(Boolean);
 
-  const pushEvent = (start, end, body) => {
-    lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${blurTag}${fspTag}${body}`);
+  const pushEvent = (start, end, body, intro = "") => {
+    // \move already carries the full position — never emit it alongside \pos
+    // (the two tags fight over the event anchor in libass).
+    const positionTag = intro.includes("\\move(") ? "" : posTag;
+    lines.push(
+      `Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${blurTag}${fspTag}${positionTag}${intro}${body}`
+    );
   };
 
   for (const cue of usableCues) {
@@ -218,7 +282,7 @@ export function buildAssSubtitles({
       const start = Math.max(0, Number(cue.start) || 0);
       const end = Math.max(start + 0.08, Number(cue.end) || start + 1);
       const words = wordsOf(cue).map((w) => (def.uppercase ? w.toUpperCase() : w));
-      pushEvent(start, end, words.join(wordGap));
+      pushEvent(start, end, words.join(wordGap), introTag(true));
       continue;
     }
     const cueEnd = Math.max(Number(cue.start) || 0, Number(cue.end) || 0);
@@ -233,12 +297,15 @@ export function buildAssSubtitles({
         Math.max(cueEnd, start + 0.08)
       );
       const words = wordsOf(cue).map((word) => (def.uppercase ? word.toUpperCase() : word));
-      const body = words
+      // Typewriter: words after the active one stay invisible (mirrors the
+      // preview's visibility switch); every other animation shows the line.
+      const visible = anim === "typewriter" ? words.slice(0, i + 1) : words;
+      const body = visible
         .map((word, j) =>
           j === i ? `{\\c${accentColor}}${word}{\\c${primary}}` : word
         )
         .join(wordGap);
-      pushEvent(start, end, body);
+      pushEvent(start, end, body, introTag(i === 0));
     }
   }
 
@@ -377,6 +444,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionSize = 0,
     captionWordSpacing = 0,
     captionLetterSpacing = 0,
+    captionX = null,
+    captionY = null,
+    captionAnim = "none",
     outputAspect = "9:16",
   } = spec;
 
@@ -399,6 +469,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
       captionSize,
       captionWordSpacing,
       captionLetterSpacing,
+      captionX,
+      captionY,
+      captionAnim,
       width,
       height,
     }),

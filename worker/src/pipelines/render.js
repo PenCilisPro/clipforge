@@ -164,6 +164,14 @@ export async function processRender(job) {
       captionSize: Number(clip.caption_size) || 0,
       captionWordSpacing: Number(clip.caption_word_spacing) || 0,
       captionLetterSpacing: Number(clip.caption_letter_spacing) || 0,
+      // Caption drag position (editor caption_x/caption_y, % of canvas, block
+      // center) and animation id — consumed by the local/Modal ASS renderer.
+      captionX: Number.isFinite(Number(clip.caption_x)) ? Number(clip.caption_x) : null,
+      captionY: Number.isFinite(Number(clip.caption_y)) ? Number(clip.caption_y) : null,
+      captionAnim:
+        typeof clip.caption_anim === "string" && clip.caption_anim.trim()
+          ? clip.caption_anim.trim()
+          : "pop",
       outputAspect: clip.output_aspect ?? "9:16",
     };
 
