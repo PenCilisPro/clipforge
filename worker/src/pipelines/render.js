@@ -176,6 +176,11 @@ export async function processRender(job) {
       // max-width box). The local ASS renderer turns it into symmetric
       // wrap margins; the cloud providers ignore it.
       captionWidth: Number(clip.caption_width) || 90,
+      // "Words per screen" regrouping (editor slider 0-12; 0 = off). The
+      // local/Modal ASS renderer re-chunks captionCues into blocks of exactly
+      // N timed words, mirroring the preview's regroupCuesForDisplay. Cloud
+      // providers ignore the field.
+      captionWords: Math.max(0, Math.min(12, Math.round(Number(clip.caption_words) || 0))),
       outputAspect: clip.output_aspect ?? "9:16",
     };
 

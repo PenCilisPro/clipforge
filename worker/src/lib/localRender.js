@@ -182,8 +182,65 @@ const TEMPLATE_ACCENT_COLORS = {
  *                              because \move would drop the wrap margins)
  *                 none       → accent snap only
  */
+
+/**
+ * "Words per screen" (spec.captionWords) — render-side twin of the clip
+ * editor's regroupCuesForDisplay: flatten every cue into timed words and
+ * re-chunk into blocks of exactly N words.
+ *   - cues with word timings keep them; cues without get their span spread
+ *     proportionally to word length (min cue span 0.3s), same as the preview.
+ *   - chunks span original cue boundaries (the preview flattens globally).
+ *   - n < 1 (off) or a failed regroup returns the cues untouched.
+ */
+function regroupCuesByWords(cues, n) {
+  const size = Math.round(Number(n) || 0);
+  if (!Number.isFinite(size) || size < 1) return cues;
+  const list = Array.isArray(cues) ? cues : [];
+  const words = [];
+  for (const c of list) {
+    const raw = String(c?.text ?? "").trim().split(/\s+/).filter(Boolean);
+    if (raw.length === 0) continue;
+    const timed =
+      Array.isArray(c.words) && c.words.length > 0
+        ? c.words.map((w) => ({
+            text: String(w?.text ?? w?.word ?? "").trim(),
+            start: Number(w?.start) || 0,
+            end: Number(w?.end) || 0,
+          }))
+        : [];
+    if (timed.length > 0) {
+      words.push(...timed);
+    } else {
+      const start = Math.max(0, Number(c.start) || 0);
+      const dur = Math.max(0.3, (Number(c.end) || start) - start);
+      const total = raw.reduce((s, w) => s + w.length, 0) || 1;
+      let t = start;
+      for (const w of raw) {
+        const d = (w.length / total) * dur;
+        words.push({ text: w, start: t, end: t + d });
+        t += d;
+      }
+    }
+  }
+  const out = [];
+  for (let i = 0; i < words.length; i += size) {
+    const chunk = words.slice(i, i + size);
+    if (chunk.length === 0) continue;
+    out.push({
+      id: `grp-${i}`,
+      start: chunk[0].start,
+      end: chunk[chunk.length - 1].end,
+      text: chunk.map((w) => w.text).join(" "),
+      words: chunk,
+    });
+  }
+  return out.length > 0 ? out : cues;
+}
+
 export function buildAssSubtitles({
   captionCues = [],
+  // "Words per screen" regroup size (0 = off — render cues as edited).
+  captionWords = 0,
   captionFontKey = "anton",
   captionStyle = "classic",
   captionTextColor = "#ffffff",
@@ -396,7 +453,11 @@ export function buildAssSubtitles({
   ];
 
   const lines = [];
-  const usableCues = (Array.isArray(captionCues) ? captionCues : []).slice(0, 400);
+  // "Words per screen" regroup — mirrors the editor preview exactly (0 = off).
+  const usableCues = (Array.isArray(captionCues)
+    ? regroupCuesByWords(captionCues, captionWords)
+    : []
+  ).slice(0, 400);
   const wordTotal = usableCues.reduce(
     (sum, cue) => sum + (Array.isArray(cue.words) ? cue.words.length : 0),
     0
@@ -575,6 +636,8 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     musicTrack = null,
     watermarkUrl,
     captionCues = [],
+    // "Words per screen" regroup size (0 = off — render cues as edited).
+    captionWords = 0,
     captionFontKey = "anton",
     captionStyle = "classic",
     captionTextColor = "#ffffff",
@@ -603,6 +666,7 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     path.join(TMP_DIR, assRel),
     buildAssSubtitles({
       captionCues,
+      captionWords,
       captionFontKey,
       captionStyle,
       captionTextColor,
