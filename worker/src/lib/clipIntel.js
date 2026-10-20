@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { chatComplete } from "./zai.js";
 
 /**
- * Clip Intelligence v2.1 — transcript-based clip selector with dead-air cutting.
+ * Clip Intelligence v2.2 — transcript-based clip selector with dead-air
+ * cutting and multi-scene stitching.
+ *
+ * v2.2 adds scene stitching: the model may keep 2-3 non-adjacent scenes
+ * inside one clip and skip what it judged boring in between (a digression,
+ * a repeated example, host chat, a slow stretch the payoff does not need).
+ * The skipped middle becomes part of the edit decision list, so the renderer
+ * cuts it out and the captions re-time to the merged timeline — one clip,
+ * several scenes, nothing boring in between.
  *
  * v2.1 adds the viewer-retention model ("why a viewer stops scrolling"):
  * open question + reason to care in the hook window (caps + penalty),
@@ -64,6 +72,13 @@ export const CONFIG = {
   REPETITION_MIN_WORDS: 16,   // need at least this many kept words before the ratio means anything
   HOOK_CARE_CAP: 6,           // hook_strength cap when the hook window has no reason to care
   HOOK_DEAD_CAP: 4,           // hook_strength cap when it has neither an open question nor a reason to care
+
+  // ---- scene stitching — skip whole boring scenes inside one clip [mine] ----
+  SCENE_STITCH: true,   // let the model propose multi-scene clips (scenes array)
+  MAX_SCENES: 3,        // hard cap on scenes per clip (the hook scene + up to 2 more)
+  SCENE_MIN_SKIP: 2.0,  // a scene boundary must remove at least this many seconds (smaller gaps are merged away)
+  SCENE_MAX_SKIP: 45,   // one skip may remove at most this many seconds — beyond that the scenes don't belong together
+  SCENE_MIN_LEN: 2.5,   // each scene must span at least this many seconds (shorter ones are merged with a neighbour)
 };
 
 const WEIGHTS = { hook_strength: 0.30, peak: 0.30, second: 0.10, retention_flow: 0.20, audience_fit: 0.10 };
@@ -123,6 +138,16 @@ Each transcript line looks like:  S014 [312.40-315.10] gap=0.20 SPEAKER_1: text
 PARAMETERS
 HOOK_WINDOW = {{HOOK_WINDOW}} seconds (about 12 spoken words). MIN_DURATION = {{MIN_DURATION}} s. MAX_DURATION = {{MAX_DURATION}} s. The payoff must start at or after {{PAYOFF_MIN_POSITION}} of the clip length. MAX_CANDIDATES = {{MAX_CANDIDATES}}.
 Inside a clip, silences longer than {{GAP_COMPRESS}} s and hesitation sounds (um, uh, er) are cut automatically by the editor. Count clip length as speaking time, and do not lower retention_flow for pauses that will be cut.
+
+SCENE STITCHING (optional)
+You are not limited to one contiguous run: a clip may keep 2-3 separate scenes and skip the boring material between them entirely. Use scenes when the hook and setup are strong but the direct path to the payoff is blocked by a stretch that would lose viewers: a digression, a second example that repeats the first, host chat, a tangent, or a slow story the payoff does not need.
+- "scenes" is an ordered list of {start_id, end_id} runs taken from the transcript IN ORIGINAL ORDER. Never reorder, never overlap.
+- Scene 1 must contain the hook. The LAST scene must contain the payoff. What the viewer sees must still be one coherent thought: each later scene must continue, not restart, the story.
+- Skip at least 2 s of material per boundary (smaller gaps are pointless stutter) and never more than 45 s in one skip. 2-3 scenes total; more fragments confuse.
+- Never create a cut that leaves a dangling reference ("as I said earlier", "that's why", a pronoun whose subject got skipped). If any scene starts with a reference the previous scene does not resolve, do not stitch there — set context.resolved_by to "none" and let code reject, or pick different boundaries.
+- The viewer must not feel time jumped: no "back to", no "anyway", no repeated setup across the cut.
+- Count duration as the speaking time of the KEPT scenes only. Set start_id/end_id to the first scene's start and the last scene's end.
+- When one contiguous run already works, do NOT output scenes — a single scene is always safer.
 
 1. HOW THE VIEWER DECIDES
 - The clip appears to someone mid-scroll. Nobody chose it, and swiping costs nothing, so swiping is what happens by default. The clip has to earn every next second.
@@ -187,6 +212,7 @@ Step 1. Group consecutive sentences into beats. Mark a beat boundary where the t
 Step 2. Mark signal sentences using the archetype signals above.
 Step 3. For each signal cluster, find the payoff sentence: where the question is answered, the twist lands, the fix is stated, or the goal is fulfilled.
 Step 4. Walk back from the payoff to find the start. Take the latest sentence from which the first two sentences are understandable without outside context. Do not go earlier than the beat start. Keep setup under 40% of the clip so the payoff lands at 60% or later.
+Step 4b. Scene stitch (only when the contiguous span fails). If walking back pulls in 10+ seconds of weak material, or the direct path to the payoff crosses a digression, a repeated example or host chat, split the clip into scenes: keep the hook setup as scene 1, skip the weak stretch, keep what leads into the payoff as the next scene. Follow the SCENE STITCHING rules. If the span works contiguously, output no scenes field.
 Step 5. Walk forward from the payoff to find the end. End on the payoff sentence, or one reaction sentence of 4 seconds or less after it. Never include the next topic, a thank-you, a sign-off, a host transition, or a sponsor read.
 Step 6. Check the hook window. If the answer, twist, punchline or fix is inside the first HOOK_WINDOW seconds, try moving the start up to 20 seconds earlier to add setup. If no earlier start fixes it, reject with payoff_too_early. Do not reorder sentences.
 Step 7. Check duration. If shorter than MIN_DURATION, extend the start backward by whole sentences inside the same beat. If still too short, reject with below_min_duration. If longer than MAX_DURATION, tighten the start or reject with above_max_duration.
@@ -233,6 +259,8 @@ PENALTY FLAGS (report honestly; code applies the values)
 
 HARD REJECTS (go in rejected, not clips)
 - payoff_too_early, no_payoff, below_min_duration, above_max_duration
+- invalid_scenes: the scenes array overlaps, is out of order, or names unknown sentence IDs
+- scene_skip_too_long: a single scene boundary would skip more than 45 s
 - housekeeping: intros, outros, "welcome back", "before we go on", "like and subscribe", "link in the description", sponsor reads, breaks, stage logistics
 - needs_outside_context: the first two sentences contain a reference no allowed start can resolve
 - visual_dependent: the only interest is something the transcript cannot show
@@ -250,6 +278,7 @@ OUTPUT SCHEMA
 {
   "clips": [{
     "start_id": "S101", "end_id": "S106",
+    "scenes": [{ "start_id": "S101", "end_id": "S102" }, { "start_id": "S105", "end_id": "S106" }],
     "archetype": "twist | polarizing_take | emotional_peak | tip_or_myth_bust | promise_journey_payoff | standoff_resolution",
     "hook": { "spoken_text": "verbatim", "headline": "max 12 words, no payoff", "formula": "F1-F8", "reason_to_care": "stakes | recognition | strong_feeling | useful | none", "open_questions": ["...", "..."] },
     "ending_outcome": "rewatch | share | save | comment | follow",
@@ -708,6 +737,168 @@ function buildEditPlan(words, { floor = 0, ceil = Infinity } = {}) {
 }
 
 // =====================================================================
+// Scene stitching — 2-3 non-adjacent scenes merged into one clip
+// =====================================================================
+
+class SceneError extends Error {
+  constructor(reason, note) {
+    super(note);
+    this.reason = reason;
+  }
+}
+
+/**
+ * Parse + normalize the model's `scenes` proposal into sentence pairs.
+ * Returns null when no usable scenes were proposed (caller falls back to the
+ * contiguous path). Throws SceneError (invalid_scenes | scene_skip_too_long)
+ * for structurally broken proposals.
+ *
+ * Graceful degradation, never rejection, for merely imperfect proposals:
+ * - gaps below SCENE_MIN_SKIP and scenes shorter than SCENE_MIN_LEN are merged
+ *   away (the clip just plays through them),
+ * - scenes beyond MAX_SCENES are dropped (flagged, not rejected).
+ */
+function resolveScenes(raw, ctx) {
+  if (!CONFIG.SCENE_STITCH || !Array.isArray(raw?.scenes) || raw.scenes.length === 0) return null;
+
+  const flags = [];
+  const parsed = [];
+  for (const sc of raw.scenes) {
+    const a = ctx.byNum.get(parseId(sc?.start_id));
+    const b = ctx.byNum.get(parseId(sc?.end_id));
+    if (!a || !b || a.idx > b.idx) {
+      throw new SceneError("invalid_scenes", `scene ${sc?.start_id}-${sc?.end_id} is missing from this window or out of order`);
+    }
+    parsed.push({ s0: a, s1: b });
+  }
+  // Order by start; overlapping scenes are a model error we cannot guess away.
+  parsed.sort((x, y) => x.s0.idx - y.s0.idx);
+  for (let i = 1; i < parsed.length; i++) {
+    if (parsed[i].s0.idx <= parsed[i - 1].s1.idx) {
+      throw new SceneError("invalid_scenes", "scenes overlap — they must be separate, ordered runs");
+    }
+  }
+  let scenes = parsed;
+  if (scenes.length > CONFIG.MAX_SCENES) {
+    scenes = scenes.slice(0, CONFIG.MAX_SCENES);
+    flags.push("scenes_truncated");
+  }
+
+  // Merge passes until stable: tiny skips and too-short scenes degrade into
+  // one longer scene instead of stutter cuts.
+  const gap = (a, b) => Math.max(0, b.s0.start - a.s1.end);
+  const span = (s) => s.s1.end - s.s0.start;
+  let merged = scenes;
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    const out = [merged[0]];
+    for (let i = 1; i < merged.length; i++) {
+      const prev = out[out.length - 1];
+      const cur = merged[i];
+      if (gap(prev, cur) < CONFIG.SCENE_MIN_SKIP) {
+        prev.s1 = cur.s1; // skip too small to read as a cut — play through
+        changed = true;
+      } else if (span(cur) < CONFIG.SCENE_MIN_LEN) {
+        prev.s1 = cur.s1; // scene too short to stand alone — fold into previous
+        changed = true;
+      } else {
+        out.push(cur);
+      }
+    }
+    // The first scene must also carry its weight.
+    if (out.length > 1 && span(out[0]) < CONFIG.SCENE_MIN_LEN) {
+      out.splice(0, 2, { s0: out[0].s0, s1: out[1].s1 });
+      changed = true;
+    }
+    merged = out;
+    if (!changed) break;
+  }
+  if (merged.length === 0) return null;
+
+  for (let i = 1; i < merged.length; i++) {
+    if (gap(merged[i - 1], merged[i]) > CONFIG.SCENE_MAX_SKIP) {
+      throw new SceneError("scene_skip_too_long", `scene boundary would skip more than ${CONFIG.SCENE_MAX_SKIP} s`);
+    }
+  }
+  return { scenes: merged, flags };
+}
+
+/**
+ * Multi-scene edit plan: run the dead-air edit per scene, then concatenate
+ * the scene plans into one edit decision list. Kept words are re-timed onto
+ * the merged (output) timeline, so captions, payoff position and the
+ * retention checks all see exactly what the viewer will see.
+ */
+function buildSceneEditPlan(sceneList, ctx, { lead, trail }) {
+  const plans = [];
+  const sceneWords = [];
+
+  sceneList.forEach((scene, i) => {
+    const isFirst = i === 0;
+    const isLast = i === sceneList.length - 1;
+    // Padding must never bleed across a scene boundary into kept footage.
+    // Interior scenes floor at the PREVIOUS scene's last word end, so the
+    // standard onset pad may extend into the skip (never into kept speech).
+    const prevLastEnd = isFirst
+      ? scene.s0.wStart > 0 ? ctx.words[scene.s0.wStart - 1].end : 0
+      : ctx.words[sceneList[i - 1].s1.wEnd].end;
+    const floor = Math.min(prevLastEnd, scene.s0.start);
+    const ceil = !isLast
+      ? sceneList[i + 1].s0.start
+      : scene.s1.wEnd + 1 < ctx.words.length ? ctx.words[scene.s1.wEnd + 1].start : Infinity;
+    let words = ctx.words.slice(scene.s0.wStart, scene.s1.wEnd + 1);
+    if (isFirst && lead > 0) words = words.slice(Math.min(lead, words.length - 1));
+    if (isLast && trail > 0) words = words.slice(0, Math.max(1, words.length - trail));
+    sceneWords.push(words);
+    plans.push(buildEditPlan(words, { floor, ceil }));
+  });
+
+  // Concatenate: scene output times shift by the running output duration.
+  const segments = [];
+  const keptWords = [];
+  const offsets = [];
+  let acc = 0;
+  let fillersRemoved = 0;
+  plans.forEach((p, i) => {
+    offsets.push(acc);
+    for (const s of p.segments) segments.push(s);
+    for (const w of p.keptWords) {
+      keptWords.push({ ...w, start: round3(w.start + acc), end: round3(w.end + acc) });
+    }
+    acc += p.outputDuration;
+    fillersRemoved += sceneWords[i].length - p.keptWords.length;
+  });
+
+  const sourceDuration = segments[segments.length - 1].end - segments[0].start;
+
+  // Global source -> output mapper (times inside a skipped scene map to the
+  // start of the next scene's output).
+  const toOutput = (t) => {
+    for (let i = 0; i < plans.length; i++) {
+      const p = plans[i];
+      const first = p.segments[0];
+      const last = p.segments[p.segments.length - 1];
+      if (t < first.start) return offsets[i];
+      if (t <= last.end) return offsets[i] + p.toOutput(t);
+    }
+    return acc;
+  };
+
+  return {
+    segments: segments.map((s) => ({ start: round3(s.start), end: round3(s.end) })),
+    outputDuration: acc,
+    sourceDuration,
+    removedSec: sourceDuration - acc,
+    cuts: segments.length - 1,
+    fillersRemoved,
+    keptWords,
+    maxGapAfter: maxInternalGap(keptWords),
+    toOutput,
+    scenePlans: plans,
+  };
+}
+
+// =====================================================================
 // Validation + scoring (V1-V13, caps, penalties, total)
 // =====================================================================
 
@@ -730,31 +921,80 @@ function evaluateCandidate(raw, ctx) {
     rejection: { start_id: startIdRaw, end_id: endIdRaw, reasons, note, source: "code" },
   });
 
-  // V1 — IDs exist in this window and are ordered
-  const s0 = ctx.byNum.get(parseId(raw?.start_id));
-  const s1 = ctx.byNum.get(parseId(raw?.end_id));
-  if (!s0 || !s1 || s0.idx > s1.idx) return reject(["invalid_ids"], "start_id/end_id missing from this window or out of order");
-
   const hardFails = [];
   const flags = [];
 
-  // V2 — map IDs to word timestamps, apply trims
+  // Scenes first — a usable `scenes` proposal overrides the contiguous span.
+  // Structurally broken proposals (overlap, unknown IDs, oversized skip) reject
+  // with the reason the model can fix; imperfect ones degrade gracefully.
+  let sceneInfo = null;
+  try {
+    sceneInfo = resolveScenes(raw, ctx);
+  } catch (e) {
+    if (e instanceof SceneError) return reject([e.reason], e.message);
+    throw e;
+  }
+  const useScenes = Boolean(sceneInfo && sceneInfo.scenes.length >= 2);
+
+  // V1 — IDs exist in this window and are ordered. With scenes the span is
+  // derived from the scene list, so the raw start_id/end_id pair is optional.
+  const s0 = sceneInfo
+    ? sceneInfo.scenes[0].s0
+    : ctx.byNum.get(parseId(raw?.start_id));
+  let s1 = sceneInfo
+    ? sceneInfo.scenes[sceneInfo.scenes.length - 1].s1
+    : ctx.byNum.get(parseId(raw?.end_id));
+  if (!s0 || !s1 || s0.idx > s1.idx) return reject(["invalid_ids"], "start_id/end_id missing from this window or out of order");
+
+  // V2 — map IDs to word timestamps, apply trims, build the edit plan
+  // (dead-air cuts inside each scene + the scene skips between them).
+  // Trims are span-level: leading filler sits at the very start and the
+  // trailing trim at the very end, whichever branch runs below.
   const trim = sanitizeTrimOps(raw.trim_ops);
   const spanWords = ctx.words.slice(s0.wStart, s1.wEnd + 1);
   const fillerLead = Math.min(leadingFillerCount(spanWords), CONFIG.MAX_LEADING_TRIM);
   const lead = CONFIG.AUTO_TRIM_LEADING_FILLER ? fillerLead : Math.min(trim.lead, fillerLead);
   const trail = Math.min(trim.trail, CONFIG.MAX_TRAILING_TRIM);
-  const clipWords = spanWords.slice(lead, spanWords.length - trail);
+  let clipWords;
+  let plan;
+  if (useScenes) {
+    // The payoff must survive the stitch: scenes after the payoff's scene are
+    // wind-down by definition — drop them instead of airing a dead tail. The
+    // span bounds follow the edit (end_id becomes the kept last scene).
+    const payoffSentence = ctx.byNum.get(parseId(raw?.payoff_id));
+    if (payoffSentence) {
+      const payoffSceneIdx = sceneInfo.scenes.findIndex(
+        (sc) => payoffSentence.idx >= sc.s0.idx && payoffSentence.idx <= sc.s1.idx
+      );
+      if (payoffSceneIdx >= 0 && payoffSceneIdx < sceneInfo.scenes.length - 1) {
+        sceneInfo.scenes = sceneInfo.scenes.slice(0, payoffSceneIdx + 1);
+        sceneInfo.flags.push("scenes_after_payoff_dropped");
+        s1 = sceneInfo.scenes[sceneInfo.scenes.length - 1].s1;
+      }
+    }
+
+    plan = buildSceneEditPlan(sceneInfo.scenes, ctx, { lead, trail });
+    clipWords = sceneInfo.scenes.flatMap((sc, i) => {
+      let words = ctx.words.slice(sc.s0.wStart, sc.s1.wEnd + 1);
+      if (i === 0 && lead > 0) words = words.slice(Math.min(lead, Math.max(0, words.length - 1)));
+      if (i === sceneInfo.scenes.length - 1 && trail > 0) words = words.slice(0, Math.max(1, words.length - trail));
+      return words;
+    });
+    flags.push("scene_stitched", ...sceneInfo.flags);
+  } else {
+    clipWords = spanWords.slice(lead, spanWords.length - trail);
+
+    // Dead-air edit plan
+    const firstIdx = s0.wStart + lead;
+    const lastIdx = s1.wEnd - trail;
+    plan = buildEditPlan(clipWords, {
+      floor: firstIdx > 0 ? ctx.words[firstIdx - 1].end : 0,
+      ceil: lastIdx + 1 < ctx.words.length ? ctx.words[lastIdx + 1].start : Infinity,
+    });
+  }
   if (clipWords.length < 3) return reject(["empty_after_trim"], "trim removed nearly all words");
   if (lead > trim.lead) flags.push("auto_trimmed_leading_filler");
 
-  // Dead-air edit plan
-  const firstIdx = s0.wStart + lead;
-  const lastIdx = s1.wEnd - trail;
-  const plan = buildEditPlan(clipWords, {
-    floor: firstIdx > 0 ? ctx.words[firstIdx - 1].end : 0,
-    ceil: lastIdx + 1 < ctx.words.length ? ctx.words[lastIdx + 1].start : Infinity,
-  });
   const start = plan.segments[0].start;
   const end = plan.segments[plan.segments.length - 1].end;
   const duration = plan.outputDuration; // what the viewer actually watches
@@ -936,6 +1176,17 @@ function evaluateCandidate(raw, ctx) {
     send_to: sendTo,
   };
 
+  // Where one scene ends and the next begins, in source time — the skips the
+  // renderer will cut. Empty for contiguous clips.
+  const sceneSkips = useScenes
+    ? plan.scenePlans.slice(1).map((p, i) => {
+        const prev = plan.scenePlans[i];
+        const skipStart = prev.segments[prev.segments.length - 1].end;
+        const skipEnd = p.segments[0].start;
+        return { start: round2(skipStart), end: round2(skipEnd), sec: round2(Math.max(0, skipEnd - skipStart)) };
+      })
+    : [];
+
   return {
     ok: true,
     clip: {
@@ -954,7 +1205,7 @@ function evaluateCandidate(raw, ctx) {
       edited_words: plan.keptWords,
       hard_fails: hardFails, // non-empty only in score_only mode
       intel_json: {
-        version: "v2.1",
+        version: "v2.2",
         start_id: s0.id,
         end_id: s1.id,
         payoff_id: payoff.id,
@@ -1005,12 +1256,19 @@ function evaluateCandidate(raw, ctx) {
         hard_fails: hardFails,
         flags,
         trim_ops: trim.ops,
+        // Scene stitching: the scene list as actually edited (after payoff
+        // drops and merges) — null when the clip is one contiguous scene.
+        scenes: useScenes
+          ? sceneInfo.scenes.map(({ s0: a, s1: b }) => ({ start_id: a.id, end_id: b.id }))
+          : null,
         edit: {
           segments: plan.segments,
           output_duration: round2(duration),
           removed_sec: round2(plan.removedSec),
           cuts: plan.cuts,
           fillers_removed: plan.fillersRemoved,
+          scene_count: useScenes ? sceneInfo.scenes.length : 1,
+          scene_skips: sceneSkips,
         },
         risks: (Array.isArray(raw.risks) ? raw.risks : [raw.risks]).filter(Boolean).map((r) => String(r).slice(0, 300)),
         config: {
@@ -1033,13 +1291,32 @@ function evaluateCandidate(raw, ctx) {
 // =====================================================================
 
 function dedupeClips(sorted) {
+  // Overlap measured on KEPT material (segments when present), so a
+  // scene-stitched clip does not shadow unrelated clips that live inside its
+  // skipped middle. Falls back to the plain span for legacy shapes.
+  const keptRanges = (c) =>
+    Array.isArray(c.segments) && c.segments.length > 0
+      ? c.segments
+      : [{ start: c.start, end: c.end }];
+  const keptLen = (c) =>
+    Number.isFinite(c.output_duration) && c.output_duration > 0
+      ? c.output_duration
+      : keptRanges(c).reduce((s, r) => s + (r.end - r.start), 0);
   const kept = [];
   for (const clip of sorted) {
     const dup = kept.some((k) => {
-      const overlap = Math.min(clip.end, k.end) - Math.max(clip.start, k.start);
+      const a = keptRanges(clip);
+      const b = keptRanges(k);
+      let overlap = 0;
+      for (const ra of a) {
+        for (const rb of b) {
+          const o = Math.min(ra.end, rb.end) - Math.max(ra.start, rb.start);
+          if (o > 0) overlap += o;
+        }
+      }
       if (overlap <= 0) return false;
-      const shorter = Math.min(clip.end - clip.start, k.end - k.start);
-      return overlap / shorter > CONFIG.OVERLAP_LIMIT;
+      const shorter = Math.min(keptLen(clip), keptLen(k));
+      return shorter > 0 && overlap / shorter > CONFIG.OVERLAP_LIMIT;
     });
     if (!dup) kept.push(clip);
   }
@@ -1239,4 +1516,6 @@ export {
   evaluateCandidate as _evaluateCandidate,
   makeWindowContext as _makeWindowContext,
   buildEditPlan as _buildEditPlan,
+  resolveScenes as _resolveScenes,
+  buildSceneEditPlan as _buildSceneEditPlan,
 };

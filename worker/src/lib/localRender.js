@@ -1,6 +1,6 @@
 import { RENDER_STYLES, captionFont } from "./captions.js";
 import { aspectDimensions } from "./canvas.js";
-import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile } from "./ffmpeg.js";
+import { ensureTmpDir, tmpPath, TMP_DIR, runFfmpeg, cleanup, downloadToFile, probeMedia } from "./ffmpeg.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -555,6 +555,46 @@ function fmt(n) {
   return (Math.round(n * 1000) / 1000).toString();
 }
 
+/**
+ * Scene cuts — filter_complex that keeps only the given ranges (times are
+ * RELATIVE to the input seek point) and concat-joins them into one video.
+ * This is what turns the AI's edit list (scene stitches + dead-air cuts)
+ * into one clip: the boring middle is simply never decoded into the output.
+ *
+ * - Frame-grid snapping (1/30 s) keeps A/V drift at zero across cuts.
+ * - A 12 ms audio fade at each seam stops clicks at the join.
+ * - When the source has no audio stream the audio branch is omitted entirely
+ *   (a filtergraph referencing [0:a] without one fails to configure).
+ * - Video cuts are hard cuts — the jump is the point; only the audio is eased.
+ */
+function buildSegmentCutFilter(segments, { fps = 30, fade = 0.012, withAudio = true } = {}) {
+  const snap = (t) => Math.max(0, Math.round(t * fps) / fps);
+  const parts = [];
+  const pairs = [];
+  segments.forEach((seg, i) => {
+    const s = snap(seg.start);
+    const e = Math.max(s + 1 / fps, snap(seg.end));
+    const d = e - s;
+    parts.push(`[0:v]trim=start=${s.toFixed(4)}:end=${e.toFixed(4)},setpts=PTS-STARTPTS[v${i}]`);
+    if (withAudio) {
+      const f = Math.min(fade, d / 4);
+      parts.push(
+        `[0:a]atrim=start=${s.toFixed(4)}:end=${e.toFixed(4)},asetpts=PTS-STARTPTS,` +
+          `afade=t=in:st=0:d=${f.toFixed(4)},afade=t=out:st=${(d - f).toFixed(4)}:d=${f.toFixed(4)}[a${i}]`
+      );
+      pairs.push(`[v${i}][a${i}]`);
+    } else {
+      pairs.push(`[v${i}]`);
+    }
+  });
+  parts.push(
+    withAudio
+      ? `${pairs.join("")}concat=n=${segments.length}:v=1:a=1[vcut][acut]`
+      : `${pairs.join("")}concat=n=${segments.length}:v=1:a=0[vcut]`
+  );
+  return { filter: parts.join(";"), v: "[vcut]", a: withAudio ? "[acut]" : null };
+}
+
 /** Build the filter_complex graph (video chain; audio chain is appended). */
 function buildFilterGraph({
   broll,
@@ -565,6 +605,10 @@ function buildFilterGraph({
   watermarkInput = null,
   videoFit = "cover",
   videoBackgroundBlur = true,
+  // Scene cuts: the video chain starts at the concat output instead of the
+  // raw input. "[0:v]" (contiguous) when there is no cut list. The value is a
+  // full padded reference, so the cut path passes "[vcut]" verbatim.
+  cutVideoIn = "[0:v]",
 }) {
   const parts = [];
   // Lanczos resampling: bilinear (the default) visibly softens the 1080x1920
@@ -580,7 +624,7 @@ function buildFilterGraph({
       const bw = Math.round(width / 8);
       const bh = Math.round(height / 8);
       parts.push(
-        `[0:v]split=2[bgs][fgs];` +
+        `${cutVideoIn}split=2[bgs][fgs];` +
           `[bgs]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=lanczos,` +
           `crop=${bw}:${bh},boxblur=luma_radius=6:luma_power=2:chroma_radius=6:chroma_power=2,` +
           `eq=brightness=-0.07,scale=${width}:${height}:flags=bilinear[bg];` +
@@ -590,13 +634,13 @@ function buildFilterGraph({
     } else {
       // No blur: letterbox the untouched frame on plain black bars.
       parts.push(
-        `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+        `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
           `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[base]`
       );
     }
   } else {
     parts.push(
-      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
+      `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
     );
   }
   let prev = "base";
@@ -638,6 +682,9 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     captionCues = [],
     // "Words per screen" regroup size (0 = off — render cues as edited).
     captionWords = 0,
+    // Scene cuts: edit decision list in ABSOLUTE source seconds (from Clip
+    // Intelligence). null/short = render the contiguous window (classic path).
+    segments = null,
     captionFontKey = "anton",
     captionStyle = "classic",
     captionTextColor = "#ffffff",
@@ -694,8 +741,44 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     .filter((b) => Number(b.end) > Number(b.start))
     .slice(0, 6);
 
+  // ---------- scene cuts ----------
+  // Input-seek to the first kept range; the cut filter concat-keeps every
+  // range relative to that point. Downstream (scale/crop, b-roll overlays,
+  // watermark, subtitles) all run on the merged timeline unchanged — only the
+  // frames the main input contributes differ. A silent source renders without
+  // the audio branch; a source we cannot probe renders contiguous (today's
+  // behavior) rather than risk a graph that assumes audio.
+  let seekTo = Number(sourceTrimSeconds) || 0;
+  let cut = null;
+  if (Array.isArray(segments) && segments.length >= 2) {
+    const ranges = segments
+      .map((s) => ({ start: Number(s.start), end: Number(s.end) }))
+      .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+      .sort((a, b) => a.start - b.start);
+    if (ranges.length >= 2) {
+      let audioKnown = false;
+      let withAudio = true;
+      try {
+        const { streams } = await probeMedia(String(sourceVideoUrl));
+        withAudio = streams.some((s) => s.codec_type === "audio");
+        audioKnown = true;
+      } catch (err) {
+        console.warn(
+          `[local-render] source probe failed (${err?.message ?? err}) — rendering the contiguous window without scene cuts`
+        );
+      }
+      if (audioKnown) {
+        seekTo = ranges[0].start;
+        cut = buildSegmentCutFilter(
+          ranges.map((r) => ({ start: r.start - seekTo, end: r.end - seekTo })),
+          { withAudio }
+        );
+      }
+    }
+  }
+
   // -ss before -i is frame-accurate here because the output is re-encoded.
-  const inputs = ["-ss", fmt(sourceTrimSeconds), ...REMOTE_INPUT_FLAGS, "-i", String(sourceVideoUrl)];
+  const inputs = ["-ss", fmt(seekTo), ...REMOTE_INPUT_FLAGS, "-i", String(sourceVideoUrl)];
 // -ss before -i is frame-accurate here (output is re-encoded) and stops the
 // overlay queue from buffering the b-roll from t=0.
 for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...REMOTE_INPUT_FLAGS, "-i", String(b.src));
@@ -725,18 +808,30 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
     watermarkInput,
     videoFit,
     videoBackgroundBlur,
+    cutVideoIn: cut ? cut.v : "[0:v]",
   });
+  // The cut filter (trim/atrim per range + concat) must be in the graph
+  // whenever scene cuts are active — it is what produces [vcut]/[acut].
+  // Chain order inside filter_complex_script is irrelevant; labels link them.
   if (useMusic) {
     // One filtergraph file holds the video chain and the audio mix together
     // (audio never goes through CLI escaping — paths stay relative to cwd).
     const audio = [
-      `[0:a]volume=1.0[a0]`,
+      `[${cut && cut.a ? "acut" : "0:a"}]volume=1.0[a0]`,
       `[${musicInput}:a]volume=0.15[am]`,
       `[a0][am]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
     ].join(";\n");
-    await fs.writeFile(path.join(TMP_DIR, graphFileRel), `${graph};\n${audio}`, "utf8");
+    await fs.writeFile(
+      path.join(TMP_DIR, graphFileRel),
+      `${cut ? `${cut.filter};\n` : ""}${graph};\n${audio}`,
+      "utf8"
+    );
   } else {
-    await fs.writeFile(path.join(TMP_DIR, graphFileRel), graph, "utf8");
+    await fs.writeFile(
+      path.join(TMP_DIR, graphFileRel),
+      cut ? `${cut.filter};\n${graph}` : graph,
+      "utf8"
+    );
   }
 
   const args = [
@@ -749,6 +844,10 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
   ];
   if (useMusic) {
     args.push("-map", "[aout]");
+  } else if (cut) {
+    // Cut path: the audio (if the source has any) comes off the concat graph.
+    if (cut.a) args.push("-map", cut.a);
+    else args.push("-map", "0:a?");
   } else {
     args.push("-map", "0:a?");
   }

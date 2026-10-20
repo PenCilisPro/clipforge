@@ -307,6 +307,42 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // uploads have no source URL — the timeline still handles trimming.
   const previewSrc = sourceVideoUrl;
 
+  // ---------- SCENE CUTS (clip intelligence) ----------
+  // The AI may keep several source ranges inside the clip window and skip the
+  // boring material between them (scene stitching + dead-air cuts). The
+  // export concat-keeps those ranges, so the preview must skip them too —
+  // otherwise it would show footage the exported clip does not contain.
+  const removedGaps = useMemo(() => {
+    const segs = (clip as any)?.intel_json?.edit?.segments;
+    if (!Array.isArray(segs) || segs.length === 0) return [] as { start: number; end: number }[];
+    const ranges = segs
+      .map((s: any) => ({ start: Number(s?.start), end: Number(s?.end) }))
+      .filter((s: any) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+      .sort((a: any, b: any) => a.start - b.start);
+    if (ranges.length === 0) return [] as { start: number; end: number }[];
+    // Everything inside the trim window that no kept range covers = removed.
+    const gaps: { start: number; end: number }[] = [];
+    let cursor = startTime;
+    for (const r of ranges) {
+      const s = Math.min(endTime, Math.max(startTime, r.start));
+      const e = Math.min(endTime, Math.max(startTime, r.end));
+      if (s > cursor + 0.35) gaps.push({ start: cursor, end: Math.min(s, endTime) });
+      cursor = Math.max(cursor, e);
+    }
+    if (cursor < endTime - 0.35) gaps.push({ start: cursor, end: endTime });
+    return gaps;
+  }, [clip, startTime, endTime]);
+  const cutsRef = useRef<{ start: number; end: number }[]>([]);
+  cutsRef.current = removedGaps;
+
+  // Snap a source time out of removed material (to the next kept frame).
+  const skipOutOfCut = (t: number): number => {
+    for (const g of cutsRef.current) {
+      if (t >= g.start - 0.02 && t < g.end - 0.02) return g.end;
+    }
+    return t;
+  };
+
   // ---------- Load ----------
   useEffect(() => {
     (async () => {
@@ -497,11 +533,19 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const video = videoRef.current;
     if (!video) return;
     const { start, end, dur } = windowRef.current;
-    if (video.currentTime < start - 0.05 || video.currentTime >= end) {
+    let t = video.currentTime;
+    if (t < start - 0.05 || t >= end) {
       video.currentTime = start;
+      t = start;
     }
-    setClipTime(clamp(video.currentTime - start, 0, dur));
-    setPlayheadSource(clamp(video.currentTime, start, end));
+    // Jump over AI-cut material so the preview matches the exported clip.
+    const skipped = skipOutOfCut(t);
+    if (skipped !== t) {
+      video.currentTime = skipped;
+      t = skipped;
+    }
+    setClipTime(clamp(t - start, 0, dur));
+    setPlayheadSource(clamp(t, start, end));
   };
 
   const videoRefCallback = (el: HTMLVideoElement | null) => {
@@ -514,7 +558,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   const scrub = useCallback(
     (t: number) => {
-      const clamped = clamp(t, startTime, endTime);
+      const clamped = skipOutOfCut(clamp(t, startTime, endTime));
       setPlayheadSource(clamped);
       setClipTime(clamp(clamped - startTime, 0, clipDuration));
       const video = videoRef.current;
@@ -838,13 +882,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const video = videoRef.current;
     if (!video) return;
     video.pause();
-    video.currentTime = clamp(video.currentTime + dir * FRAME_STEP, startTime, endTime);
+    video.currentTime = skipOutOfCut(clamp(video.currentTime + dir * FRAME_STEP, startTime, endTime));
   }
 
   function restart() {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = startTime;
+    video.currentTime = skipOutOfCut(startTime);
   }
 
   function toggleFullscreen() {

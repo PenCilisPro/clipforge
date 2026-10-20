@@ -200,3 +200,124 @@ function parseSrtSeconds(raw) {
   if (!m) return null;
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, "0")) / 1000;
 }
+
+// ---------------------------------------------------------------------------
+// Scene cuts — the AI may keep several source ranges inside a clip window and
+// skip what it judged boring in between (clip_intel edit list). These helpers
+// sanitize that list against the clip window and re-time clip-local caption
+// / b-roll windows onto the merged (output) timeline, where removed material
+// collapses. Everything here is pure so the render pipeline stays testable.
+// ---------------------------------------------------------------------------
+
+/** Total removed seconds across the sanitized cut list. */
+function segmentsRemovedSec(segments, winStart, winEnd) {
+  const kept = segments.reduce((s, seg) => s + (seg.end - seg.start), 0);
+  return Math.max(0, winEnd - winStart - kept);
+}
+
+/**
+ * Validate + normalize an edit decision list (absolute source seconds) against
+ * the clip window [winStart, winEnd]:
+ * - coerces numbers, clamps to the window, drops inverted/empty ranges,
+ * - sorts, resolves overlaps by clipping later segments,
+ * - merges ranges separated by less than MERGE_GAP (sub-perceptual cuts),
+ * - returns null when the list is unusable or cuts so little that rendering
+ *   the contiguous window is indistinguishable (keeps old clips byte-stable).
+ */
+export function sanitizeSegments(rawSegments, winStart, winEnd, { minTotalCut = 1.0, mergeGap = 0.5 } = {}) {
+  if (!Array.isArray(rawSegments) || rawSegments.length === 0) return null;
+  if (!(Number.isFinite(winStart) && Number.isFinite(winEnd)) || winEnd - winStart < 3) return null;
+
+  let ranges = rawSegments
+    .map((s) => ({ start: Number(s?.start), end: Number(s?.end) }))
+    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end - s.start > 0.2)
+    .map((s) => ({
+      start: Math.min(winEnd, Math.max(winStart, s.start)),
+      end: Math.min(winEnd, Math.max(winStart, s.end)),
+    }))
+    .filter((s) => s.end - s.start > 0.2)
+    .sort((a, b) => a.start - b.start);
+
+  // Resolve overlaps / touching ranges by extending the earlier one.
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end + mergeGap) last.end = Math.max(last.end, r.end);
+    else merged.push({ ...r });
+  }
+  ranges = merged;
+
+  if (ranges.length === 0) return null;
+  // A single range that covers the whole window is a no-op; a single shorter
+  // range is just a trim — both are below "the AI skipped a scene" territory
+  // only when almost nothing was removed, in which case skip the cutting.
+  if (segmentsRemovedSec(ranges, winStart, winEnd) < minTotalCut) return null;
+  if (ranges.reduce((s, r) => s + (r.end - r.start), 0) < 3) return null;
+  return ranges;
+}
+
+/**
+ * Map one clip-local time onto the merged (output) timeline. Times inside a
+ * removed gap collapse to the end of the previous kept range (the exact
+ * cut point), so captions land at the seam instead of drifting.
+ */
+function clipLocalToOutput(t, segments, clipStart) {
+  let out = 0;
+  for (const seg of segments) {
+    const s = Math.max(0, seg.start - clipStart);
+    const e = Math.max(0, seg.end - clipStart);
+    if (t < s) return out; // inside the gap before this segment -> seam
+    if (t <= e) return out + (t - s);
+    out += e - s;
+  }
+  return out;
+}
+
+/**
+ * Re-time caption cues (clip-local, built against the contiguous window) onto
+ * the merged output timeline. Cues that fall entirely inside a removed gap are
+ * dropped; cues that straddle a cut are clamped to the seam. Word timings are
+ * remapped with the same rule (words inside the gap are dropped).
+ */
+export function remapCuesToSegments(cues, segments, clipStart) {
+  if (!Array.isArray(cues) || !Array.isArray(segments) || segments.length === 0) return cues ?? [];
+  const out = [];
+  for (const cue of cues) {
+    const start = clipLocalToOutput(Number(cue.start), segments, clipStart);
+    const end = clipLocalToOutput(Number(cue.end), segments, clipStart);
+    if (end - start < 0.15) continue; // entirely (or almost) inside a removed gap
+
+    const words = Array.isArray(cue.words)
+      ? cue.words
+          .map((w) => ({
+            ...w,
+            start: clipLocalToOutput(Number(w.start), segments, clipStart),
+            end: clipLocalToOutput(Number(w.end), segments, clipStart),
+          }))
+          .filter((w) => w.end - w.start > 0.02)
+      : undefined;
+
+    out.push({
+      ...cue,
+      start: Math.round(start * 1000) / 1000,
+      end: Math.round(end * 1000) / 1000,
+      ...(words ? { words } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Re-time a b-roll / overlay window (clip-local [start, end]) onto the merged
+ * output timeline. Returns null when the window falls entirely inside removed
+ * material; straddling windows are clamped to the seam (shortened, never
+ * stretched). The stock clip's own seek offset is not touched — only where it
+ * appears on the output timeline.
+ */
+export function remapWindowToSegments(start, end, segments, clipStart) {
+  if (!Array.isArray(segments) || segments.length === 0) return { start, end };
+  const s = clipLocalToOutput(Number(start), segments, clipStart);
+  const e = clipLocalToOutput(Number(end), segments, clipStart);
+  if (e - s < 0.3) return null;
+  return { start: Math.round(s * 1000) / 1000, end: Math.round(e * 1000) / 1000 };
+}
