@@ -97,6 +97,42 @@ const regenerateSchema = z.object({
   ...effectShape,
 });
 
+// One editor text overlay ("+ Add text"): a standalone text block dragged
+// onto the canvas. x/y are % of canvas (block center), size is font px on
+// the output canvas — the same model as caption_size — width is the wrap
+// width as % of canvas, bg toggles the caption-style box. Rendered by the
+// local/Modal renderer with the caption mechanics; sanitized again there.
+const clampNum = (v, min, max, dflt) =>
+  Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Number(v))) : dflt;
+
+const textOverlaySchema = z.object({
+  id: z.string().trim().max(60).optional(),
+  text: z.string().max(500),
+  font: z.string().trim().max(40).optional(),
+  // Ranges are clamped, not rejected: an editor build still posting the old
+  // %-of-height size scale must not 400 the whole save — the stored row just
+  // holds the clamped values until the new editor ships.
+  x: z.coerce.number().finite().optional(),
+  y: z.coerce.number().finite().optional(),
+  size: z.coerce.number().finite().optional(),
+  width: z.coerce.number().finite().optional(),
+  color: z.string().regex(HEX_COLOR).optional(),
+  bold: z.boolean().optional(),
+  bg: z.boolean().optional(),
+});
+const textOverlayListSchema = z
+  .array(textOverlaySchema)
+  .max(10)
+  .transform((list) =>
+    list.map((o) => ({
+      ...o,
+      x: clampNum(o.x, 0, 100, 50),
+      y: clampNum(o.y, 0, 100, 50),
+      size: clampNum(o.size, 20, 200, 60),
+      width: clampNum(o.width, 20, 100, 90),
+    }))
+  );
+
 const editSchema = z.object({
   // Display name (also used as the suggested download file name).
   title: z.string().trim().max(200).optional(),
@@ -106,6 +142,8 @@ const editSchema = z.object({
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.
   srt_content: z.string().max(20_000).optional(),
+  // Editor text overlays ("+ Add text"); replaces the stored list wholesale.
+  text_overlays: textOverlayListSchema.optional(),
   start_time: z.coerce.number().finite().min(0).optional(),
   end_time: z.coerce.number().finite().min(3).max(43_200).optional(),
 });
@@ -281,6 +319,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
     }
     if (body.srt_content !== undefined) updates.srt_override = body.srt_content || null;
     else if (timingChanged) updates.srt_override = null;
+    if (body.text_overlays !== undefined) updates.text_overlays = body.text_overlays;
 
     const { data: updated, error: updateError } = await supabaseAdmin
       .from("clips")
@@ -323,7 +362,7 @@ const CLIP_COPY_COLUMNS =
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_words, caption_width, caption_anim, caption_x, caption_y, output_aspect, " +
   "video_fit, video_background_blur, " +
-  "srt_override, broll_json";
+  "srt_override, broll_json, text_overlays";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
 // referenced as storage:user-uploads/<uid>/broll/<file>.
@@ -443,6 +482,10 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         render_submitted_at: null,
         srt_override: body.srt_part2 || null,
         ...(body.broll_part2 !== undefined ? { broll_json: body.broll_part2 } : {}),
+        // Part 1 keeps the original overlays (untouched row fields); part 2
+        // copies them so the look carries across the split. Overlays are
+        // position-anchored — they have no timing to divide.
+        text_overlays: clip.text_overlays,
         status: "queued",
       })
       .select(CLIP_COPY_COLUMNS)
@@ -522,6 +565,9 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         video_background_blur: clip.video_background_blur,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
+        // Overlays are position-anchored (no timing) — the copy keeps the
+        // same blocks so both clips render the same look.
+        text_overlays: clip.text_overlays,
         status: "queued",
       })
       .select(CLIP_COPY_COLUMNS)

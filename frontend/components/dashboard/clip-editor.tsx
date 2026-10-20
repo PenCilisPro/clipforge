@@ -93,9 +93,12 @@ const FRAME_STEP = 1 / 30;
 
 /**
  * A standalone text overlay placed on the canvas (independent of captions).
- * x/y are the block's CENTER as % of the canvas; size is % of canvas height —
- * the same math the local render uses for ASS \pos / \fs, so the preview
- * matches the exported MP4.
+ * x/y are the block's CENTER as % of the canvas; size is font px on the
+ * OUTPUT canvas — the exact model of the caption Size control (20-200), so
+ * an overlay at 60px sits at the same rendered size as a 60px caption. The
+ * local render mirrors all of it: \fs = size, \an5\pos(x%·W, y%·H), and the
+ * Box toggle draws the caption-template box (BorderStyle 3, padding
+ * 0.22 × fontSize).
  */
 interface TextOverlay {
   id: string;
@@ -103,6 +106,7 @@ interface TextOverlay {
   font: string;
   x: number;
   y: number;
+  /** Font size in px on the output canvas (20-200) — caption Size model. */
   size: number;
   /** Wrap width as % of canvas width (default 90) — same math as the render. */
   width?: number;
@@ -398,7 +402,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 font: typeof o?.font === "string" && o.font ? o.font : "poppins",
                 x: clamp(Number(o?.x) || 50, 2, 98),
                 y: clamp(Number(o?.y) || 50, 2, 98),
-                size: clamp(Number(o?.size) || 5, 1, 20),
+                size: clamp(Math.round(Number(o?.size)) || 60, 20, 200),
                 width: clamp(Number(o?.width) || 90, 20, 100),
                 color: typeof o?.color === "string" && o.color ? o.color : "#ffffff",
                 bold: o?.bold !== false,
@@ -860,7 +864,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       font: "poppins",
       x: 50,
       y: 50,
-      size: 5,
+      size: 60, // px on the output canvas — the caption Size default (Auto ≈ 60px)
       color: "#ffffff",
       bold: true,
       bg: false,
@@ -1208,6 +1212,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     return canvasSize * scale;
   }, [size, canvasPx.w, dims.w]);
 
+  /** Preview box → output canvas ratio. Text overlays scale with the SAME
+   *  ratio as captions (slider px on the output canvas, drawn scaled here) —
+   *  an overlay at 60px is exactly as big as a 60px caption, in the preview
+   *  and in the render. */
+  const previewScale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
+
   // ---------- Render ----------
   if (loading) {
     return (
@@ -1533,8 +1543,18 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-              {/* Custom text overlays — draggable, Shift snaps to center */}
-              {overlays.map((ov) => (
+              {/* Custom text overlays — draggable, Shift snaps to center.
+                  Scaling/box mirror the caption overlay exactly: size is px
+                  on the output canvas × the same preview ratio captions use,
+                  and the Box toggle draws the caption-template box geometry
+                  (padding 0.22 × fontSize, square corners — the ASS render's
+                  BorderStyle 3 recipe) instead of a free-form rounded chip. */}
+              {overlays.map((ov) => {
+                const ovFs = ov.size * previewScale;
+                const ovPad = ov.bg
+                  ? Math.max(6, Math.round(ov.size * 0.22)) * previewScale
+                  : 0;
+                return (
                 <div
                   key={ov.id}
                   className="pointer-events-none absolute"
@@ -1553,7 +1573,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       setTab("text");
                     }}
                     className={cn(
-                      "pointer-events-auto inline-block whitespace-pre-wrap rounded-md px-1.5 py-0.5 touch-none select-none",
+                      "pointer-events-auto inline-block whitespace-pre-wrap touch-none select-none",
                       ovDragging && selectedOverlayId === ov.id
                         ? "cursor-grabbing"
                         : "cursor-grab",
@@ -1565,26 +1585,35 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       fontFamily: (
                         CAPTION_FONTS.find((f) => f.key === ov.font) ?? CAPTION_FONTS[0]
                       ).cssVar,
-                      fontSize: `${(ov.size / 100) * canvasPx.h}px`,
+                      fontSize: `${ovFs}px`,
                       maxWidth:
                         canvasPx.w > 0
                           ? `${(((ov.width ?? 90) / 100) * canvasPx.w).toFixed(1)}px`
                           : `${ov.width ?? 90}%`,
-                      lineHeight: 1.2,
+                      lineHeight: 1.15,
                       fontWeight: ov.bold ? 800 : 500,
                       color: ov.color,
                       ...(ov.bg
                         ? {
+                            // Caption-template box: square, padding scaled
+                            // with the font — the exact geometry the local
+                            // render paints (BorderStyle 3, Outline padding).
                             background: "rgba(0,0,0,0.72)",
-                            borderRadius: "0.35em",
+                            borderRadius: 0,
+                            padding: `${ovPad.toFixed(1)}px`,
                           }
-                        : { textShadow: "0 2px 4px rgba(0,0,0,0.8)" }),
+                        : {
+                            // Caption shadow recipe (default size 6):
+                            // offset = 6 × fontSize / 192, both sides.
+                            textShadow: `0 ${((6 * ovFs) / 192).toFixed(2)}px 8px rgba(0,0,0,0.8)`,
+                          }),
                     }}
                   >
                     {ov.text || "Text"}
                   </span>
                 </div>
-              ))}
+                );
+              })}
 
               {/* Safe zones overlay */}
               {safeZones && (
@@ -2210,21 +2239,25 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                                 Size
                               </p>
                               <span className="text-[10px] tabular-nums text-zinc-500">
-                                {selectedOverlay.size.toFixed(1)}%
+                                {selectedOverlay.size}px
                               </span>
                             </div>
                             <input
                               type="range"
-                              min={2}
-                              max={20}
-                              step={0.5}
+                              min={20}
+                              max={200}
+                              step={1}
                               value={selectedOverlay.size}
                               onChange={(e) =>
                                 patchOverlay(selectedOverlay.id, { size: Number(e.target.value) })
                               }
+                              onDoubleClick={() => patchOverlay(selectedOverlay.id, { size: 60 })}
                               className="h-1 w-full accent-primary-500"
                               aria-label="Overlay size"
                             />
+                            <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                              Same px scale as the caption Size slider — 60px overlay = 60px caption
+                            </p>
                           </div>
 
                           <div>

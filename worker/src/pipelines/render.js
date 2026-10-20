@@ -48,6 +48,36 @@ function resolveClipSegments(clip) {
   return Array.isArray(segs) && segs.length > 0 ? segs : null;
 }
 
+/**
+ * Text overlays ("+ Add text" in the clip editor): editor-placed standalone
+ * text, burned by the local/Modal ASS renderer with the caption mechanics —
+ * px scaling on the output canvas, block-center % positioning, and the same
+ * BorderStyle-3 box recipe as the caption templates. Cloud providers ignore
+ * the field. Sanitized here so a tampered DB row can't inject arbitrary
+ * shapes into the renderer.
+ */
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+function sanitizeTextOverlays(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const o of raw.slice(0, 10)) {
+    const text = String(o?.text ?? "").replace(/\r\n?/g, "\n").slice(0, 500);
+    if (!text.trim()) continue;
+    out.push({
+      text,
+      font: typeof o?.font === "string" && o.font.trim() ? o.font.trim().slice(0, 40) : "poppins",
+      x: Math.min(100, Math.max(0, Number.isFinite(Number(o?.x)) ? Number(o.x) : 50)),
+      y: Math.min(100, Math.max(0, Number.isFinite(Number(o?.y)) ? Number(o.y) : 50)),
+      size: Math.min(200, Math.max(20, Math.round(Number(o?.size) || 60))),
+      width: Math.min(100, Math.max(20, Number(o?.width) || 90)),
+      color: HEX_COLOR_RE.test(String(o?.color ?? "")) ? String(o.color) : "#ffffff",
+      bold: o?.bold !== false,
+      bg: o?.bg === true,
+    });
+  }
+  return out;
+}
+
 export async function processRender(job) {
   const { projectId, clipId, jobRowId } = job.data;
 
@@ -243,6 +273,9 @@ export async function processRender(job) {
       // N timed words, mirroring the preview's regroupCuesForDisplay. Cloud
       // providers ignore the field.
       captionWords: Math.max(0, Math.min(12, Math.round(Number(clip.caption_words) || 0))),
+      // Editor text overlays ("+ Add text") — local/Modal only, see
+      // sanitizeTextOverlays above.
+      textOverlays: sanitizeTextOverlays(clip.text_overlays),
       outputAspect: clip.output_aspect ?? "9:16",
     };
 
