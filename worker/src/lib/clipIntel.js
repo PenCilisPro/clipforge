@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { chatComplete } from "./zai.js";
 
 /**
- * Clip Intelligence v2 — transcript-based clip selector with dead-air cutting.
+ * Clip Intelligence v2.1 — transcript-based clip selector with dead-air cutting.
+ *
+ * v2.1 adds the viewer-retention model ("why a viewer stops scrolling"):
+ * open question + reason to care in the hook window (caps + penalty),
+ * repetition ratio, wind-down enforcement after the payoff, ending-action
+ * prediction and a computed gut check. Text-only proxies — logged in
+ * intel_json.retention, tuned like every other number.
  *
  * The model picks sentence IDs, classifies archetypes and scores dimensions
  * against anchors. THIS module owns everything that can be computed:
@@ -50,6 +56,14 @@ export const CONFIG = {
   MIN_SEGMENT: 0.25,         // shorter kept pieces are merged (avoids stutter cuts)
   CUT_FILLER_WORDS: true,    // remove um / uh / er / erm mid-clip
   CUT_FILLER_PHRASES: false, // "you know", "I mean", "kind of", "sort of" (can carry meaning, so off)
+
+  // ---- viewer-retention model — "why a viewer stops scrolling" [mine] ----
+  WIND_DOWN_MAX_SEC: 4,       // at most this many seconds after the payoff — "they swipe during the wind-down"
+  WIND_DOWN_MAX_SENTS: 1,     // at most one reaction sentence after the payoff sentence
+  REPETITION_MAX_RATIO: 0.12, // repeated 4-gram share (after editing) before "it repeats, rambles"
+  REPETITION_MIN_WORDS: 16,   // need at least this many kept words before the ratio means anything
+  HOOK_CARE_CAP: 6,           // hook_strength cap when the hook window has no reason to care
+  HOOK_DEAD_CAP: 4,           // hook_strength cap when it has neither an open question nor a reason to care
 };
 
 const WEIGHTS = { hook_strength: 0.30, peak: 0.30, second: 0.10, retention_flow: 0.20, audience_fit: 0.10 };
@@ -60,6 +74,10 @@ const PENALTY_VALUES = {
   hook_content_mismatch: 3,
   off_audience: 1.5,
   no_clean_ending: 3,
+  // viewer-retention penalties
+  wind_down_tail: 1,       // the clip keeps going after the payoff — viewers swipe during the wind-down
+  repeats_itself: 1,       // mid-clip repetition ("it repeats, rambles")
+  no_reason_to_care: 1.5,  // hook has neither an open question nor any reason to care — "who cares?"
 };
 
 const LENGTH_BOUNDS = {
@@ -107,10 +125,21 @@ HOOK_WINDOW = {{HOOK_WINDOW}} seconds (about 12 spoken words). MIN_DURATION = {{
 Inside a clip, silences longer than {{GAP_COMPRESS}} s and hesitation sounds (um, uh, er) are cut automatically by the editor. Count clip length as speaking time, and do not lower retention_flow for pauses that will be cut.
 
 1. HOW THE VIEWER DECIDES
-- The platform shows the most engaging content. Watch time and retention are what you optimize.
-- The viewer decides in the first HOOK_WINDOW seconds. A hook must do two things: introduce the topic, and leave at least two open questions the viewer cannot answer from the hook alone.
-- A viewer keeps watching only while something is still unknown. The moment the payoff arrives, the reason to stay ends. So the payoff must come last. Never choose a start point that places the answer, punchline, twist or reveal inside the hook window.
+- The clip appears to someone mid-scroll. Nobody chose it, and swiping costs nothing, so swiping is what happens by default. The clip has to earn every next second.
+- The viewer decides in the first HOOK_WINDOW seconds. People keep watching only while they still need to know something. As soon as they don't, they swipe. So the payoff must come last. Never choose a start point that places the answer, punchline, twist or reveal inside the hook window.
+- Three things must be there. Remove any one and the clip dies:
+  * An open question: What happens next? What's the answer? Did he really just say that?
+  * A reason to care: something at stake (money, embarrassment, a relationship), a person they recognize, "that's literally me", a strong feeling, or something useful to them.
+  * Nothing in the way: no slow start, no confusion about who's talking, no pauses, no repeating.
+- Question but no stakes = "who cares?". Stakes but no question = "I already know how this ends". Both, but slowed down = they leave before the good part.
+- The viewer asks four questions, in order. 0-1 s "What is this?": they stay if someone is mid-sentence or mid-reaction with energy and the on-screen text is short and specific; they swipe on a black frame, a logo, someone settling in, "hey guys". 1-5 s "Do I care?": they stay if they can see the topic and what's at stake but not how it ends; they swipe if it is vague or gives the answer away. 5 s to end "Where's this going?": they stay if each line gets closer to the answer, raises the stakes or surprises them; they swipe if it repeats, rambles, pauses, or the answer already came. End "Was that worth it?": they stay if the ending delivers exactly what the start promised; they swipe if the ending is flat or the start promised something else.
+- The hook covers the first two questions, the structure covers the third, and the payoff covers the last. Confused viewers do not stop to figure things out — they just swipe.
+- The headline gives away the first surprise, not the ending. Naming the first turn makes the question bigger instead of answering it.
 - The hook makes a promise. The rest of the clip must deliver exactly that promise.
+- End as soon as the last question is answered. The wind-down after the payoff is where viewers swipe away: no "that's wild", no next-topic transition, no thank-you, no host chat.
+- Endings drive actions: rewatch (the ending was quick, or changed what the start meant), share (strong feeling, or "this is so you"), save (useful), comment (something to disagree with), follow (they want more of this person). Set ending_outcome to the strongest one the clip genuinely earns.
+- If you have to choose, choose the event over the hook. A great hook on a dull moment only moves the swipe from second 2 to second 8, and now the viewer feels tricked.
+- The best hook is usually a line already in the video, so the real decision is where the clip starts. The headline adds what that line cannot show: who's talking, what's at stake.
 - Shares and saves are strong signals. High-arousal emotion drives shares. Useful, specific information drives saves.
 - Simple clips win. A strong moment with plain editing beats a weak moment with a heavy edit. Dead air, greetings and throat-clearing lose viewers.
 
@@ -184,7 +213,7 @@ Step 10. Return at most MAX_CANDIDATES clips that would reach the quality bar. P
 
 5. SCORING ANCHORS (0-10 integers)
 hook_strength (first HOOK_WINDOW seconds only):
- 0-2 greeting, filler, throat-clearing, or no context. 3-5 on topic but flat; answers instead of asking, or vague. 6-8 a clear claim or tension plus one open question, concrete detail. 9-10 immediate tension, two or more open questions, no payoff, and a concrete name, number or detail in the first 12 words.
+ 0-2 greeting, filler, throat-clearing, or no context. 3-5 on topic but flat; answers instead of asking, or vague. 6-8 a clear claim or tension plus one open question, concrete detail. 9-10 immediate tension, two or more open questions, no payoff, and a concrete name, number or detail in the first 12 words. A hook with no open question, or with no reason to care (no stakes, no recognizable person, no strong feeling, nothing useful), is a 4 or less.
 unexpected_turn:
  0-2 none. 3-5 mild shift in tone or topic. 6-8 clear reversal of what the previous sentences set up. 9-10 a reversal that flips the meaning of the setup, lands within two sentences, and could not be guessed.
 emotion_relatability:
@@ -213,6 +242,7 @@ HARD REJECTS (go in rejected, not clips)
 - Use only sentence IDs that exist in the input. Never invent text. Every quote must be verbatim.
 - Do not use facts from outside the transcript.
 - Every clip gets a one-sentence reason naming the archetype and the strongest trait.
+- Set hook.reason_to_care to the strongest reason a viewer cares (or none) and ending_outcome to the strongest action the ending earns. Code verifies the care claim against the hook-window text.
 - If engagement_patterns are provided, list only the IDs the clip genuinely matches in matched_patterns.
 - Output valid JSON only. No commentary, no markdown.
 
@@ -221,7 +251,8 @@ OUTPUT SCHEMA
   "clips": [{
     "start_id": "S101", "end_id": "S106",
     "archetype": "twist | polarizing_take | emotional_peak | tip_or_myth_bust | promise_journey_payoff | standoff_resolution",
-    "hook": { "spoken_text": "verbatim", "headline": "max 12 words, no payoff", "formula": "F1-F8", "open_questions": ["...", "..."] },
+    "hook": { "spoken_text": "verbatim", "headline": "max 12 words, no payoff", "formula": "F1-F8", "reason_to_care": "stakes | recognition | strong_feeling | useful | none", "open_questions": ["...", "..."] },
+    "ending_outcome": "rewatch | share | save | comment | follow",
     "payoff_id": "S105",
     "hook_checks": { "introduces_topic": true, "raises_open_question": true, "payoff_in_window": false, "filler_or_greeting_open": false, "concrete_detail": true },
     "context": { "dangling_reference": null, "resolved_by": "clip | headline | none" },
@@ -500,6 +531,77 @@ function hashText(text) {
 }
 
 // =====================================================================
+// Viewer-retention signals — "why a viewer stops scrolling"
+// Text-only proxies for the three things a clip needs (an open question,
+// a reason to care, nothing in the way), for what the ending makes viewers
+// do, and for the 30-second gut check. They cap, penalize and log; they
+// never hard-reject, because every signal here can fire on innocent text.
+// =====================================================================
+
+// A reason to care: stakes — money, danger, embarrassment, relationships.
+const STAKES_RE = /\b(lost|loses|losing|fired|quit|sued|arrested|jail|police|hospital|died|death|crash|hurt|bleeding|embarrassed|embarrassing|humiliating|humiliated|caught|exposed|rejected|dumped|broke|debt|fined|bet|dare|divorce|homeless)\b/i;
+const MONEY_RE = /\$\s?\d|\b\d+\s?(dollars|bucks|grand|thousand|million|billion|k)\b|\b(money|cash|salary|rent)\b/i;
+// A reason to care: a strong feeling.
+const FEELING_RE = /\b(cries|crying|cried|tears|screaming|screamed|yelling|yelled|shocked|speechless|stunned|insane|crazy|wild|unbelievable|furious|terrified|scared|panicked|anxious|hate|hates|hatred|love|loved|loves)\b|can'?t believe/i;
+// A reason to care: something useful.
+const USEFUL_RE = /\b(how to|the trick|the hack|stop (doing|using|buying)|most people|mistakes?|steps?|hack|tip|method|the reason|did you know|pro tip|the secret)\b/i;
+// An open question: WH-word, a question mark, or a direct question at the viewer.
+const OPEN_QUESTION_RE = /\b(what|why|how|who|when|where|which)\b|\?/i;
+const QUESTION_ENG_RE = /\b(did you|have you|do you|would you|could you|can you|will you|are you)\b/i;
+// Comment bait — "they disagree, or there's something left to argue about".
+const ARGUE_RE = /\b(always|never|nobody|everyone|everybody|no one|unpopular opinion|the only|overrated|underrated|wrong about)\b/i;
+// Who's talking — self-introduction or a named person.
+const SELF_INTRO_RE = /\b(im|i am|my names|my name is|call me)\b/;
+const CARE_KINDS = new Set(["stakes", "recognition", "strong_feeling", "useful"]);
+const ENDING_ACTIONS = new Set(["rewatch", "share", "save", "comment", "follow"]);
+
+/** A capitalized mid-sentence token = a person or brand the viewer might recognize. */
+function namedPersonInWords(words) {
+  let prevTerminal = false;
+  for (let i = 0; i < words.length; i++) {
+    const raw = String(words[i]?.word ?? words[i]?.text ?? words[i] ?? "");
+    const core = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    const startsSentence = i === 0 || prevTerminal;
+    prevTerminal = TERMINAL_RE.test(raw);
+    if (!core || startsSentence) continue;
+    const low = normalize(core);
+    if (/^\p{Lu}/u.test(core) && core.length > 1 && !PRONOUN_I_RE.test(low) && !STOPWORDS.has(low)) return core;
+  }
+  return null;
+}
+
+/** Which "reason to care" signals fire in the given words. */
+function detectCareSignal(words) {
+  const text = words.map((w) => String(w?.word ?? w?.text ?? w ?? "")).join(" ");
+  const kinds = [];
+  if (MONEY_RE.test(text) || STAKES_RE.test(text)) kinds.push("stakes");
+  if (FEELING_RE.test(text)) kinds.push("strong_feeling");
+  if (USEFUL_RE.test(text)) kinds.push("useful");
+  const person = namedPersonInWords(words);
+  if (person) kinds.push("recognition");
+  return { found: kinds.length > 0, kinds, person };
+}
+
+/** WH-word, question mark, or a direct question to the viewer. */
+function openQuestionSignal(text) {
+  return OPEN_QUESTION_RE.test(text) || QUESTION_ENG_RE.test(text);
+}
+
+/** Share of repeated 4-grams in the edited words — "it repeats, rambles". */
+function repeatedPhraseRatio(words, n = 4) {
+  const seq = words.map((w) => normalize(w?.word ?? w?.text ?? "")).filter(Boolean);
+  if (seq.length < n * 4) return 0;
+  const grams = new Map();
+  for (let i = 0; i + n <= seq.length; i++) {
+    const g = seq.slice(i, i + n).join(" ");
+    grams.set(g, (grams.get(g) ?? 0) + 1);
+  }
+  let repeated = 0;
+  for (const c of grams.values()) if (c > 1) repeated += c - 1;
+  return repeated / grams.size;
+}
+
+// =====================================================================
 // Dead-air cutting — builds the edit decision list for one clip
 // =====================================================================
 
@@ -725,6 +827,29 @@ function evaluateCandidate(raw, ctx) {
   if (!ctx.hasProfile) modelScores.audience_fit = 5;
 
   const hc = raw.hook_checks ?? {};
+
+  // ---- [theory] viewer-retention signals, computed on the edited clip ----
+  // "Why a viewer stops scrolling": people watch while they still need to
+  // know something. These are text-only proxies, so they cap, penalize and
+  // log — they never hard-reject. Tuned via intel_json.retention.
+  const archetype = ARCHETYPES.has(raw.archetype) ? raw.archetype : "unclassified";
+  const hookWords = plan.keptWords.filter((w) => w.end <= CONFIG.HOOK_WINDOW);
+  const hookProbe = hookWords.length > 0 ? hookWords : clipWords.slice(0, 8);
+  const hookText = hookProbe.map((w) => w.word).join(" ");
+  const hookOpenQuestion = openQuestionSignal(hookText) || hc.raises_open_question === true;
+  const hookCare = detectCareSignal(hookProbe);
+  const careClaimRaw = String(raw.hook?.reason_to_care ?? "").trim().toLowerCase();
+  const hookCareClaimed = CARE_KINDS.has(careClaimRaw);
+  const noCare = !hookCare.found && !hookCareClaimed;
+  // "It repeats, rambles" — measured on the edited timeline.
+  const repRatio = plan.keptWords.length >= CONFIG.REPETITION_MIN_WORDS ? repeatedPhraseRatio(plan.keptWords) : 0;
+  // "End as soon as the last question is answered" — the wind-down is where
+  // viewers swipe. Allowed: the payoff sentence plus one reaction sentence
+  // of at most WIND_DOWN_MAX_SEC seconds.
+  const tailSentences = Math.max(0, s1.idx - payoff.idx);
+  const tailSec = tailSentences > 0 ? Math.max(0, plan.toOutput(s1.end) - plan.toOutput(payoff.end)) : 0;
+  const windDown = tailSentences > CONFIG.WIND_DOWN_MAX_SENTS || tailSec > CONFIG.WIND_DOWN_MAX_SEC;
+
   const scores = { ...modelScores };
   const capsApplied = [];
   const cap = (key, max, why) => {
@@ -734,6 +859,11 @@ function evaluateCandidate(raw, ctx) {
   if (fillerOpen) cap("hook_strength", 4, greeting ? "greeting open" : "filler open");
   if (hc.introduces_topic !== true || hc.raises_open_question !== true) cap("hook_strength", 5, "no topic or no open question");
   if (hc.concrete_detail !== true) cap("hook_strength", 7, "no concrete detail");
+  // [theory] "Question but no stakes: who cares? Stakes but no question: I
+  // already know how this ends." Remove either and the clip dies. A model
+  // claim counts too — the text signals are the floor, not the ceiling.
+  if (noCare) cap("hook_strength", CONFIG.HOOK_CARE_CAP, "no reason to care in the hook window");
+  if (!hookOpenQuestion && noCare) cap("hook_strength", CONFIG.HOOK_DEAD_CAP, "no open question and no reason to care in the hook window");
 
   // ---- penalties ----
   const pf = raw.penalty_flags ?? {};
@@ -749,6 +879,10 @@ function evaluateCandidate(raw, ctx) {
   if (ctx.hasProfile && pf.off_audience === true) penalize("off_audience", "model flag");
   if (pf.no_clean_ending === true) penalize("no_clean_ending", "model flag");
   else if (codeNoCleanEnding) penalize("no_clean_ending", "last word does not end a sentence");
+  // [theory] "Nothing in the way" — repetition; and the wind-down, where viewers swipe.
+  if (repRatio > CONFIG.REPETITION_MAX_RATIO) penalize("repeats_itself", `${Math.round(repRatio * 100)}% repeated phrases after edit`);
+  if (windDown) penalize("wind_down_tail", `${tailSentences} sentence(s), ${round2(tailSec)} s after the payoff`);
+  if (!hookOpenQuestion && noCare) penalize("no_reason_to_care", "hook window has no open question and no reason-to-care signal");
 
   // ---- total (peak-trait formula) ----
   const traits = TRAIT_KEYS.map((k) => scores[k]).sort((a, b) => b - a);
@@ -769,10 +903,38 @@ function evaluateCandidate(raw, ctx) {
     return reject(hardFails, note);
   }
 
-  const archetype = ARCHETYPES.has(raw.archetype) ? raw.archetype : "unclassified";
   const formula = FORMULAS.has(raw.hook?.formula) ? raw.hook.formula : null;
   const strongest = [...TRAIT_KEYS].sort((a, b) => scores[b] - scores[a])[0];
   const spokenHook = spoken.slice(0, 300);
+
+  // [theory] what the ending makes them do — text proxies, logged for tuning.
+  const backText = plan.keptWords.slice(Math.floor(plan.keptWords.length / 2)).map((w) => w.word).join(" ");
+  const clipWordsText = clipWords.map((w) => w.word).join(" ");
+  const predictedActions = {
+    rewatch: (archetype === "twist" || archetype === "promise_journey_payoff") && !windDown && payoffPct >= 0.7,
+    share: FEELING_RE.test(backText) || STAKES_RE.test(backText) || archetype === "emotional_peak",
+    save: USEFUL_RE.test(clipWordsText) || scores.information_value >= 7 || archetype === "tip_or_myth_bust",
+    comment: ARGUE_RE.test(clipWordsText) || archetype === "polarizing_take",
+    follow: Boolean(hookCare.person) && SELF_INTRO_RE.test(normalize(clipWordsText)),
+  };
+  const sendTo = predictedActions.share ? "share"
+    : predictedActions.save ? "save"
+    : predictedActions.comment ? "comment"
+    : predictedActions.follow ? "follow"
+    : predictedActions.rewatch ? "rewatch"
+    : null;
+
+  // [theory] the 30-second gut check, computed where text allows. The one
+  // check the transcript can never answer is the first frame.
+  const gutCheck = {
+    sound_off_first_frame: null, // invisible to transcript scoring — the edit owns face, energy, motion
+    question_after_first_sentence: openQuestionSignal(clipSentences[0].text),
+    who_talking_clear: Boolean(clipSentences[0].speaker) || Boolean(hookCare.person) || SELF_INTRO_RE.test(normalize(clipWordsText)),
+    boring_second: maxGap > CONFIG.GAP_HARD || repRatio > CONFIG.REPETITION_MAX_RATIO,
+    ending_delivers: payoffPct >= CONFIG.PAYOFF_MIN_POSITION && !windDown,
+    loops_to_start: contentWords(s1.text).some((w) => contentWords(clipSentences[0].text).includes(w)),
+    send_to: sendTo,
+  };
 
   return {
     ok: true,
@@ -792,7 +954,7 @@ function evaluateCandidate(raw, ctx) {
       edited_words: plan.keptWords,
       hard_fails: hardFails, // non-empty only in score_only mode
       intel_json: {
-        version: "v2",
+        version: "v2.1",
         start_id: s0.id,
         end_id: s1.id,
         payoff_id: payoff.id,
@@ -827,6 +989,18 @@ function evaluateCandidate(raw, ctx) {
           model_hook_checks: hc,
           model_estimates: raw.estimates ?? null,
           context: { dangling_reference: dangling ?? null, resolved_by: resolvedBy },
+        },
+        retention: {
+          hook_open_question: hookOpenQuestion,
+          hook_reason_to_care: { found: hookCare.found, kinds: hookCare.kinds, claimed: careClaimRaw || null, person: hookCare.person },
+          hook_probe_words: hookProbe.length,
+          repeated_phrase_ratio: round2(repRatio),
+          wind_down: { sentences: tailSentences, sec: round2(tailSec), penalized: windDown },
+          headline_specific: /\d/.test(headline) || Boolean(namedPersonInWords(headline.split(/\s+/).map((w) => ({ word: w })))),
+          predicted_actions: predictedActions,
+          model_ending_outcome: ENDING_ACTIONS.has(String(raw.ending_outcome ?? "")) ? raw.ending_outcome : null,
+          gut_check: gutCheck,
+          first_frame_note: "transcript scoring cannot see the first frame (face, energy, motion) — confirm in the edit",
         },
         hard_fails: hardFails,
         flags,

@@ -76,6 +76,10 @@ const effectShape = {
   caption_word_spacing: z.coerce.number().int().min(0).max(5).optional(),
   // Letter spacing as % of the caption font size (editor "Spacing" control).
   caption_letter_spacing: z.coerce.number().int().min(-10).max(100).optional(),
+  // "Words per screen" regrouping (0 = off — render cues as edited).
+  caption_words: z.coerce.number().int().min(0).max(12).optional(),
+  // Caption wrap width as % of canvas width (editor "Width" slider).
+  caption_width: z.coerce.number().int().min(20).max(100).optional(),
   // Caption animation id (editor Animation picker); rendered as ASS motion
   // tags by the local/Modal renderer. Free-form (max 32) so the frontend can
   // add new animations without a backend deploy.
@@ -261,6 +265,8 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_size",
       "caption_word_spacing",
       "caption_letter_spacing",
+      "caption_words",
+      "caption_width",
       "caption_anim",
       "caption_x",
       "caption_y",
@@ -315,7 +321,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_anim, caption_x, caption_y, output_aspect, " +
+  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_words, caption_width, caption_anim, caption_x, caption_y, output_aspect, " +
   "video_fit, video_background_blur, " +
   "srt_override, broll_json";
 
@@ -424,6 +430,8 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_size: clip.caption_size,
         caption_word_spacing: clip.caption_word_spacing ?? 0,
         caption_letter_spacing: clip.caption_letter_spacing ?? 0,
+        caption_words: clip.caption_words ?? 0,
+        caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
@@ -508,6 +516,8 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_size: clip.caption_size,
         caption_word_spacing: clip.caption_word_spacing ?? 0,
         caption_letter_spacing: clip.caption_letter_spacing ?? 0,
+        caption_words: clip.caption_words ?? 0,
+        caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
         srt_override: clip.srt_override,
@@ -588,6 +598,8 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_letter_spacing !== undefined
           ? { caption_letter_spacing: body.caption_letter_spacing }
           : {}),
+        ...(body.caption_words !== undefined ? { caption_words: body.caption_words } : {}),
+        ...(body.caption_width !== undefined ? { caption_width: body.caption_width } : {}),
         ...(body.caption_anim !== undefined ? { caption_anim: body.caption_anim } : {}),
         ...(body.caption_x !== undefined ? { caption_x: body.caption_x } : {}),
         ...(body.caption_y !== undefined ? { caption_y: body.caption_y } : {}),
