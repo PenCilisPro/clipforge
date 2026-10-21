@@ -250,6 +250,21 @@ export async function processRender(job) {
       // zoomed copy of itself (plain black bars when the blur is off).
       videoFit: clip.video_fit === "contain" ? "contain" : "cover",
       videoBackgroundBlur: clip.video_background_blur !== false,
+      // CapCut-style frame zoom & pan (editor "Frame" tab). video_scale is %
+      // of the fitted frame (100 = untouched), video_x/y are pan offsets as %
+      // of the output canvas. The local/Modal renderer scales the fitted
+      // frame about the canvas center and shifts the visible window, clamped
+      // to what the zoomed frame can show (the editor's videoMaxPan);
+      // captions/overlays burn AFTER the transform, so text stays put —
+      // mirroring the editor, whose overlay layer sits outside the
+      // transformed video element.
+      videoScale: Math.min(300, Math.max(50, Number(clip.video_scale) || 100)),
+      videoX: Number.isFinite(Number(clip.video_x))
+        ? Math.min(50, Math.max(-50, Number(clip.video_x)))
+        : 0,
+      videoY: Number.isFinite(Number(clip.video_y))
+        ? Math.min(50, Math.max(-50, Number(clip.video_y)))
+        : 0,
       // Caption placement (top/middle/bottom) + explicit px size (0 =
       // template default), and the output canvas aspect from the editor.
       captionPosition: clip.caption_position ?? "bottom",

@@ -87,6 +87,14 @@ const effectShape = {
   // Custom caption anchor from the drag handle: % of canvas, block center.
   caption_x: z.coerce.number().finite().min(0).max(100).optional(),
   caption_y: z.coerce.number().finite().min(0).max(100).optional(),
+  // CapCut-style frame zoom & pan (editor "Frame" tab): zoom as % of the
+  // fitted frame (100 = untouched), pan as % of the output canvas. The
+  // local/Modal renderer scales the fitted frame about the canvas center and
+  // shifts the visible window; captions/overlays burn after the transform,
+  // so text never zooms — same as the editor's overlay layer.
+  video_scale: z.coerce.number().finite().min(50).max(300).optional(),
+  video_x: z.coerce.number().finite().min(-50).max(50).optional(),
+  video_y: z.coerce.number().finite().min(-50).max(50).optional(),
   // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
   output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
@@ -308,6 +316,9 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_anim",
       "caption_x",
       "caption_y",
+      "video_scale",
+      "video_x",
+      "video_y",
       "output_aspect",
       "video_fit",
     ]) {
@@ -361,7 +372,7 @@ const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_words, caption_width, caption_anim, caption_x, caption_y, output_aspect, " +
-  "video_fit, video_background_blur, " +
+  "video_fit, video_background_blur, video_scale, video_x, video_y, " +
   "srt_override, broll_json, text_overlays";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
@@ -473,6 +484,9 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_scale: clip.video_scale ?? 100,
+        video_x: clip.video_x ?? 0,
+        video_y: clip.video_y ?? 0,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
         // exist on every clip row (Firestore can't query absent fields).
         storage_path: null,
@@ -563,6 +577,9 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_scale: clip.video_scale ?? 100,
+        video_x: clip.video_x ?? 0,
+        video_y: clip.video_y ?? 0,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
         // Overlays are position-anchored (no timing) — the copy keeps the
@@ -649,6 +666,9 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_anim !== undefined ? { caption_anim: body.caption_anim } : {}),
         ...(body.caption_x !== undefined ? { caption_x: body.caption_x } : {}),
         ...(body.caption_y !== undefined ? { caption_y: body.caption_y } : {}),
+        ...(body.video_scale !== undefined ? { video_scale: body.video_scale } : {}),
+        ...(body.video_x !== undefined ? { video_x: body.video_x } : {}),
+        ...(body.video_y !== undefined ? { video_y: body.video_y } : {}),
         ...(body.output_aspect ? { output_aspect: body.output_aspect } : {}),
         ...(body.video_fit ? { video_fit: body.video_fit } : {}),
         ...(body.video_background_blur !== undefined

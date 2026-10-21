@@ -1456,6 +1456,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                           top: `${capY}%`,
                           bottom: "auto",
                           transform: "translate(-50%, -50%)",
+                          // Fixed wrap width — the row keeps the caption_width
+                          // band wherever it sits. Without this the abspos
+                          // row shrink-to-fits against `left: capX%`, so the
+                          // text re-wrapped while dragging (narrower as the
+                          // available space shrank): the "moves left → gets
+                          // shorter, right → gets wider" bug. The render side
+                          // wraps at MarginL/R (= caption_width %) and just
+                          // centers the block at \pos — this matches it.
+                          width: `${capWidth}%`,
                         }),
                   }}
                 >
@@ -1557,11 +1566,17 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 return (
                 <div
                   key={ov.id}
-                  className="pointer-events-none absolute"
+                  className="pointer-events-none absolute flex justify-center"
                   style={{
                     left: `${ov.x}%`,
                     top: `${ov.y}%`,
                     transform: "translate(-50%, -50%)",
+                    // Fixed wrap width (caption parity): without it the abspos
+                    // row shrink-to-fits against `left: x%` and the text
+                    // re-wraps while dragging. The ASS render wraps at the
+                    // symmetric margin band and centers at \pos — same here.
+                    // flex centers the block inside the band like \an5 does.
+                    width: `${ov.width ?? 90}%`,
                   }}
                 >
                   <span
@@ -1590,6 +1605,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         canvasPx.w > 0
                           ? `${(((ov.width ?? 90) / 100) * canvasPx.w).toFixed(1)}px`
                           : `${ov.width ?? 90}%`,
+                      // \an5 centers every wrapped line — captions do the
+                      // same via their text-center row; overlays match here.
+                      textAlign: "center",
                       lineHeight: 1.15,
                       fontWeight: ov.bold ? 800 : 500,
                       color: ov.color,

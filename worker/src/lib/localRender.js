@@ -160,7 +160,11 @@ const TEMPLATE_ACCENT_COLORS = {
  *               MarginL/MarginR park the remaining band symmetrically.
  *   position  — top/middle/bottom presets at 8% / center, and the drag
  *               position (caption_x/caption_y, block CENTER) as \an5\pos,
- *               matching the overlay's translate(-50%,-50%) anchor.
+ *               matching the overlay's translate(-50%,-50%) anchor. Wrap
+ *               width stays the caption_width band at every position
+ *               (margins still bind under \pos — frame-verified), and the
+ *               canvas clips a block pushed past an edge, like the editor's
+ *               overflow-hidden preview box.
  *   templates — boxed templates render via BorderStyle 3: libass paints the
  *               box in OutlineColour expanded by Outline px (frame-verified
  *               with ffmpeg 7.1: with Outline 0 the box degenerates to the
@@ -348,9 +352,10 @@ export function buildAssSubtitles({
 
   // ---- wrap width -----------------------------------------------------------
   // The overlay wraps the caption at caption_width % of the canvas; ASS wrap
-  // width = MarginL/MarginR, so park the remainder symmetrically. (\pos
-  // events ignore margins — a drag-positioned block keeps the overlay's
-  // centered max-width behavior regardless.)
+  // width = MarginL/MarginR, so park the remainder symmetrically. Frame-verified
+  // with ffmpeg 7.1: \pos events DO wrap at the margin band (block center at
+  // \pos, canvas clips overflow) — same as the preview's fixed-width centered
+  // row, so a drag-positioned caption wraps identically at every position.
   const widthPct = Math.min(100, Math.max(20, Number(captionWidth) || 90));
   const marginLR = Math.max(0, Math.round(((100 - widthPct) / 200) * width));
 
@@ -663,8 +668,9 @@ function buildSegmentCutFilter(segments, { fps = 30, fade = 0.012, withAudio = t
   return { filter: parts.join(";"), v: "[vcut]", a: withAudio ? "[acut]" : null };
 }
 
-/** Build the filter_complex graph (video chain; audio chain is appended). */
-function buildFilterGraph({
+/** Build the filter_complex graph (video chain; audio chain is appended).
+ *  Exported for the zoom-test suite — production callers use renderOnce. */
+export function buildFilterGraph({
   broll,
   durationSeconds,
   width,
@@ -673,12 +679,39 @@ function buildFilterGraph({
   watermarkInput = null,
   videoFit = "cover",
   videoBackgroundBlur = true,
+  // CapCut-style frame zoom & pan (editor "Frame" tab). videoScale is % of the
+  // fitted frame (100 = untouched), videoX/videoY are pan offsets as % of the
+  // output canvas — the exact mirror of the preview's
+  // `translate(videoX%, videoY%) scale(videoScale/100)` on the canvas-sized
+  // <video> element: scale about the canvas center first, then translate by
+  // % of the canvas (NOT multiplied by the zoom — CSS translate % resolves
+  // against the element box). Pan is clamped to what the zoomed frame can
+  // actually show (the editor's videoMaxPan: ±(zoom-100)/2 % while zoomed
+  // in). Captions/overlays burn AFTER this transform, so text stays put.
+  videoScale = 100,
+  videoX = 0,
+  videoY = 0,
   // Scene cuts: the video chain starts at the concat output instead of the
   // raw input. "[0:v]" (contiguous) when there is no cut list. The value is a
   // full padded reference, so the cut path passes "[vcut]" verbatim.
   cutVideoIn = "[0:v]",
 }) {
   const parts = [];
+
+  // ---- frame zoom & pan ------------------------------------------------------
+  // Zoom s applies about the canvas center; the pan offsets are % of the
+  // canvas, clamped to the editor's videoMaxPan. At the defaults the whole
+  // stage is skipped so untouched clips keep their byte-identical graph.
+  const zoom = Math.min(300, Math.max(50, Number(videoScale) || 100)) / 100;
+  const maxPanPct = zoom >= 1 ? (zoom - 1) * 50 : 50;
+  const panXPct = Math.min(maxPanPct, Math.max(-maxPanPct, Number(videoX) || 0));
+  const panYPct = Math.min(maxPanPct, Math.max(-maxPanPct, Number(videoY) || 0));
+  const panX = Math.round((panXPct / 100) * width);
+  const panY = Math.round((panYPct / 100) * height);
+  const zooms = zoom.toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); // "1.5", "2", "0.75"
+  const zoomStage = (label) =>
+    `scale='trunc(iw*${zooms}/2)*2':'trunc(ih*${zooms}/2)*2':flags=lanczos${label}`;
+
   // Lanczos resampling: bilinear (the default) visibly softens the 1080x1920
   // scrub, especially when upscaling smaller sources.
   if (videoFit === "contain") {
@@ -691,25 +724,89 @@ function buildFilterGraph({
       // has a known SIGSEGV). Same soft-blur look, ~50x faster, stable.
       const bw = Math.round(width / 8);
       const bh = Math.round(height / 8);
-      parts.push(
-        `${cutVideoIn}split=2[bgs][fgs];` +
-          `[bgs]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=lanczos,` +
-          `crop=${bw}:${bh},boxblur=luma_radius=6:luma_power=2:chroma_radius=6:chroma_power=2,` +
-          `eq=brightness=-0.07,scale=${width}:${height}:flags=bilinear[bg];` +
-          `[fgs]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];` +
-          `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[base]`
-      );
+      // The zoom/pan applies to the FOREGROUND only: the editor transforms the
+      // <video> element over a static blurred backdrop, so zooming out must
+      // reveal more blur (not black) and panning must not drag the backdrop.
+      // The fitted frame is scaled about the canvas center and overlaid back
+      // onto the backdrop at the panned offset; overlay clips whatever falls
+      // outside the canvas, exactly like the editor's overflow-hidden box.
+      if (zoom === 1 && panX === 0 && panY === 0) {
+        parts.push(
+          `${cutVideoIn}split=2[bgs][fgs];` +
+            `[bgs]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=lanczos,` +
+            `crop=${bw}:${bh},boxblur=luma_radius=6:luma_power=2:chroma_radius=6:chroma_power=2,` +
+            `eq=brightness=-0.07,scale=${width}:${height}:flags=bilinear[bg];` +
+            `[fgs]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg];` +
+            `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[base]`
+        );
+      } else {
+        parts.push(
+          `${cutVideoIn}split=2[bgs][fgs];` +
+            `[bgs]scale=${bw}:${bh}:force_original_aspect_ratio=increase:flags=lanczos,` +
+            `crop=${bw}:${bh},boxblur=luma_radius=6:luma_power=2:chroma_radius=6:chroma_power=2,` +
+            `eq=brightness=-0.07,scale=${width}:${height}:flags=bilinear[bg];` +
+            `[fgs]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fgf];` +
+            `[fgf]${zoomStage("[zfg]")};` +
+            // Negative x/y are fine — overlay clips them (frame wider than
+            // the canvas while zoomed in). The expression has no commas, so
+            // it needs no quoting inside the filtergraph script.
+            `[bg][zfg]overlay=x=(main_w-overlay_w)/2+${panX}:y=(main_h-overlay_h)/2+${panY},setsar=1[base]`
+        );
+      }
     } else {
       // No blur: letterbox the untouched frame on plain black bars.
-      parts.push(
-        `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
-          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[base]`
-      );
+      // Zoom/pan rides on the letterboxed composite: zoomed in, a clamped
+      // window is cropped back out; zoomed out, the shrunken frame is padded
+      // onto black (the editor reveals the blurred backdrop there — the
+      // no-blur render has no backdrop layer, so black is the honest fill).
+      if (zoom === 1 && panX === 0 && panY === 0) {
+        parts.push(
+          `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+            `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[base]`
+        );
+      } else if (zoom > 1) {
+        parts.push(
+          `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+            `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[b0];` +
+            `[b0]${zoomStage(",")}` +
+            // clip() keeps the window inside the frame even for pans the
+            // editor would never produce; commas live inside the quotes.
+            `crop=${width}:${height}:x='clip((in_w-${width})/2-(${panX}),0,in_w-${width})'` +
+            `:y='clip((in_h-${height})/2-(${panY}),0,in_h-${height})',setsar=1[base]`
+        );
+      } else {
+        parts.push(
+          `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+            `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[b0];` +
+            `[b0]${zoomStage(",")}` +
+            `pad=${width}:${height}:x='max(0,min((ow-iw)/2+(${panX}),ow-iw))'` +
+            `:y='max(0,min((oh-ih)/2+(${panY}),oh-ih))':black,setsar=1[base]`
+        );
+      }
     }
   } else {
-    parts.push(
-      `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
-    );
+    // Cover: the fitted frame fills the canvas, so the zoom/pan runs on the
+    // composited frame — crop a clamped window back out when zoomed in, pad
+    // onto black when zoomed out (below 100% there is nothing to reveal).
+    if (zoom === 1 && panX === 0 && panY === 0) {
+      parts.push(
+        `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[base]`
+      );
+    } else if (zoom > 1) {
+      parts.push(
+        `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[b0];` +
+          `[b0]${zoomStage(",")}` +
+          `crop=${width}:${height}:x='clip((in_w-${width})/2-(${panX}),0,in_w-${width})'` +
+          `:y='clip((in_h-${height})/2-(${panY}),0,in_h-${height})',setsar=1[base]`
+      );
+    } else {
+      parts.push(
+        `${cutVideoIn}scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1[b0];` +
+          `[b0]${zoomStage(",")}` +
+          `pad=${width}:${height}:x='max(0,min((ow-iw)/2+(${panX}),ow-iw))'` +
+          `:y='max(0,min((oh-ih)/2+(${panY}),oh-ih))':black,setsar=1[base]`
+      );
+    }
   }
   let prev = "base";
   broll.forEach((b, i) => {
@@ -776,6 +873,11 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     // events with the caption mechanics (see buildAssSubtitles).
     textOverlays = [],
     outputAspect = "9:16",
+    // CapCut-style frame zoom & pan (editor "Frame" tab) — consumed by
+    // buildFilterGraph; captions/overlays burn after the transform.
+    videoScale = 100,
+    videoX = 0,
+    videoY = 0,
   } = spec;
 
   await ensureFont(captionFontKey);
@@ -889,6 +991,9 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
     watermarkInput,
     videoFit,
     videoBackgroundBlur,
+    videoScale,
+    videoX,
+    videoY,
     cutVideoIn: cut ? cut.v : "[0:v]",
   });
   // The cut filter (trim/atrim per range + concat) must be in the graph
