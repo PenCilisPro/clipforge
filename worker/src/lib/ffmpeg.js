@@ -8,9 +8,17 @@ import crypto from "node:crypto";
 
 // Distro ffmpeg inside Modal (override), static binary everywhere else.
 const FFMPEG_PATH = process.env.FFMPEG_PATH_OVERRIDE || ffmpegStatic;
+// ffprobe needs the same escape hatch: without it probes kept running the
+// STATIC glibc ffprobe even when ffmpeg was overridden — and on Alpine
+// (musl) containers the static binaries cannot resolve DNS at all (their
+// getaddrinfo tries to dlopen glibc NSS modules that do not exist there,
+// so every https input failed with "Failed to resolve hostname ...:
+// System error" while Node's own fetch resolved the same host fine).
+const FFPROBE_PATH = process.env.FFPROBE_PATH_OVERRIDE || ffprobeStatic.path;
 console.log("[ffmpeg] using binary:", FFMPEG_PATH);
+console.log("[ffprobe] using binary:", FFPROBE_PATH);
 ffmpeg.setFfmpegPath(FFMPEG_PATH);
-ffmpeg.setFfprobePath(ffprobeStatic.path);
+ffmpeg.setFfprobePath(FFPROBE_PATH);
 
 export const TMP_DIR = process.env.TMP_DIR ?? "/tmp/clipforge";
 
@@ -172,6 +180,59 @@ export function probeMedia(filePath) {
       });
     });
   });
+}
+
+/**
+ * Does this ffmpeg failure mean "could not READ the remote input" rather
+ * than "the file is bad"? Matches the DNS/TLS/transport error family that
+ * static-glibc ffmpeg builds produce on musl containers (and, generally,
+ * any network-level failure reading an https input):
+ *   [tcp @ ...] Failed to resolve hostname ...: System error
+ *   Error opening input: Input/output error
+ * "killed by signal" is included for the same class: the static-glibc
+ * binaries sometimes SEGFAULT inside their broken getaddrinfo/NSS path
+ * instead of printing a clean error (observed in sandbox testing — the
+ * Alpine container shows "System error", a glibc host may crash outright).
+ * Callers use this to decide whether re-reading the same media from a
+ * LOCAL copy (downloaded via Node, whose resolver works) is worth trying.
+ */
+export function isRemoteUnreadableError(rawMessage) {
+  const msg = String(rawMessage ?? "");
+  return (
+    /failed to resolve|could not resolve|name or service not known|temporary failure in name resolution|network is unreachable|no route to host|connection (?:refused|reset|timed out)|input\/output error|protocol not found|handshake|certificate|\btls\b|\bssl\b|(?:http error|server returned) 40[34]|killed by signal/i.test(
+      msg
+    )
+  );
+}
+
+/**
+ * Parse the total size out of a Content-Range header ("bytes 0-0/12345").
+ * Returns null for anything malformed (including "bytes 0-0/*" — unknown
+ * length) so callers can skip their size guard gracefully.
+ */
+export function contentRangeTotal(header) {
+  const match = /bytes\s+\d+-\d+\/(\d+)/i.exec(String(header ?? ""));
+  const total = match ? Number(match[1]) : NaN;
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+/**
+ * Size of a remote object without downloading it: a 1-byte Range request
+ * whose Content-Range header carries the total. Range is NOT part of the
+ * AWS SigV4 signed headers, so this works against presigned GET URLs —
+ * the same mechanism ffmpeg itself uses to seek inside them. Returns null
+ * whenever the probe cannot complete (never throws: it is best-effort
+ * insurance before a source-sized local download).
+ */
+export async function probeRemoteSize(url) {
+  try {
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" } });
+    const total = contentRangeTotal(res.headers.get("content-range"));
+    if (res.body) await res.body.cancel().catch(() => {});
+    return res.ok && total ? total : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -12,6 +12,9 @@ import {
   assertDiskSpace,
   sweepStaleTmpFiles,
   describeExtractionFailure,
+  isRemoteUnreadableError,
+  probeRemoteSize,
+  downloadToFile,
 } from "../lib/ffmpeg.js";
 import {
   fetchSourceVideo,
@@ -170,7 +173,7 @@ export async function processTranscribe(job) {
     const storedDuration = Number(project.duration_seconds);
     let durationSeconds =
       probe && probe.duration > 0 ? probe.duration : storedDuration > 0 ? storedDuration : null;
-    const durationKnown = Number.isFinite(durationSeconds) && durationSeconds > 0;
+    let durationKnown = Number.isFinite(durationSeconds) && durationSeconds > 0;
 
     // Credits are per processed video, not per retry — only the first
     // attempt pays, otherwise each failed retry burns more minutes.
@@ -230,16 +233,79 @@ export async function processTranscribe(job) {
     try {
       await extractRawPcm(mediaSource, pcmFile);
     } catch (err) {
-      // Map the two common extraction failures to plain English instead of a
-      // raw ffmpeg muxer dump: a genuinely missing audio stream, and an
-      // ffmpeg build that cannot read remote (presigned https) inputs.
-      const friendly = describeExtractionFailure(err?.message ?? "");
-      if (friendly) throw new Error(friendly);
-      throw err;
+      const rawMessage = err?.message ?? "";
+      // Two very different failure families need opposite responses:
+      //  - the FILE is bad (no audio stream) → re-reading it from a local
+      //    copy cannot help, so surface the readable error and stop;
+      //  - the worker's ffmpeg could not READ the remote input (DNS/TLS/
+      //    transport — the static-glibc binaries cannot resolve anything on
+      //    Alpine musl containers) → download the source with Node, whose
+      //    resolver works, and extract from the local copy.
+      const remoteInput = /^https?:\/\//i.test(String(mediaSource));
+      if (!remoteInput || !isRemoteUnreadableError(rawMessage)) {
+        const friendly = describeExtractionFailure(rawMessage);
+        if (friendly) throw new Error(friendly);
+        throw err;
+      }
+
+      console.warn(
+        `[transcribe] remote extraction failed (${rawMessage.slice(0, 200)}) — ` +
+          "downloading the source locally and retrying (the worker's ffmpeg " +
+          "cannot read the storage URL, but Node can)"
+      );
+
+      // Size the download BEFORE it lands: a 1-byte Range probe on the
+      // presigned URL reveals the total size, and a source-sized file is
+      // the biggest thing this stage ever writes to the ~1 GiB disk.
+      const sourceBytes = await probeRemoteSize(mediaSource);
+      if (sourceBytes != null) {
+        console.log(
+          `[transcribe] local retry: source is ${Math.round(sourceBytes / 1048576)} MB — checking disk`
+        );
+        await assertDiskSpace(sourceBytes + 64 * 1024 * 1024, {
+          label: "local source download",
+        });
+      }
+
+      localVideo = tmpPath(`source-${projectId}.local`);
+      await downloadToFile(mediaSource, localVideo);
+
+      // A local probe usually recovers what the remote probe could not —
+      // duration especially (raw DASH containers report N/A), and the
+      // audio-stream layout. Never rejects the file by itself: a failed
+      // local probe just leaves the PCM-derived fallback in charge.
+      const localProbe = await probeMedia(localVideo).catch(() => null);
+      if (!durationKnown && localProbe?.duration > 0) {
+        durationSeconds = localProbe.duration;
+        durationKnown = true;
+        console.log(
+          `[transcribe] local probe recovered duration: ${durationSeconds.toFixed(0)}s`
+        );
+        await commitDuration(durationSeconds);
+      }
+      const pcmRetryEstimate = durationKnown
+        ? Math.ceil(durationSeconds * BYTES_PER_SECOND * 1.02)
+        : 400 * 1024 * 1024;
+      await assertDiskSpace(pcmRetryEstimate + 64 * 1024 * 1024, {
+        label: "audio extraction (local retry)",
+        // Never let the aggressive sweep tier delete the source we just
+        // downloaded — it is ffmpeg's input for the retry below.
+        protect: [localVideo],
+      });
+
+      try {
+        await extractRawPcm(localVideo, pcmFile);
+        console.log("[transcribe] audio extraction succeeded from the local copy");
+      } catch (retryErr) {
+        const friendly = describeExtractionFailure(retryErr?.message ?? "");
+        if (friendly) throw new Error(friendly);
+        throw retryErr;
+      }
     }
     // The source is no longer needed locally — render works off the R2
-    // object — so free its disk before the long transcription loop. (Only
-    // the split path ever had a local file; cleanup(null) is a no-op.)
+    // object — so free its disk before the long transcription loop. (Both
+    // the split path and the remote-read fallback may have landed a local
+    // copy; cleanup(null) is a no-op when they did not.)
     await cleanup(localVideo);
     localVideo = null;
 
