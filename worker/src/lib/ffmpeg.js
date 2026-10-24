@@ -73,11 +73,17 @@ export function runFfmpeg(args, { cwd } = {}) {
       }, FFMPEG_TIMEOUT_MS);
       proc.on("close", (code, signal) => {
         clearTimeout(timer);
-        code === 0
-          ? resolve()
-          : code === null
-            ? reject(new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`))
-            : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`));
+        if (code === 0) return resolve();
+        if (code === null) {
+          return reject(
+            new Error(`ffmpeg was killed by signal ${signal}: ${stderr.slice(-1200)}`)
+          );
+        }
+        // Exit code 228 (= -28) with "No space left on device" is ENOSPC —
+        // reframe it around the disk that actually filled, keeping the raw
+        // stderr tail for diagnosis. Async enrichment inside a Promise
+        // executor is safe here: reject is idempotent.
+        withDiskContext(code, stderr).then(reject, reject);
       });
       proc.on("error", (err) => {
         clearTimeout(timer);
@@ -98,6 +104,28 @@ export function runFfmpeg(args, { cwd } = {}) {
     });
   return run(FFMPEG_NICE).catch((err) =>
     err?.fallbackToPlain ? run(false) : Promise.reject(err)
+  );
+}
+
+/**
+ * Wrap a non-zero ffmpeg exit in disk context when stderr shows ENOSPC
+ * ("No space left on device"). The worker's ~1 GiB ephemeral disk fills
+ * fastest during audio extraction (raw PCM ≈ 115 MB per hour of video) and
+ * legacy split-upload reassembly (a source-sized MP4 lands here first), so
+ * the message names the real limits instead of a bare muxer error.
+ */
+async function withDiskContext(code, stderr) {
+  const base = new Error(`ffmpeg exited ${code}: ${stderr.slice(-800)}`);
+  if (!/no space left on device/i.test(stderr)) return base;
+  const free = await statDiskFree().catch(() => null);
+  const freeText = free == null ? "unknown" : formatMb(free);
+  return new Error(
+    `ffmpeg exited ${code} — the worker's disk is FULL (No space left on device; ` +
+      `${TMP_DIR} has ${freeText} free). Transcription audio takes ~115 MB per hour of ` +
+      `video, and legacy split uploads also reassemble the whole source file in this ` +
+      `same temp space. Stale temp files are swept automatically before each job; if ` +
+      `this keeps happening, increase the worker service's disk size (Northflank → ` +
+      `service → resources) or use a shorter source. Raw stderr: ${stderr.slice(-400)}`
   );
 }
 
@@ -228,6 +256,95 @@ export async function sweepTmpDir() {
       fs.rm(path.join(TMP_DIR, entry), { force: true, recursive: true }).catch(() => {})
     )
   );
+}
+
+/**
+ * Free bytes on the filesystem holding TMP_DIR, or null when the platform
+ * can't report it (fs.statfs needs Node ≥ 18.15; older runtimes skip every
+ * disk assertion instead of failing jobs over a missing API).
+ */
+export async function statDiskFree(targetPath = TMP_DIR) {
+  if (typeof fs.statfs !== "function") return null;
+  try {
+    const stats = await fs.statfs(targetPath);
+    const blockSize = Number(stats.bsize) || 4096;
+    const available = Number(stats.bavail);
+    if (!Number.isFinite(available)) return null;
+    return Math.max(0, available * blockSize);
+  } catch {
+    return null;
+  }
+}
+
+// Files in TMP_DIR older than this are crashed-job leftovers and safe to
+// delete even while other work runs: the longest legitimate temp-file
+// lifetime is a transcribe stage BullMQ already timed out (120 min) plus
+// ffmpeg's own kill (35 min) — 3 h clears everything past that with margin.
+// Set TMP_STALE_MS to override.
+const TMP_STALE_MS = Number(process.env.TMP_STALE_MS) || 3 * 60 * 60 * 1000;
+
+/**
+ * Age-filtered sweep: delete only TMP_DIR entries last modified before the
+ * stale window. Unlike sweepTmpDir (startup-only, blanket), this is safe to
+ * call mid-flight — a timed-out stage still writing through its background
+ * ffmpeg keeps its files until they genuinely go stale.
+ */
+export async function sweepStaleTmpFiles(maxAgeMs = TMP_STALE_MS) {
+  await ensureTmpDir();
+  const entries = await fs.readdir(TMP_DIR).catch(() => []);
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = path.join(TMP_DIR, entry);
+      try {
+        const stats = await fs.stat(fullPath);
+        if (stats.mtimeMs < cutoff) {
+          await fs.rm(fullPath, { force: true, recursive: true });
+          removed += 1;
+        }
+      } catch {
+        // Vanished mid-sweep or unreadable — nothing to reclaim, move on.
+      }
+    })
+  );
+  if (removed > 0) {
+    console.log(
+      `[ffmpeg] swept ${removed} stale temp file(s) (older than ${Math.round(maxAgeMs / 60000)} min) from ${TMP_DIR}`
+    );
+  }
+  return removed;
+}
+
+function formatMb(bytes) {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/**
+ * Fail fast — with a human-readable reason — when TMP_DIR cannot fit the
+ * bytes a stage is about to write. Reclaims stale leftovers once before
+ * giving up; a no-op on platforms without statfs. ENOSPC mid-ffmpeg is one
+ * of the least debuggable failures possible ("Error muxing a packet"), so
+ * anything that can be caught before the encode starts must be.
+ */
+export async function assertDiskSpace(needBytes, { label = "this stage" } = {}) {
+  // statfs on a missing path throws ENOENT → null → silent skip, so make
+  // sure TMP_DIR exists before measuring (first job on a fresh container).
+  await ensureTmpDir();
+  let free = await statDiskFree();
+  if (free == null) return;
+  if (free >= needBytes) return;
+  await sweepStaleTmpFiles();
+  free = await statDiskFree();
+  if (free != null && free < needBytes) {
+    throw new Error(
+      `Not enough disk space for ${label}: needs ~${formatMb(needBytes)} but only ` +
+        `${formatMb(free)} is free in ${TMP_DIR} (after sweeping stale temp files). ` +
+        `The worker's ephemeral disk is ~1 GiB and transcription audio alone takes ` +
+        `~115 MB per hour of video — increase the worker service's disk size or retry ` +
+        `with a shorter source video.`
+    );
+  }
 }
 
 /** Stream a URL straight to disk; do not buffer an entire video in RAM. */

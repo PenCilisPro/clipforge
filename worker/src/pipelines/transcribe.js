@@ -2,7 +2,15 @@ import fs from "node:fs/promises";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { setJobStatus, setProjectStatus, deductCredits, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
-import { ensureTmpDir, tmpPath, cleanup, extractRawPcm, probeMedia } from "../lib/ffmpeg.js";
+import {
+  ensureTmpDir,
+  tmpPath,
+  cleanup,
+  extractRawPcm,
+  probeMedia,
+  statDiskFree,
+  assertDiskSpace,
+} from "../lib/ffmpeg.js";
 import { fetchSourceVideo, isSplitSource, sourceStoragePaths } from "../lib/source.js";
 import { uploadFile as r2UploadFile, remove as r2Remove, presignGet, r2Key } from "../lib/r2.js";
 import { env } from "../lib/env.js";
@@ -124,6 +132,26 @@ export async function processTranscribe(job) {
     // writes raw mono 16 kHz PCM; each STT request then reads a fixed byte
     // range (32 000 B/s × 55 s ≈ 1.7 MB, well under Google's 10 MiB inline
     // and 60 s limits) through a single reused buffer.
+    const BYTES_PER_SECOND = 16000 * 2; // 16 kHz × 16-bit mono PCM on disk
+
+    // Disk pre-flight: raw mono 16 kHz PCM is exactly BYTES_PER_SECOND
+    // (32 000 B/s ≈ 115 MB/hour). Failing HERE with a readable reason beats
+    // dying 20 minutes into ffmpeg with a cryptic "Error muxing a packet:
+    // No space left on device" (exit 228 = ENOSPC). The legacy split-upload
+    // path already spent its source-sized bytes on disk above — what must
+    // still fit is the PCM plus a safety margin.
+    const pcmEstimate = Math.ceil(durationSeconds * BYTES_PER_SECOND * 1.02);
+    const freeBytes = await statDiskFree();
+    if (freeBytes != null) {
+      console.log(
+        `[transcribe] tmp disk: ${Math.round(freeBytes / 1048576)} MB free, ` +
+          `PCM estimate ${Math.round(pcmEstimate / 1048576)} MB`
+      );
+    }
+    await assertDiskSpace(pcmEstimate + 128 * 1024 * 1024, {
+      label: "audio extraction",
+    });
+
     pcmFile = tmpPath(`audio-${projectId}.pcm`);
     await extractRawPcm(mediaSource, pcmFile);
     // The source is no longer needed locally — render works off the R2
@@ -132,7 +160,6 @@ export async function processTranscribe(job) {
     await cleanup(localVideo);
     localVideo = null;
 
-    const BYTES_PER_SECOND = 16000 * 2; // 16 kHz × 16-bit mono
     const chunkSeconds = 55;
     const chunkBytes = chunkSeconds * BYTES_PER_SECOND;
     const { size: pcmBytes } = await fs.stat(pcmFile);
