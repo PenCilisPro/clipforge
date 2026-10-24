@@ -11,6 +11,8 @@ import {
   statDiskFree,
 } from "../lib/ffmpeg.js";
 import { downloadSourceVideo } from "../lib/rapidapi.js";
+import { downloadSourceVideoViaModal } from "../lib/modaldl.js";
+import { env } from "../lib/env.js";
 
 /**
  * Stage 1 — download (URL projects).
@@ -49,7 +51,34 @@ export async function processDownload(job) {
       console.log(`[download] tmp disk: ${Math.round(freeBefore / 1048576)} MB free before download`);
     }
     localFile = tmpPath(`source-${projectId}.mp4`);
-    await downloadSourceVideo(project.source_url, localFile);
+
+    // Preferred: the free Modal yt-dlp downloader (MODAL_DOWNLOAD_URL).
+    // RapidAPI (paid) stays as the fallback for when YouTube bot-checks
+    // Modal's datacenter IPs or the endpoint is not configured yet.
+    let downloadedVia = null;
+    const downloadErrors = [];
+    if (env.modalDownloadUrl) {
+      try {
+        const meta = await downloadSourceVideoViaModal(project.source_url, localFile);
+        downloadedVia = "modal/yt-dlp";
+        if (meta?.title) job.log(`Source: ${meta.title}`);
+      } catch (err) {
+        downloadErrors.push(`yt-dlp: ${err.message}`);
+        console.warn(`[download] modal yt-dlp failed — ${err.message}`);
+      }
+    }
+    if (!downloadedVia) {
+      try {
+        await downloadSourceVideo(project.source_url, localFile);
+        downloadedVia = "rapidapi";
+      } catch (err) {
+        downloadErrors.push(`rapidapi: ${err.message}`);
+      }
+    }
+    if (!downloadedVia) {
+      throw new Error(`Could not download the source video — ${downloadErrors.join(" | ")}`);
+    }
+    console.log(`[download] fetched source via ${downloadedVia}`);
 
     const durationSeconds = await probeDurationSeconds(localFile).catch(() => null);
 

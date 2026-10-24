@@ -66,6 +66,10 @@ export const env = {
   // and the shared secret both sides send as X-Render-Secret.
   modalRenderUrl: process.env.MODAL_RENDER_URL,
   modalRenderSecret: process.env.MODAL_RENDER_SECRET,
+  // Modal yt-dlp downloader (modal/modal_download.py) — the free URL
+  // downloader. When set, URL projects download through it and RapidAPI
+  // (paid) is demoted to a bot-check fallback.
+  modalDownloadUrl: process.env.MODAL_DOWNLOAD_URL,
   // Legacy Shotstack client (kept for in-flight renders from before a swap).
   shotstackApiKey: process.env.SHOTSTACK_API_KEY,
   shotstackEnv: process.env.SHOTSTACK_ENV ?? "stage",
@@ -108,7 +112,11 @@ export function warnMissing() {
   }
   // [env var names], consequence when all of them are unset
   const optionalWarnings = [
-    { names: ["RAPIDAPI_KEY"], consequence: "URL projects cannot be downloaded" },
+    {
+      names: ["MODAL_DOWNLOAD_URL", "RAPIDAPI_KEY"],
+      consequence:
+        "URL projects cannot be downloaded (set MODAL_DOWNLOAD_URL for the free yt-dlp downloader, or RAPIDAPI_KEY for the paid fallback)",
+    },
     {
       names: ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIALS_JSON"],
       consequence: "transcription will fail",
