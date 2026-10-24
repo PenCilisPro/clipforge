@@ -157,19 +157,38 @@ export async function processTranscribe(job) {
       );
     }
 
-    const durationSeconds =
-      probe && probe.duration > 0 ? probe.duration : project.duration_seconds ?? null;
-    if (!durationSeconds || !Number.isFinite(durationSeconds)) {
-      throw new Error("Could not determine the source video duration");
-    }
+    // Duration resolution — three sources, tried in order:
+    //   1. the media probe above (container duration, or per-stream duration
+    //      when the container header says N/A);
+    //   2. duration_seconds stored by the download stage (URL projects);
+    //   3. DERIVED FROM THE EXTRACTED AUDIO after extraction below.
+    // Source 3 is why a missing duration is no longer fatal: raw yt-dlp DASH
+    // downloads (.webm/.opus files that were never remuxed) report duration
+    // "N/A", and upload projects have no stored value until this stage
+    // succeeds — while the extracted PCM byte count is an exact ground
+    // truth (32 000 B/s) for everything this stage does with the duration.
+    const storedDuration = Number(project.duration_seconds);
+    let durationSeconds =
+      probe && probe.duration > 0 ? probe.duration : storedDuration > 0 ? storedDuration : null;
+    const durationKnown = Number.isFinite(durationSeconds) && durationSeconds > 0;
+
     // Credits are per processed video, not per retry — only the first
     // attempt pays, otherwise each failed retry burns more minutes.
-    if (durationSeconds && !job.attemptsMade) {
+    const commitDuration = async (seconds) => {
+      if (job.attemptsMade) return;
       await supabaseAdmin
         .from("projects")
-        .update({ duration_seconds: durationSeconds })
+        .update({ duration_seconds: seconds })
         .eq("id", projectId);
-      await deductCredits(project.user_id, durationSeconds);
+      await deductCredits(project.user_id, seconds);
+    };
+    if (durationKnown) {
+      await commitDuration(durationSeconds);
+    } else {
+      console.log(
+        "[transcribe] no duration from probe or DB (common for raw DASH .webm " +
+          "uploads) — deriving it from the extracted audio after extraction"
+      );
     }
 
     // 2. Extract the audio once, then slice it in memory. A full-length PCM
@@ -187,7 +206,12 @@ export async function processTranscribe(job) {
     // No space left on device" (exit 228 = ENOSPC). The legacy split-upload
     // path already spent its source-sized bytes on disk above — what must
     // still fit is the PCM plus a safety margin.
-    const pcmEstimate = Math.ceil(durationSeconds * BYTES_PER_SECOND * 1.02);
+    const pcmEstimate = durationKnown
+      ? Math.ceil(durationSeconds * BYTES_PER_SECOND * 1.02)
+      : // Unknown length: require room for ~3.4 h of audio. If the source is
+        // somehow longer, extraction itself fails with the readable ENOSPC
+        // error instead of this pre-flight guess.
+        400 * 1024 * 1024;
     const freeBytes = await statDiskFree();
     if (freeBytes != null) {
       console.log(
@@ -223,6 +247,23 @@ export async function processTranscribe(job) {
     const chunkBytes = chunkSeconds * BYTES_PER_SECOND;
     const { size: pcmBytes } = await fs.stat(pcmFile);
     const chunkCount = Math.ceil(pcmBytes / chunkBytes);
+
+    if (!durationKnown) {
+      // Ground truth from the audio itself: raw mono 16 kHz PCM is exactly
+      // BYTES_PER_SECOND, so the byte count IS the playable duration no
+      // matter what the container metadata claimed (or failed to claim).
+      durationSeconds = pcmBytes / BYTES_PER_SECOND;
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new Error(
+          "Could not determine the source video duration — audio extraction " +
+            "produced 0 bytes (no readable audio in the source)"
+        );
+      }
+      console.log(
+        `[transcribe] derived duration from extracted audio: ${durationSeconds.toFixed(0)}s`
+      );
+      await commitDuration(durationSeconds);
+    }
 
     const config = {
       encoding: "LINEAR16",

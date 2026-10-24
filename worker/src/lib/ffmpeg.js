@@ -129,11 +129,30 @@ async function withDiskContext(code, stderr) {
   );
 }
 
+/**
+ * Pick the most truthful duration ffprobe offered. format.duration is
+ * preferred, but raw DASH downloads (yt-dlp .webm/.opus files that were
+ * never remuxed into a seekable container) report "N/A" there — and
+ * Number("N/A") is NaN, which every caller silently treated as "no
+ * duration". Fall back to the largest finite per-stream duration, and
+ * finally 0. Never returns NaN.
+ */
+function pickProbeDuration(data) {
+  const formatDuration = Number(data?.format?.duration);
+  if (Number.isFinite(formatDuration) && formatDuration > 0) return formatDuration;
+  let best = 0;
+  for (const stream of data?.streams ?? []) {
+    const streamDuration = Number(stream?.duration);
+    if (Number.isFinite(streamDuration) && streamDuration > best) best = streamDuration;
+  }
+  return best;
+}
+
 export function probeDurationSeconds(filePath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, data) => {
       if (err) return reject(err);
-      resolve(Number(data?.format?.duration ?? 0));
+      resolve(pickProbeDuration(data));
     });
   });
 }
@@ -149,7 +168,7 @@ export function probeMedia(filePath) {
       if (err) return reject(err);
       resolve({
         streams: data?.streams ?? [],
-        duration: Number(data?.format?.duration ?? 0),
+        duration: pickProbeDuration(data),
       });
     });
   });
