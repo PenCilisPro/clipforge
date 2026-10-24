@@ -2,7 +2,14 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { uploadFile as r2UploadFile } from "../lib/r2.js";
 import { setJobStatus, setProjectStatus, insertJobRow } from "../lib/jobs.js";
 import { enqueuePipeline } from "../lib/queues.js";
-import { ensureTmpDir, tmpPath, cleanup, probeDurationSeconds } from "../lib/ffmpeg.js";
+import {
+  ensureTmpDir,
+  tmpPath,
+  cleanup,
+  probeDurationSeconds,
+  sweepStaleTmpFiles,
+  statDiskFree,
+} from "../lib/ffmpeg.js";
 import { downloadSourceVideo } from "../lib/rapidapi.js";
 
 /**
@@ -12,6 +19,12 @@ import { downloadSourceVideo } from "../lib/rapidapi.js";
  */
 export async function processDownload(job) {
   const { projectId, jobRowId } = job.data;
+  // Hoisted so the catch path can free the disk: a stranded source-sized
+  // download here was invisible to every later stage — each retry writes a
+  // NEW UUID-prefixed file, so a handful of failed attempts silently ate
+  // the whole ~1 GiB ephemeral disk and every job after them failed with
+  // "No space left on device".
+  let localFile = null;
 
   try {
     await setJobStatus(jobRowId, "active");
@@ -28,7 +41,14 @@ export async function processDownload(job) {
     }
 
     await ensureTmpDir();
-    const localFile = tmpPath(`source-${projectId}.mp4`);
+    // Free stranded leftovers BEFORE pulling another source-sized file in —
+    // this stage writes the biggest file on the worker's disk.
+    await sweepStaleTmpFiles();
+    const freeBefore = await statDiskFree();
+    if (freeBefore != null) {
+      console.log(`[download] tmp disk: ${Math.round(freeBefore / 1048576)} MB free before download`);
+    }
+    localFile = tmpPath(`source-${projectId}.mp4`);
     await downloadSourceVideo(project.source_url, localFile);
 
     const durationSeconds = await probeDurationSeconds(localFile).catch(() => null);
@@ -54,6 +74,10 @@ export async function processDownload(job) {
     job.log(`Downloaded ${durationSeconds?.toFixed(0) ?? "?"}s → ${storagePath}`);
     return { projectId, storagePath };
   } catch (error) {
+    // The download/upload failed but the partially-written source file is
+    // still on disk — remove it, or retries pile up source-sized files
+    // until the ephemeral disk hits zero.
+    await cleanup(localFile);
     await setJobStatus(jobRowId, "failed", error.message);
     await setProjectStatus(projectId, "failed", error.message);
     throw error;
