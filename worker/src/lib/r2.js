@@ -80,6 +80,52 @@ export async function download(key) {
   return res.Body; // Readable stream
 }
 
+/**
+ * Exact byte size of one object (metadata call, no body transfer). Used to
+ * pre-compute ContentLength for composite uploads.
+ */
+export async function headSize(key) {
+  const res = await client.send(
+    new HeadObjectCommand({ Bucket: env.r2Bucket, Key: key }),
+    { abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
+  );
+  return Number(res.ContentLength) || 0;
+}
+
+/**
+ * Assemble several stored objects into ONE new object without any local
+ * file: every source body streams chunk-by-chunk into a single PutObject
+ * body. Disk cost is zero — the point, since reassembling a split upload
+ * locally used to fill the worker's ~1 GiB ephemeral disk and starve
+ * transcription audio. Memory cost is one chunk. `sources` must be full
+ * keys with sizes from headSize(); the sum becomes the request's
+ * ContentLength (required for stream bodies). A mid-stream failure aborts
+ * the whole request — callers should treat it as retryable from scratch.
+ */
+export async function uploadCompositeStream(key, sources, contentType) {
+  if (!sources?.length) throw new Error("uploadCompositeStream: no sources");
+  const { Readable } = await import("node:stream");
+  const total = sources.reduce((sum, s) => sum + (Number(s.size) || 0), 0);
+  if (total <= 0) throw new Error("uploadCompositeStream: sources total 0 bytes");
+  async function* composite() {
+    for (const source of sources) {
+      const body = await download(source.key);
+      for await (const chunk of body) yield chunk;
+    }
+  }
+  await client.send(
+    new PutObjectCommand({
+      Bucket: env.r2Bucket,
+      Key: key,
+      Body: Readable.from(composite()),
+      ContentLength: total,
+      ContentType: contentType,
+    }),
+    { abortSignal: AbortSignal.timeout(LARGE_TRANSFER_TIMEOUT_MS) }
+  );
+  return total;
+}
+
 export async function downloadBuffer(key) {
   const res = await client.send(
     new GetObjectCommand({ Bucket: env.r2Bucket, Key: key }),

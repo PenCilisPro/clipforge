@@ -10,8 +10,14 @@ import {
   probeMedia,
   statDiskFree,
   assertDiskSpace,
+  sweepStaleTmpFiles,
 } from "../lib/ffmpeg.js";
-import { fetchSourceVideo, isSplitSource, sourceStoragePaths } from "../lib/source.js";
+import {
+  fetchSourceVideo,
+  isSplitSource,
+  sourceStoragePaths,
+  assembleSplitSourceInR2,
+} from "../lib/source.js";
 import { uploadFile as r2UploadFile, remove as r2Remove, presignGet, r2Key } from "../lib/r2.js";
 import { env } from "../lib/env.js";
 
@@ -82,11 +88,37 @@ export async function processTranscribe(job) {
         6 * 60 * 60
       );
     } else {
-      localVideo = tmpPath(`source-${projectId}.mp4`);
-      await fetchSourceVideo(project, localVideo);
       const previousPath = project.original_video_path;
       const canonicalPath = `${project.user_id}/${projectId}.mp4`;
-      await r2UploadFile(`source-videos/${canonicalPath}`, localVideo, "video/mp4");
+
+      // Preferred: assemble the split upload ON R2 — every part streams
+      // straight into the final single object, so the source-sized file
+      // never touches the ~1 GiB ephemeral disk. (Local reassembly filled
+      // the disk by itself and starved the transcription audio — every
+      // large upload failed with ENOSPC.)
+      let assembledInR2 = false;
+      try {
+        const totalBytes = await assembleSplitSourceInR2(project, canonicalPath);
+        assembledInR2 = true;
+        console.log(
+          `[transcribe] assembled split source in R2 (${Math.round(totalBytes / 1048576)} MB) — no local reassembly needed`
+        );
+      } catch (err) {
+        console.warn(
+          `[transcribe] R2-side assembly failed (${err.message}) — falling back to local reassembly`
+        );
+      }
+
+      if (!assembledInR2) {
+        // Legacy fallback: local reassembly (disk-heavy). Free stranded
+        // leftovers first — this writes the biggest local file in the
+        // whole pipeline.
+        await sweepStaleTmpFiles();
+        localVideo = tmpPath(`source-${projectId}.mp4`);
+        await fetchSourceVideo(project, localVideo);
+        await r2UploadFile(`source-videos/${canonicalPath}`, localVideo, "video/mp4");
+      }
+
       const { error: pathError } = await supabaseAdmin
         .from("projects")
         .update({ original_video_path: canonicalPath })
@@ -97,7 +129,9 @@ export async function processTranscribe(job) {
       await r2Remove(oldPaths.map((sourcePath) => `source-videos/${sourcePath}`)).catch((err) => {
         console.warn(`[transcribe] could not remove split source parts: ${err.message}`);
       });
-      mediaSource = localVideo;
+      mediaSource = assembledInR2
+        ? await presignGet(r2Key("source-videos", canonicalPath), 6 * 60 * 60)
+        : localVideo;
     }
 
     const probe = await probeMedia(mediaSource).catch(() => null);
@@ -150,6 +184,9 @@ export async function processTranscribe(job) {
     }
     await assertDiskSpace(pcmEstimate + 128 * 1024 * 1024, {
       label: "audio extraction",
+      // The aggressive reclaim tier must never delete THIS job's own split-
+      // path source file — it is ffmpeg's input for the extraction below.
+      protect: localVideo ? [localVideo] : [],
     });
 
     pcmFile = tmpPath(`audio-${projectId}.pcm`);

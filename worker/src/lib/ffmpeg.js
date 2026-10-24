@@ -284,22 +284,27 @@ export async function statDiskFree(targetPath = TMP_DIR) {
 const TMP_STALE_MS = Number(process.env.TMP_STALE_MS) || 3 * 60 * 60 * 1000;
 
 /**
- * Age-filtered sweep: delete only TMP_DIR entries last modified before the
- * stale window. Unlike sweepTmpDir (startup-only, blanket), this is safe to
- * call mid-flight — a timed-out stage still writing through its background
- * ffmpeg keeps its files until they genuinely go stale.
+ * Shared sweeper. Deletes TMP_DIR entries filtered by age, skipping any
+ * path in `protect` (exact resolved match). Returns what it reclaimed so
+ * callers can log real numbers. Publishing never touches TMP_DIR and the
+ * pipeline queue runs at concurrency 1, so the only entries at risk are
+ * zombie stages from withTimeout races — whose results are discarded anyway.
  */
-export async function sweepStaleTmpFiles(maxAgeMs = TMP_STALE_MS) {
+async function sweepTmpDirEntries({ olderThanMs = 0, protect = [] } = {}) {
   await ensureTmpDir();
   const entries = await fs.readdir(TMP_DIR).catch(() => []);
-  const cutoff = Date.now() - maxAgeMs;
+  const cutoff = Date.now() - olderThanMs;
+  const protectSet = new Set(protect.filter(Boolean).map((p) => path.resolve(p)));
   let removed = 0;
+  let bytes = 0;
   await Promise.all(
     entries.map(async (entry) => {
       const fullPath = path.join(TMP_DIR, entry);
+      if (protectSet.has(path.resolve(fullPath))) return;
       try {
         const stats = await fs.stat(fullPath);
         if (stats.mtimeMs < cutoff) {
+          bytes += Number(stats.size) || 0;
           await fs.rm(fullPath, { force: true, recursive: true });
           removed += 1;
         }
@@ -310,10 +315,21 @@ export async function sweepStaleTmpFiles(maxAgeMs = TMP_STALE_MS) {
   );
   if (removed > 0) {
     console.log(
-      `[ffmpeg] swept ${removed} stale temp file(s) (older than ${Math.round(maxAgeMs / 60000)} min) from ${TMP_DIR}`
+      `[ffmpeg] swept ${removed} temp file(s) (~${formatMb(bytes)}) from ${TMP_DIR}` +
+        (olderThanMs > 0 ? ` (older than ${Math.round(olderThanMs / 60000)} min)` : "")
     );
   }
-  return removed;
+  return { removed, bytes };
+}
+
+/**
+ * Age-filtered sweep: delete only TMP_DIR entries last modified before the
+ * stale window. Safe to call mid-flight — a timed-out stage still writing
+ * through its background ffmpeg keeps its files until they genuinely go
+ * stale.
+ */
+export async function sweepStaleTmpFiles(maxAgeMs = TMP_STALE_MS) {
+  return sweepTmpDirEntries({ olderThanMs: maxAgeMs });
 }
 
 function formatMb(bytes) {
@@ -322,24 +338,45 @@ function formatMb(bytes) {
 
 /**
  * Fail fast — with a human-readable reason — when TMP_DIR cannot fit the
- * bytes a stage is about to write. Reclaims stale leftovers once before
- * giving up; a no-op on platforms without statfs. ENOSPC mid-ffmpeg is one
- * of the least debuggable failures possible ("Error muxing a packet"), so
- * anything that can be caught before the encode starts must be.
+ * bytes a stage is about to write, reclaiming what it can first:
+ *   tier 1 — sweep stale leftovers (> 3 h old);
+ *   tier 2 — if still short, sweep EVERYTHING not in `protect` (stranded
+ *            downloads from failed attempts are minutes old, so tier 1
+ *            alone never fixes a 0-byte disk; the only collateral is
+ *            zombie stages from timeout races, whose results are already
+ *            discarded);
+ *   tier 3 — throw the readable error.
+ * A no-op on platforms without statfs.
  */
-export async function assertDiskSpace(needBytes, { label = "this stage" } = {}) {
+export async function assertDiskSpace(
+  needBytes,
+  { label = "this stage", protect = [], reclaimAll = true } = {}
+) {
   // statfs on a missing path throws ENOENT → null → silent skip, so make
   // sure TMP_DIR exists before measuring (first job on a fresh container).
   await ensureTmpDir();
   let free = await statDiskFree();
   if (free == null) return;
   if (free >= needBytes) return;
+
   await sweepStaleTmpFiles();
   free = await statDiskFree();
-  if (free != null && free < needBytes) {
+  if (free >= needBytes) return;
+
+  if (reclaimAll) {
+    console.warn(
+      `[ffmpeg] disk still short for ${label} (${formatMb(free)} free, ` +
+        `${formatMb(needBytes)} needed) — aggressively reclaiming ALL unprotected temp files`
+    );
+    await sweepTmpDirEntries({ olderThanMs: 0, protect });
+    free = await statDiskFree();
+    if (free >= needBytes) return;
+  }
+
+  if (free != null) {
     throw new Error(
       `Not enough disk space for ${label}: needs ~${formatMb(needBytes)} but only ` +
-        `${formatMb(free)} is free in ${TMP_DIR} (after sweeping stale temp files). ` +
+        `${formatMb(free)} is free in ${TMP_DIR} (even after sweeping temp files). ` +
         `The worker's ephemeral disk is ~1 GiB and transcription audio alone takes ` +
         `~115 MB per hour of video — increase the worker service's disk size or retry ` +
         `with a shorter source video.`
