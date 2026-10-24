@@ -16,6 +16,10 @@ Every endpoint requires the shared secret (X-Render-Secret header) — the SAME
 header and secret the render app already uses, so no new Modal secret is
 needed and the worker reuses MODAL_RENDER_SECRET verbatim.
 
+Audio guarantee: the served file is ffprobe-verified to contain BOTH a video
+and an audio stream before it leaves the container — a video-only merge
+failure fails loudly here instead of shipping a mute file downstream.
+
 YouTube bot-check note: datacenter IPs sometimes get "Sign in to confirm
 you're not a bot". Attempt 1 uses yt-dlp's default player clients; on a
 bot-check failure attempt 2 retries with alternate clients. If a video still
@@ -86,6 +90,28 @@ def _check_secret(request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Render-Secret")
 
 
+def _has_playable_av(path: Path) -> bool:
+    """ffprobe check: does this file contain BOTH a video and an audio stream?
+    A merged download must have both — audio-only (.m4a) or video-only (.fNNN)
+    intermediates are never acceptable final outputs. Fail-open on tooling
+    errors (missing ffprobe, timeout): the verifier must never reject a good
+    file because IT is broken."""
+    for select in ("v", "a"):
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", select,
+                    "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+                ],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        if not proc.stdout.strip():
+            return False
+    return True
+
+
 def _run_once(url: str, extra_args: list[str]) -> tuple[Path, dict, str]:
     """One yt-dlp run. Returns (file_path, info_dict, stderr).
     Raises RuntimeError(message, stderr) on failure."""
@@ -140,12 +166,29 @@ def _run_once(url: str, extra_args: list[str]) -> tuple[Path, dict, str]:
                 continue
 
     # Resolve the actual file: we control the template, --no-playlist and the
-    # merge guarantee exactly one output per token. Largest-match-wins is
-    # defensive against any tiny sidecar file.
-    matches = sorted(out_dir.glob(f"dl-{token}.*"), key=lambda p: p.stat().st_size, reverse=True)
-    if not matches:
+    # merge guarantee exactly one output per token. The merged output is
+    # dl-<token>.mp4 — prefer it, then fall through the remaining candidates
+    # (e.g. .fNNN intermediates if a merge ever fails to clean up) and accept
+    # only files ffprobe confirms carry an audio stream. Never serve a
+    # video-only file downstream: transcription and every clip would be mute.
+    candidates: list[Path] = []
+    merged = out_dir / f"dl-{token}.mp4"
+    if merged.exists():
+        candidates.append(merged)
+    candidates.extend(
+        p
+        for p in sorted(out_dir.glob(f"dl-{token}.*"), key=lambda p: p.stat().st_size, reverse=True)
+        if p != merged
+    )
+    if not candidates:
         raise RuntimeError("yt-dlp finished but produced no output file", stderr)
-    file_path = matches[0]
+    file_path = next((p for p in candidates if _has_playable_av(p)), None)
+    if file_path is None:
+        raise RuntimeError(
+            "yt-dlp finished but no output file contains both a video and an "
+            "audio stream — refusing to serve a video-only download",
+            stderr,
+        )
     print(
         f"[modal-download] done in {time.time() - started:.0f}s — "
         f"{file_path.stat().st_size} bytes, title={info.get('title', '?')!r}"

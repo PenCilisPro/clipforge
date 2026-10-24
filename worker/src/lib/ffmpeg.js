@@ -156,6 +156,37 @@ export function probeMedia(filePath) {
 }
 
 /**
+ * Map the two common audio-extraction failures to a readable message and
+ * return null for everything else (caller re-throws the original error).
+ *  - The file genuinely has no audio stream ("Output file #0 does not
+ *    contain any stream" — ffmpeg cannot satisfy -vn + pcm output).
+ *  - The worker's ffmpeg build lacks https/TLS protocol support, so it
+ *    cannot read the presigned R2 URL remotely.
+ */
+export function describeExtractionFailure(rawMessage) {
+  const msg = String(rawMessage ?? "");
+  if (
+    /does not contain any stream|matches no streams|matches no audio streams|Stream map/i.test(msg)
+  ) {
+    return (
+      "Audio extraction failed: this file has no audio stream. " +
+      "For a pasted link, re-run the project — the downloader verifies the audio " +
+      "track is merged; for an upload, use a version of the video that has sound."
+    );
+  }
+  if (/protocol not found|handshake|certificate|tls|ssl/i.test(msg)) {
+    return (
+      "Audio extraction failed: the worker's ffmpeg build could not read the " +
+      "remote video URL (" +
+      msg.slice(0, 200) +
+      "). Re-upload the video file directly, or install an ffmpeg build with " +
+      "TLS support in the worker image."
+    );
+  }
+  return null;
+}
+
+/**
  * Extract the whole audio track as raw mono 16 kHz PCM in a single ffmpeg
  * pass (no WAV header — chunk boundaries are pure byte math at 32 000 B/s).
  * Per-chunk extraction would instead re-open and re-index a source-sized

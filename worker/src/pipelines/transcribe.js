@@ -11,6 +11,7 @@ import {
   statDiskFree,
   assertDiskSpace,
   sweepStaleTmpFiles,
+  describeExtractionFailure,
 } from "../lib/ffmpeg.js";
 import {
   fetchSourceVideo,
@@ -134,13 +135,25 @@ export async function processTranscribe(job) {
         : localVideo;
     }
 
-    const probe = await probeMedia(mediaSource).catch(() => null);
-    const hasAudio = (probe?.streams ?? []).some((stream) => stream.codec_type === "audio");
-    if (!hasAudio) {
+    // Audio check — FAIL-SAFE against probe failures. probeMedia reads the
+    // media over a presigned https URL for every R2-backed project; a
+    // transient HTTP/TLS/ffprobe failure there used to be misread as "no
+    // audio track" and failed perfectly healthy videos. Now only a probe
+    // that SUCCEEDED and reports zero audio streams rejects the file — a
+    // broken probe continues and lets the extraction itself be the arbiter
+    // (its failures are mapped to readable messages below).
+    const probe = await probeMedia(mediaSource).catch((err) => {
+      console.warn(
+        `[transcribe] media probe failed (${err?.message ?? err}) — continuing; audio extraction will confirm whether an audio track exists`
+      );
+      return null;
+    });
+    if (probe && !(probe.streams ?? []).some((stream) => stream.codec_type === "audio")) {
       throw new Error(
-        "This video has no audio track — it looks like a video-only download " +
-          "(filenames ending in .fNNN, e.g. .f401). Re-download with audio merged " +
-          "(yt-dlp's default format selection does this) and re-upload."
+        "This video has no audio track — the source file is a video-only encode " +
+          "(files ending in .fNNN, e.g. video.f401.mp4). For a pasted link, re-run " +
+          "the project (the downloader verifies the audio track is merged); for an " +
+          "upload, use a version of the video that has sound."
       );
     }
 
@@ -190,7 +203,16 @@ export async function processTranscribe(job) {
     });
 
     pcmFile = tmpPath(`audio-${projectId}.pcm`);
-    await extractRawPcm(mediaSource, pcmFile);
+    try {
+      await extractRawPcm(mediaSource, pcmFile);
+    } catch (err) {
+      // Map the two common extraction failures to plain English instead of a
+      // raw ffmpeg muxer dump: a genuinely missing audio stream, and an
+      // ffmpeg build that cannot read remote (presigned https) inputs.
+      const friendly = describeExtractionFailure(err?.message ?? "");
+      if (friendly) throw new Error(friendly);
+      throw err;
+    }
     // The source is no longer needed locally — render works off the R2
     // object — so free its disk before the long transcription loop. (Only
     // the split path ever had a local file; cleanup(null) is a no-op.)
