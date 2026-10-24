@@ -13,6 +13,21 @@ import { env } from "./env.js";
  * never buffers it in memory and never talks to YouTube itself, so YouTube's
  * datacenter-IP bot checks apply to Modal's egress, not this tiny container.
  */
+
+/**
+ * Resolve the /download endpoint from MODAL_DOWNLOAD_URL. Accepts every
+ * reasonable configuration — bare app URL, trailing slash, or the full
+ * /download path — matching the modalRender.js convention where the env var
+ * holds the bare URL and the client appends the route:
+ *   https://<ws>--clipforge-download-web.modal.run          → …/download
+ *   https://<ws>--clipforge-download-web.modal.run/         → …/download
+ *   https://<ws>--clipforge-download-web.modal.run/download → unchanged
+ */
+function downloadEndpointUrl(rawUrl) {
+  const base = String(rawUrl ?? "").trim().replace(/\/+$/, "");
+  return base.endsWith("/download") ? base : `${base}/download`;
+}
+
 export async function downloadSourceVideoViaModal(sourceUrl, filePath) {
   if (!env.modalDownloadUrl) {
     throw new Error("MODAL_DOWNLOAD_URL is not configured — yt-dlp downloader unavailable");
@@ -23,7 +38,8 @@ export async function downloadSourceVideoViaModal(sourceUrl, filePath) {
     );
   }
 
-  const res = await fetch(env.modalDownloadUrl, {
+  const endpoint = downloadEndpointUrl(env.modalDownloadUrl);
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -39,6 +55,19 @@ export async function downloadSourceVideoViaModal(sourceUrl, filePath) {
       detail = JSON.parse(raw)?.detail ?? raw;
     } catch {
       // Not JSON — keep the raw text as the detail.
+    }
+    if (res.status === 404) {
+      // 404 = the request reached Modal but no /download route answered.
+      let host = "unknown-host";
+      try {
+        host = new URL(endpoint).host;
+      } catch {
+        // Malformed URL — keep the placeholder.
+      }
+      const hint = host.includes("render")
+        ? "MODAL_DOWNLOAD_URL points at the RENDER app — deploy modal/modal_download.py and use the URL IT prints"
+        : `the yt-dlp app is not deployed or the URL is wrong — run "python -m modal deploy modal/modal_download.py" and set MODAL_DOWNLOAD_URL to the URL it prints (current: ${endpoint})`;
+      throw new Error(`yt-dlp downloader: 404 from ${host} — ${hint}`);
     }
     throw new Error(`yt-dlp downloader failed (${res.status}): ${String(detail).slice(0, 500)}`);
   }
