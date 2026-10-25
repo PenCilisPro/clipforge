@@ -20,7 +20,7 @@ ENV FFMPEG_PATH_OVERRIDE=/usr/bin/ffmpeg \
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev && npm cache clean --force
 COPY src ./src
 # ffmpeg-static ships a bundled binary; keep tmp space for processing
 RUN mkdir -p /tmp/clipforge
