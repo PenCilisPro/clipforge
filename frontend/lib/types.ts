@@ -96,8 +96,9 @@ export type CaptionFontKey =
 
 /**
  * A standalone text overlay placed on the clip canvas (editor preview + local
- * render). x/y are the block's CENTER as % of the canvas; size is % of canvas
- * height — the same math the worker uses for ASS \pos / \fs.
+ * render). x/y are the block's CENTER as % of the canvas; size is font px on
+ * the output canvas (caption Size model) — the same math the worker uses for
+ * ASS \pos / \fs.
  */
 export interface TextOverlay {
   id: string;
@@ -105,6 +106,7 @@ export interface TextOverlay {
   font: CaptionFontKey;
   x: number;
   y: number;
+  /** Font size in px on the output canvas (20-200) — same model as caption_size. */
   size: number;
   /** Wrap width as % of canvas width (default 90). */
   width?: number;

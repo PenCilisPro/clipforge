@@ -12,10 +12,11 @@
  * video zoom/pan, and draggable text overlays.
 
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ChevronDown,
   ChevronLeft,
   Frame as FrameIcon,
   Info,
@@ -92,9 +93,12 @@ const FRAME_STEP = 1 / 30;
 
 /**
  * A standalone text overlay placed on the canvas (independent of captions).
- * x/y are the block's CENTER as % of the canvas; size is % of canvas height —
- * the same math the local render uses for ASS \pos / \fs, so the preview
- * matches the exported MP4.
+ * x/y are the block's CENTER as % of the canvas; size is font px on the
+ * OUTPUT canvas — the exact model of the caption Size control (20-200), so
+ * an overlay at 60px sits at the same rendered size as a 60px caption. The
+ * local render mirrors all of it: \fs = size, \an5\pos(x%·W, y%·H), and the
+ * Box toggle draws the caption-template box (BorderStyle 3, padding
+ * 0.22 × fontSize).
  */
 interface TextOverlay {
   id: string;
@@ -102,6 +106,7 @@ interface TextOverlay {
   font: string;
   x: number;
   y: number;
+  /** Font size in px on the output canvas (20-200) — caption Size model. */
   size: number;
   /** Wrap width as % of canvas width (default 90) — same math as the render. */
   width?: number;
@@ -167,28 +172,30 @@ function regroupCuesForDisplay(cues: SrtCue[], n: number): SrtCue[] {
   }
   return out.length > 0 ? out : cues;
 }
+
+// Collapsible drawer for the Text tab — tap the header to expand/collapse
+// the size & spacing controls underneath it.
 function CollapsibleSection({ title, children }: { title: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <div>
+    <div className="border-b border-white/5 pb-3">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between border-b border-white/10 py-3 text-left"
+        className="flex w-full items-center justify-between py-2.5 text-left"
       >
-        <span className="text-base font-extrabold uppercase tracking-[0.2em] text-zinc-100">
-          {title}
-        </span>
+        <span className="text-[13px] font-bold uppercase tracking-widest text-zinc-200">{title}</span>
         <ChevronDown
           className={cn(
-            "h-5 w-5 text-zinc-400 transition-transform duration-200",
+            "h-4 w-4 text-zinc-400 transition-transform duration-200",
             open && "rotate-180 text-primary-400"
           )}
         />
       </button>
-      {open && <div className="space-y-5 pt-4">{children}</div>}
+      {open && <div className="space-y-5 pt-1">{children}</div>}
     </div>
   );
 }
+
 export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: string }) {
   const router = useRouter();
 
@@ -233,6 +240,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // Letter spacing for captions, as % of the caption font size (CapCut-style
   // "Spacing"). 0 = off — the caption style keeps its own default spacing.
   const [letterSpacing, setLetterSpacing] = useState(0);
+  // Word spacing for captions: extra literal spaces between words (0-5).
+  // ASS has no word-spacing property, so the preview and the local render
+  // both join words with repeated spaces — identical on both sides.
   const [wordSpacing, setWordSpacing] = useState(0);
   const [aspect, setAspect] = useState<OutputAspect>("9:16");
   const [videoFit, setVideoFit] = useState<"cover" | "contain">("cover");
@@ -251,8 +261,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoX, setVideoX] = useState(0);
   const [videoY, setVideoY] = useState(0);
   const [panning, setPanning] = useState(false);
+  // Which preview element's selection box is pinned (tap = press once, not hold).
+  const [activeBox, setActiveBox] = useState<"caption" | "frame" | null>(null);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
-  const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingPanRef = useRef<{ x: number; y: number; gx: boolean; gy: boolean; sh: boolean } | null>(null);
   const rafPanRef = useRef<number | null>(null);
   const panMovedRef = useRef(false);
 
@@ -299,6 +311,42 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // uploads have no source URL — the timeline still handles trimming.
   const previewSrc = sourceVideoUrl;
 
+  // ---------- SCENE CUTS (clip intelligence) ----------
+  // The AI may keep several source ranges inside the clip window and skip the
+  // boring material between them (scene stitching + dead-air cuts). The
+  // export concat-keeps those ranges, so the preview must skip them too —
+  // otherwise it would show footage the exported clip does not contain.
+  const removedGaps = useMemo(() => {
+    const segs = (clip as any)?.intel_json?.edit?.segments;
+    if (!Array.isArray(segs) || segs.length === 0) return [] as { start: number; end: number }[];
+    const ranges = segs
+      .map((s: any) => ({ start: Number(s?.start), end: Number(s?.end) }))
+      .filter((s: any) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+      .sort((a: any, b: any) => a.start - b.start);
+    if (ranges.length === 0) return [] as { start: number; end: number }[];
+    // Everything inside the trim window that no kept range covers = removed.
+    const gaps: { start: number; end: number }[] = [];
+    let cursor = startTime;
+    for (const r of ranges) {
+      const s = Math.min(endTime, Math.max(startTime, r.start));
+      const e = Math.min(endTime, Math.max(startTime, r.end));
+      if (s > cursor + 0.35) gaps.push({ start: cursor, end: Math.min(s, endTime) });
+      cursor = Math.max(cursor, e);
+    }
+    if (cursor < endTime - 0.35) gaps.push({ start: cursor, end: endTime });
+    return gaps;
+  }, [clip, startTime, endTime]);
+  const cutsRef = useRef<{ start: number; end: number }[]>([]);
+  cutsRef.current = removedGaps;
+
+  // Snap a source time out of removed material (to the next kept frame).
+  const skipOutOfCut = (t: number): number => {
+    for (const g of cutsRef.current) {
+      if (t >= g.start - 0.02 && t < g.end - 0.02) return g.end;
+    }
+    return t;
+  };
+
   // ---------- Load ----------
   useEffect(() => {
     (async () => {
@@ -320,7 +368,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setPosition((found.caption_position as CaptionPosition) ?? "bottom");
         setCapX((found as any).caption_x != null ? Number((found as any).caption_x) : null);
         setCapY((found as any).caption_y != null ? Number((found as any).caption_y) : null);
-        // Self-heal tiny saved sizes: below ~40px on the 1080-wide canvas the
+        // Self-heal tiny saved sizes: below ~20px on the 1080-wide canvas the
         // caption is unreadable in renders (usually an accidental inward drag
         // of the corner scale handle). 0 stays "Auto" (style-preset default).
         const savedSize = Number(found.caption_size) || 0;
@@ -330,11 +378,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         );
         setCapWidth(clamp(Number((found as any).caption_width) || 90, 20, 100));
         setLetterSpacing(
-          
           Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_letter_spacing) || 0)))
-        );
-        setWordSpacing(
-          Math.max(-10, Math.min(100, Math.round(Number((found as any).caption_word_spacing) || 0)))
         );
         setWordSpacing(Math.max(0, Math.min(5, Math.round(Number((found as any).caption_word_spacing) || 0))));
         setAspect((found.output_aspect as OutputAspect) ?? "9:16");
@@ -358,7 +402,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 font: typeof o?.font === "string" && o.font ? o.font : "poppins",
                 x: clamp(Number(o?.x) || 50, 2, 98),
                 y: clamp(Number(o?.y) || 50, 2, 98),
-                size: clamp(Number(o?.size) || 5, 1, 20),
+                size: clamp(Math.round(Number(o?.size)) || 60, 20, 200),
                 width: clamp(Number(o?.width) || 90, 20, 100),
                 color: typeof o?.color === "string" && o.color ? o.color : "#ffffff",
                 bold: o?.bold !== false,
@@ -493,11 +537,19 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const video = videoRef.current;
     if (!video) return;
     const { start, end, dur } = windowRef.current;
-    if (video.currentTime < start - 0.05 || video.currentTime >= end) {
+    let t = video.currentTime;
+    if (t < start - 0.05 || t >= end) {
       video.currentTime = start;
+      t = start;
     }
-    setClipTime(clamp(video.currentTime - start, 0, dur));
-    setPlayheadSource(clamp(video.currentTime, start, end));
+    // Jump over AI-cut material so the preview matches the exported clip.
+    const skipped = skipOutOfCut(t);
+    if (skipped !== t) {
+      video.currentTime = skipped;
+      t = skipped;
+    }
+    setClipTime(clamp(t - start, 0, dur));
+    setPlayheadSource(clamp(t, start, end));
   };
 
   const videoRefCallback = (el: HTMLVideoElement | null) => {
@@ -510,7 +562,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   const scrub = useCallback(
     (t: number) => {
-      const clamped = clamp(t, startTime, endTime);
+      const clamped = skipOutOfCut(clamp(t, startTime, endTime));
       setPlayheadSource(clamped);
       setClipTime(clamp(clamped - startTime, 0, clipDuration));
       const video = videoRef.current;
@@ -546,6 +598,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     setCapX(capX ?? 50);
     setCapY(y0);
     setDragging(true);
+    setActiveBox("caption");
     snapRef.current = { x: false, y: false };
   }
 
@@ -668,6 +721,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     panRef.current = { px: e.clientX, py: e.clientY, x: videoX, y: videoY };
     panMovedRef.current = false;
     setPanning(true);
+    setActiveBox("frame");
+    snapRef.current = { x: false, y: false };
   }
 
   function onVideoPointerMove(e: React.PointerEvent<HTMLVideoElement>) {
@@ -678,10 +733,24 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       panMovedRef.current = true;
     }
     const mp = videoMaxPan();
-    pendingPanRef.current = {
-      x: clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp),
-      y: clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp),
-    };
+    const nx = clamp(p.x + ((e.clientX - p.px) / box.width) * 100, -mp, mp);
+    const ny = clamp(p.y + ((e.clientY - p.py) / box.height) * 100, -mp, mp);
+    // Shift = same magnetic center snap the captions use. The video's rest
+    // point is 0 (pan offsets are relative to the centered frame), not 50.
+    const SNAP = 1.2;
+    const RELEASE = 2.6;
+    let ux = nx;
+    let uy = ny;
+    let gx = false;
+    let gy = false;
+    if (e.shiftKey) {
+      const thrX = snapRef.current.x ? RELEASE : SNAP;
+      const thrY = snapRef.current.y ? RELEASE : SNAP;
+      if (Math.abs(nx) <= thrX) { ux = 0; gx = true; }
+      if (Math.abs(ny) <= thrY) { uy = 0; gy = true; }
+    }
+    snapRef.current = { x: gx, y: gy };
+    pendingPanRef.current = { x: ux, y: uy, gx, gy, sh: e.shiftKey };
     if (rafPanRef.current == null) {
       rafPanRef.current = requestAnimationFrame(() => {
         rafPanRef.current = null;
@@ -689,6 +758,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         if (!q) return;
         setVideoX(q.x);
         setVideoY(q.y);
+        setGuides({ shift: q.sh, x: q.gx, y: q.gy });
       });
     }
   }
@@ -706,6 +776,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       setVideoX(q.x);
       setVideoY(q.y);
     }
+    setGuides({ shift: false, x: false, y: false });
+    snapRef.current = { x: false, y: false };
   }
 
   // Click-to-pause still works — a drag swallows the click that follows it.
@@ -792,7 +864,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       font: "poppins",
       x: 50,
       y: 50,
-      size: 5,
+      size: 60, // px on the output canvas — the caption Size default (Auto ≈ 60px)
       color: "#ffffff",
       bold: true,
       bg: false,
@@ -814,13 +886,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     const video = videoRef.current;
     if (!video) return;
     video.pause();
-    video.currentTime = clamp(video.currentTime + dir * FRAME_STEP, startTime, endTime);
+    video.currentTime = skipOutOfCut(clamp(video.currentTime + dir * FRAME_STEP, startTime, endTime));
   }
 
   function restart() {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = startTime;
+    video.currentTime = skipOutOfCut(startTime);
   }
 
   function toggleFullscreen() {
@@ -1072,6 +1144,18 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     }
   }
 
+  // A tap (press, not hold) pins the box on the video or caption — clicking
+  // anywhere that isn't the video/caption clears it again.
+  useEffect(() => {
+    const onDocDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest("[data-selectable]")) return;
+      setActiveBox(null);
+    };
+    window.addEventListener("pointerdown", onDocDown);
+    return () => window.removeEventListener("pointerdown", onDocDown);
+  }, []);
+
   // S splits at the playhead (ignored while typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1118,12 +1202,21 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   const selectedOverlay = overlays.find((o) => o.id === selectedOverlayId) ?? null;
 
-  /** Caption font size scaled from the 1080px canvas to the preview box. */
+  /** Caption font size scaled from the 1080px canvas to the preview box.
+   *  Scale basis is the REAL 9:16 canvas box (canvasPx), not the outer
+   *  panel — the panel is wider, which made previews look bigger than
+   *  the final render. Same ratio the renderer uses, so they match. */
   const previewFontSize = useMemo(() => {
-  const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
-  const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
-  return canvasSize * scale;
-}, [size, canvasPx.w, dims.w]);
+    const canvasSize = size > 0 ? size : 60; // template default ≈ 60px
+    const scale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
+    return canvasSize * scale;
+  }, [size, canvasPx.w, dims.w]);
+
+  /** Preview box → output canvas ratio. Text overlays scale with the SAME
+   *  ratio as captions (slider px on the output canvas, drawn scaled here) —
+   *  an overlay at 60px is exactly as big as a 60px caption, in the preview
+   *  and in the render. */
+  const previewScale = canvasPx.w > 0 ? canvasPx.w / dims.w : 0.25;
 
   // ---------- Render ----------
   if (loading) {
@@ -1298,6 +1391,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     onPointerDown={onVideoPointerDown}
                     onPointerMove={onVideoPointerMove}
                     onPointerUp={onVideoPointerUp}
+                    data-selectable="true"
                     onClick={onVideoClick}
                   />
                 </>
@@ -1309,7 +1403,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
               )}
 
               {/* Center guide lines — hold Shift while dragging to snap */}
-              {(dragging || ovDragging) && guides.shift && (
+              {(dragging || ovDragging || panning) && guides.shift && (
                 <>
                   <div
                     className={cn(
@@ -1327,6 +1421,16 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         : "bg-white/25"
                     )}
                   />
+                </>
+              )}
+              {/* Selection box around the frame while dragging the video —
+                  same corner brackets the captions show */}
+              {(panning || activeBox === "frame") && (
+                <>
+                  <span className="pointer-events-none absolute left-0 top-0 h-5 w-5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute right-0 top-0 h-5 w-5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 left-0 h-5 w-5 border-b-[3px] border-l-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
+                  <span className="pointer-events-none absolute bottom-0 right-0 h-5 w-5 border-b-[3px] border-r-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                 </>
               )}
               {/* Live caption overlay — karaoke with word animations, fully
@@ -1352,6 +1456,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                           top: `${capY}%`,
                           bottom: "auto",
                           transform: "translate(-50%, -50%)",
+                          // Fixed wrap width — the row keeps the caption_width
+                          // band wherever it sits. Without this the abspos
+                          // row shrink-to-fits against `left: capX%`, so the
+                          // text re-wrapped while dragging (narrower as the
+                          // available space shrank): the "moves left → gets
+                          // shorter, right → gets wider" bug. The render side
+                          // wraps at MarginL/R (= caption_width %) and just
+                          // centers the block at \pos — this matches it.
+                          width: `${capWidth}%`,
                         }),
                   }}
                 >
@@ -1359,6 +1472,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     onPointerDown={onCaptionPointerDown}
                     onPointerMove={onCaptionPointerMove}
                     onPointerUp={onCaptionPointerUp}
+                    data-selectable="true"
                     onMouseEnter={() => setCapHover(true)}
                     onMouseLeave={() => setCapHover(false)}
                     className={cn(
@@ -1393,7 +1507,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         Array.isArray(displayCue.words) && displayCue.words.length > 0
                           ? displayCue.words
                           : null;
-                      if (!cueWords) return displayCue.text;
+                      if (!cueWords) {
+                        return wordSpacing > 0
+                          ? displayCue.text.split(" ").join(" ".repeat(1 + wordSpacing))
+                          : displayCue.text;
+                      }
                       const activeIdx = cueWords.findIndex(
                         (w) => clipTime >= w.start - 0.05 && clipTime <= w.end + 0.05
                       );
@@ -1415,7 +1533,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                         </span>
                       ));
                     })()}
-                    {(capHover || dragging || scaling) && (
+                    {(capHover || dragging || scaling || activeBox === "caption") && (
                       <>
                         <span className="pointer-events-none absolute left-0 top-0 h-3.5 w-3.5 border-l-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
                         <span className="pointer-events-none absolute right-0 top-0 h-3.5 w-3.5 border-r-[3px] border-t-[3px] border-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]" />
@@ -1434,15 +1552,31 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 </div>
               )}
 
-              {/* Custom text overlays — draggable, Shift snaps to center */}
-              {overlays.map((ov) => (
+              {/* Custom text overlays — draggable, Shift snaps to center.
+                  Scaling/box mirror the caption overlay exactly: size is px
+                  on the output canvas × the same preview ratio captions use,
+                  and the Box toggle draws the caption-template box geometry
+                  (padding 0.22 × fontSize, square corners — the ASS render's
+                  BorderStyle 3 recipe) instead of a free-form rounded chip. */}
+              {overlays.map((ov) => {
+                const ovFs = ov.size * previewScale;
+                const ovPad = ov.bg
+                  ? Math.max(6, Math.round(ov.size * 0.22)) * previewScale
+                  : 0;
+                return (
                 <div
                   key={ov.id}
-                  className="pointer-events-none absolute"
+                  className="pointer-events-none absolute flex justify-center"
                   style={{
                     left: `${ov.x}%`,
                     top: `${ov.y}%`,
                     transform: "translate(-50%, -50%)",
+                    // Fixed wrap width (caption parity): without it the abspos
+                    // row shrink-to-fits against `left: x%` and the text
+                    // re-wraps while dragging. The ASS render wraps at the
+                    // symmetric margin band and centers at \pos — same here.
+                    // flex centers the block inside the band like \an5 does.
+                    width: `${ov.width ?? 90}%`,
                   }}
                 >
                   <span
@@ -1454,7 +1588,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       setTab("text");
                     }}
                     className={cn(
-                      "pointer-events-auto inline-block whitespace-pre-wrap rounded-md px-1.5 py-0.5 touch-none select-none",
+                      "pointer-events-auto inline-block whitespace-pre-wrap touch-none select-none",
                       ovDragging && selectedOverlayId === ov.id
                         ? "cursor-grabbing"
                         : "cursor-grab",
@@ -1466,26 +1600,38 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       fontFamily: (
                         CAPTION_FONTS.find((f) => f.key === ov.font) ?? CAPTION_FONTS[0]
                       ).cssVar,
-                      fontSize: `${(ov.size / 100) * canvasPx.h}px`,
+                      fontSize: `${ovFs}px`,
                       maxWidth:
                         canvasPx.w > 0
                           ? `${(((ov.width ?? 90) / 100) * canvasPx.w).toFixed(1)}px`
                           : `${ov.width ?? 90}%`,
-                      lineHeight: 1.2,
+                      // \an5 centers every wrapped line — captions do the
+                      // same via their text-center row; overlays match here.
+                      textAlign: "center",
+                      lineHeight: 1.15,
                       fontWeight: ov.bold ? 800 : 500,
                       color: ov.color,
                       ...(ov.bg
                         ? {
+                            // Caption-template box: square, padding scaled
+                            // with the font — the exact geometry the local
+                            // render paints (BorderStyle 3, Outline padding).
                             background: "rgba(0,0,0,0.72)",
-                            borderRadius: "0.35em",
+                            borderRadius: 0,
+                            padding: `${ovPad.toFixed(1)}px`,
                           }
-                        : { textShadow: "0 2px 4px rgba(0,0,0,0.8)" }),
+                        : {
+                            // Caption shadow recipe (default size 6):
+                            // offset = 6 × fontSize / 192, both sides.
+                            textShadow: `0 ${((6 * ovFs) / 192).toFixed(2)}px 8px rgba(0,0,0,0.8)`,
+                          }),
                     }}
                   >
                     {ov.text || "Text"}
                   </span>
                 </div>
-              ))}
+                );
+              })}
 
               {/* Safe zones overlay */}
               {safeZones && (
@@ -1866,6 +2012,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   </div>
                 </div>
 
+                <CollapsibleSection title="Text">
                 <div>
                   <div className="flex items-baseline justify-between pb-2">
                     <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -1962,6 +2109,32 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     Space between caption letters · double-click the slider to reset
                   </p>
                 </div>
+
+                <div>
+                  <div className="flex items-baseline justify-between pb-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Word spacing
+                    </p>
+                    <span className="text-[10px] tabular-nums text-zinc-500">
+                      {wordSpacing === 0 ? "Off" : `+${wordSpacing}`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={5}
+                    step={1}
+                    value={wordSpacing}
+                    onChange={(e) => setWordSpacing(Number(e.target.value))}
+                    onDoubleClick={() => setWordSpacing(0)}
+                    className="h-1 w-full accent-primary-500"
+                    aria-label="Word spacing"
+                  />
+                  <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                    Extra space between words · double-click the slider to turn off
+                  </p>
+                </div>
+                </CollapsibleSection>
 
                 <div>
                   <p className="pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -2084,21 +2257,25 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                                 Size
                               </p>
                               <span className="text-[10px] tabular-nums text-zinc-500">
-                                {selectedOverlay.size.toFixed(1)}%
+                                {selectedOverlay.size}px
                               </span>
                             </div>
                             <input
                               type="range"
-                              min={2}
-                              max={20}
-                              step={0.5}
+                              min={20}
+                              max={200}
+                              step={1}
                               value={selectedOverlay.size}
                               onChange={(e) =>
                                 patchOverlay(selectedOverlay.id, { size: Number(e.target.value) })
                               }
+                              onDoubleClick={() => patchOverlay(selectedOverlay.id, { size: 60 })}
                               className="h-1 w-full accent-primary-500"
                               aria-label="Overlay size"
                             />
+                            <p className="pt-1 text-[10px] leading-snug text-zinc-600">
+                              Same px scale as the caption Size slider — 60px overlay = 60px caption
+                            </p>
                           </div>
 
                           <div>

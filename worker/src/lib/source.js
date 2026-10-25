@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
-import { download, downloadBuffer, listByPrefix } from "./r2.js";
+import { download, downloadBuffer, headSize, listByPrefix, uploadCompositeStream } from "./r2.js";
 
 /**
  * Source-video retrieval. Large uploads are stored as multiple parts
@@ -63,6 +63,38 @@ export async function fetchSourceVideo(project, localPath) {
     first = false;
   }
   return localPath;
+}
+
+/**
+ * Reassemble a split upload ON R2 — stream every part straight into the
+ * final single object with ZERO local disk usage. The local reassembly in
+ * fetchSourceVideo used to land a source-sized file on the worker's ~1 GiB
+ * ephemeral disk, which starved transcription audio ("No space left on
+ * device") for anything approaching the upload cap. Returns the number of
+ * bytes assembled. Throws on any failure — the caller falls back to local
+ * reassembly.
+ */
+export async function assembleSplitSourceInR2(project, canonicalPath) {
+  const path = project.original_video_path;
+  if (!isSplitSource(path)) throw new Error("Source is not a split upload");
+
+  const manifest = JSON.parse(
+    (await downloadBuffer(`${BUCKET}/${path}`)).toString("utf8")
+  );
+  const parts = Array.isArray(manifest.parts) ? manifest.parts : [];
+  if (parts.length === 0) throw new Error("Split upload manifest has no parts");
+
+  const sources = [];
+  for (const part of parts) {
+    if (!String(part ?? "").startsWith(`${project.user_id}/`)) {
+      throw new Error(`Upload part ${part} does not belong to the project owner`);
+    }
+    const key = `${BUCKET}/${part}`;
+    const size = await headSize(key);
+    if (size <= 0) throw new Error(`Upload part ${part} is empty or missing`);
+    sources.push({ key, size });
+  }
+  return uploadCompositeStream(`${BUCKET}/${canonicalPath}`, sources, "video/mp4");
 }
 
 /** All storage objects belonging to a project's source video (parts included). */

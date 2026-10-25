@@ -1,7 +1,13 @@
 import { supabaseAdmin } from "../lib/supabase.js";
 import { uploadFile as r2UploadFile, remove as r2Remove } from "../lib/r2.js";
 import { setJobStatus, reconcileProjectDone } from "../lib/jobs.js";
-import { ensureTmpDir, tmpPath, cleanup, generateThumbnail } from "../lib/ffmpeg.js";
+import {
+  ensureTmpDir,
+  tmpPath,
+  cleanup,
+  generateThumbnail,
+  assertDiskSpace,
+} from "../lib/ffmpeg.js";
 import { downloadRenderedClip } from "../lib/renderProvider.js";
 import { streamConfigured, uploadToStream, deleteStreamVideo } from "../lib/stream.js";
 
@@ -28,6 +34,12 @@ export async function finalizeClip({ projectId, clipId, renderUrl, jobRowId = nu
   }
 
   await ensureTmpDir();
+  // The rendered MP4 streams to disk before it is re-uploaded to R2. Reclaim
+  // stale temp files and enforce a floor (256 MB) so a full disk fails with
+  // a readable reason instead of a mid-stream write error. Final clips are
+  // vertical 1080p and rarely exceed ~200 MB, so this blocks only genuinely
+  // starved disks.
+  await assertDiskSpace(256 * 1024 * 1024, { label: "finalized clip download" });
   const localFinal = tmpPath(`final-${clipId}.mp4`);
 
   // downloadRenderedClip host-allowlists the URL per provider (webhook-

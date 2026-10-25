@@ -76,6 +76,25 @@ const effectShape = {
   caption_word_spacing: z.coerce.number().int().min(0).max(5).optional(),
   // Letter spacing as % of the caption font size (editor "Spacing" control).
   caption_letter_spacing: z.coerce.number().int().min(-10).max(100).optional(),
+  // "Words per screen" regrouping (0 = off — render cues as edited).
+  caption_words: z.coerce.number().int().min(0).max(12).optional(),
+  // Caption wrap width as % of canvas width (editor "Width" slider).
+  caption_width: z.coerce.number().int().min(20).max(100).optional(),
+  // Caption animation id (editor Animation picker); rendered as ASS motion
+  // tags by the local/Modal renderer. Free-form (max 32) so the frontend can
+  // add new animations without a backend deploy.
+  caption_anim: z.string().trim().max(32).optional(),
+  // Custom caption anchor from the drag handle: % of canvas, block center.
+  caption_x: z.coerce.number().finite().min(0).max(100).optional(),
+  caption_y: z.coerce.number().finite().min(0).max(100).optional(),
+  // CapCut-style frame zoom & pan (editor "Frame" tab): zoom as % of the
+  // fitted frame (100 = untouched), pan as % of the output canvas. The
+  // local/Modal renderer scales the fitted frame about the canvas center and
+  // shifts the visible window; captions/overlays burn after the transform,
+  // so text never zooms — same as the editor's overlay layer.
+  video_scale: z.coerce.number().finite().min(50).max(300).optional(),
+  video_x: z.coerce.number().finite().min(-50).max(50).optional(),
+  video_y: z.coerce.number().finite().min(-50).max(50).optional(),
   // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
   output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
@@ -86,6 +105,42 @@ const regenerateSchema = z.object({
   ...effectShape,
 });
 
+// One editor text overlay ("+ Add text"): a standalone text block dragged
+// onto the canvas. x/y are % of canvas (block center), size is font px on
+// the output canvas — the same model as caption_size — width is the wrap
+// width as % of canvas, bg toggles the caption-style box. Rendered by the
+// local/Modal renderer with the caption mechanics; sanitized again there.
+const clampNum = (v, min, max, dflt) =>
+  Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Number(v))) : dflt;
+
+const textOverlaySchema = z.object({
+  id: z.string().trim().max(60).optional(),
+  text: z.string().max(500),
+  font: z.string().trim().max(40).optional(),
+  // Ranges are clamped, not rejected: an editor build still posting the old
+  // %-of-height size scale must not 400 the whole save — the stored row just
+  // holds the clamped values until the new editor ships.
+  x: z.coerce.number().finite().optional(),
+  y: z.coerce.number().finite().optional(),
+  size: z.coerce.number().finite().optional(),
+  width: z.coerce.number().finite().optional(),
+  color: z.string().regex(HEX_COLOR).optional(),
+  bold: z.boolean().optional(),
+  bg: z.boolean().optional(),
+});
+const textOverlayListSchema = z
+  .array(textOverlaySchema)
+  .max(10)
+  .transform((list) =>
+    list.map((o) => ({
+      ...o,
+      x: clampNum(o.x, 0, 100, 50),
+      y: clampNum(o.y, 0, 100, 50),
+      size: clampNum(o.size, 20, 200, 60),
+      width: clampNum(o.width, 20, 100, 90),
+    }))
+  );
+
 const editSchema = z.object({
   // Display name (also used as the suggested download file name).
   title: z.string().trim().max(200).optional(),
@@ -95,6 +150,8 @@ const editSchema = z.object({
   // Edited caption cues (clip-local SRT). Empty string clears a previous
   // override so the pipeline regenerates captions from the transcript.
   srt_content: z.string().max(20_000).optional(),
+  // Editor text overlays ("+ Add text"); replaces the stored list wholesale.
+  text_overlays: textOverlayListSchema.optional(),
   start_time: z.coerce.number().finite().min(0).optional(),
   end_time: z.coerce.number().finite().min(3).max(43_200).optional(),
 });
@@ -254,6 +311,14 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "caption_size",
       "caption_word_spacing",
       "caption_letter_spacing",
+      "caption_words",
+      "caption_width",
+      "caption_anim",
+      "caption_x",
+      "caption_y",
+      "video_scale",
+      "video_x",
+      "video_y",
       "output_aspect",
       "video_fit",
     ]) {
@@ -265,6 +330,7 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
     }
     if (body.srt_content !== undefined) updates.srt_override = body.srt_content || null;
     else if (timingChanged) updates.srt_override = null;
+    if (body.text_overlays !== undefined) updates.text_overlays = body.text_overlays;
 
     const { data: updated, error: updateError } = await supabaseAdmin
       .from("clips")
@@ -305,9 +371,9 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
 const CLIP_COPY_COLUMNS =
   "id, project_id, user_id, title, hook_text, start_time, end_time, virality_score, reason, hashtags, " +
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
-  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, output_aspect, " +
-  "video_fit, video_background_blur, " +
-  "srt_override, broll_json";
+  "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_words, caption_width, caption_anim, caption_x, caption_y, output_aspect, " +
+  "video_fit, video_background_blur, video_scale, video_x, video_y, " +
+  "srt_override, broll_json, text_overlays";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
 // referenced as storage:user-uploads/<uid>/broll/<file>.
@@ -414,8 +480,13 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_size: clip.caption_size,
         caption_word_spacing: clip.caption_word_spacing ?? 0,
         caption_letter_spacing: clip.caption_letter_spacing ?? 0,
+        caption_words: clip.caption_words ?? 0,
+        caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_scale: clip.video_scale ?? 100,
+        video_x: clip.video_x ?? 0,
+        video_y: clip.video_y ?? 0,
         // Explicit nulls: recovery.js's stranded-clip query needs these to
         // exist on every clip row (Firestore can't query absent fields).
         storage_path: null,
@@ -425,6 +496,10 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         render_submitted_at: null,
         srt_override: body.srt_part2 || null,
         ...(body.broll_part2 !== undefined ? { broll_json: body.broll_part2 } : {}),
+        // Part 1 keeps the original overlays (untouched row fields); part 2
+        // copies them so the look carries across the split. Overlays are
+        // position-anchored — they have no timing to divide.
+        text_overlays: clip.text_overlays,
         status: "queued",
       })
       .select(CLIP_COPY_COLUMNS)
@@ -498,10 +573,18 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_size: clip.caption_size,
         caption_word_spacing: clip.caption_word_spacing ?? 0,
         caption_letter_spacing: clip.caption_letter_spacing ?? 0,
+        caption_words: clip.caption_words ?? 0,
+        caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_scale: clip.video_scale ?? 100,
+        video_x: clip.video_x ?? 0,
+        video_y: clip.video_y ?? 0,
         srt_override: clip.srt_override,
         broll_json: clip.broll_json,
+        // Overlays are position-anchored (no timing) — the copy keeps the
+        // same blocks so both clips render the same look.
+        text_overlays: clip.text_overlays,
         status: "queued",
       })
       .select(CLIP_COPY_COLUMNS)
@@ -578,6 +661,14 @@ router.post("/api/clips/:id/regenerate", requireAuth, renderRateLimit, async (re
         ...(body.caption_letter_spacing !== undefined
           ? { caption_letter_spacing: body.caption_letter_spacing }
           : {}),
+        ...(body.caption_words !== undefined ? { caption_words: body.caption_words } : {}),
+        ...(body.caption_width !== undefined ? { caption_width: body.caption_width } : {}),
+        ...(body.caption_anim !== undefined ? { caption_anim: body.caption_anim } : {}),
+        ...(body.caption_x !== undefined ? { caption_x: body.caption_x } : {}),
+        ...(body.caption_y !== undefined ? { caption_y: body.caption_y } : {}),
+        ...(body.video_scale !== undefined ? { video_scale: body.video_scale } : {}),
+        ...(body.video_x !== undefined ? { video_x: body.video_x } : {}),
+        ...(body.video_y !== undefined ? { video_y: body.video_y } : {}),
         ...(body.output_aspect ? { output_aspect: body.output_aspect } : {}),
         ...(body.video_fit ? { video_fit: body.video_fit } : {}),
         ...(body.video_background_blur !== undefined
