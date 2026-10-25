@@ -56,6 +56,18 @@ export async function processAnalyze(job) {
     const durationSeconds = Number(project.duration_seconds ?? 0);
     const clipLengthPref = project.clip_length_pref ?? "ai_optimized";
 
+    // Diagnosability: when this stage degrades to placeholder sample clips
+    // (their scores are the evenly spaced 60/65/70/… the dashboard shows),
+    // the cause must be visible in the logs without spelunking. A missing
+    // ZAI_API_KEY is the most common reason; provider truncation/rate
+    // limits are the rest — chatComplete now reports both loudly.
+    console.log(
+      `[analyze] clip intelligence via ${env.zaiModel} @ ${env.zaiBaseUrl}` +
+        (env.zaiApiKey
+          ? ""
+          : " — ZAI_API_KEY IS NOT SET: every video will get placeholder sample clips until it is configured")
+    );
+
     let suggestions;
     try {
       suggestions = await detectViralClips({
@@ -83,7 +95,8 @@ export async function processAnalyze(job) {
         suggestions = buildSampleClips(
           durationSeconds,
           clipLengthPref,
-          CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips
+          CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
+          retryErr.message
         );
       }
     }
@@ -158,7 +171,7 @@ const SAMPLE_CLIP_LENGTHS = {
   ai_optimized: 35,
 };
 
-function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", count = 3) {
+function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", count = 3, failureReason = "") {
   const total = durationSeconds > 0 ? durationSeconds : 600;
   const len = SAMPLE_CLIP_LENGTHS[clipLengthPref] ?? 35;
   const margin = Math.min(30, total * 0.1);
@@ -176,7 +189,12 @@ function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", coun
       title: `Sample highlight ${i + 1}`,
       hook: "AI selection unavailable — evenly spaced placeholder highlight.",
       virality_score: 60 + i * 5,
-      reason: "Evenly-spaced fallback clip (AI provider missing or erroring).",
+      // The reason field is the only place a dashboard user can see WHY the
+      // AI did not run — carry the real provider error, not a generic label.
+      reason:
+        "Placeholder clip — the AI did not analyze this video" +
+        (failureReason ? ` (cause: ${failureReason})` : "") +
+        ". Check the worker logs and the ZAI_API_KEY configuration.",
       hashtags: ["clipforge", "highlights"],
     }));
 }

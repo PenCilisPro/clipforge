@@ -167,7 +167,28 @@ function regroupCuesForDisplay(cues: SrtCue[], n: number): SrtCue[] {
   }
   return out.length > 0 ? out : cues;
 }
-
+function CollapsibleSection({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between border-b border-white/10 py-3 text-left"
+      >
+        <span className="text-base font-extrabold uppercase tracking-[0.2em] text-zinc-100">
+          {title}
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-5 w-5 text-zinc-400 transition-transform duration-200",
+            open && "rotate-180 text-primary-400"
+          )}
+        />
+      </button>
+      {open && <div className="space-y-5 pt-4">{children}</div>}
+    </div>
+  );
+}
 export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: string }) {
   const router = useRouter();
 
