@@ -178,12 +178,15 @@ function regroupCuesForDisplay(cues: SrtCue[], n: number): SrtCue[] {
 function CollapsibleSection({ title, children }: { title: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="border-b border-white/5 pb-3">
+    <div className="border-b border-white/[0.06] pb-3">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between py-2.5 text-left"
+        className="flex w-full items-center justify-between py-2.5 text-left transition-colors hover:text-white"
       >
-        <span className="text-[13px] font-bold uppercase tracking-widest text-zinc-200">{title}</span>
+        <span className="flex items-center gap-2 text-[13px] font-bold uppercase tracking-widest text-zinc-200">
+          <span className="h-3 w-[3px] rounded-full bg-gradient-to-b from-[#ff5d1c] to-[#ff8a3d]" />
+          {title}
+        </span>
         <ChevronDown
           className={cn(
             "h-4 w-4 text-zinc-400 transition-transform duration-200",
@@ -1221,9 +1224,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // ---------- Render ----------
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#101013] text-zinc-400">
-        <div className="flex items-center gap-3 text-sm">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white/80" />
+      <div className="flex h-screen items-center justify-center bg-[#0b0b0f] text-zinc-400">
+        <div className="flex items-center gap-3 rounded-full border border-white/10 bg-white/[0.03] px-5 py-2.5 text-sm shadow-2xl backdrop-blur">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-500/30 border-t-primary-400" />
           Loading editor…
         </div>
       </div>
@@ -1232,11 +1235,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   if (!clip) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#101013]">
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#0b0b0f]">
         <p className="text-sm text-zinc-400">Clip not found</p>
         <Link
           href={`/dashboard/projects/${projectId}`}
-          className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
+          className="rounded-full bg-gradient-to-r from-[#ff5d1c] to-[#ff8a3d] px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-primary-500/25 transition-all hover:shadow-primary-500/40 hover:brightness-110"
         >
           Back to project
         </Link>
@@ -1249,9 +1252,9 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     : "clip.mp4";
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#101013] text-zinc-100">
+    <div className="flex h-screen flex-col overflow-hidden bg-[#0b0b0f] text-zinc-100">
       {/* ---------- Top bar ---------- */}
-      <header className="flex items-center justify-between gap-4 px-5 pb-3 pt-4">
+      <header className="flex items-center justify-between gap-4 border-b border-white/[0.06] bg-gradient-to-b from-white/[0.045] to-transparent px-5 pb-3 pt-4">
         <div className="flex min-w-0 items-start gap-2">
           <Link
             href={`/dashboard/projects/${projectId}`}
@@ -1268,7 +1271,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                 setName(e.target.value);
               }}
               placeholder="Name this clip (used as the file name)"
-              className="w-72 max-w-full border-b border-transparent bg-transparent text-[15px] font-medium text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-white/20"
+              className="w-72 max-w-full rounded-md border-b border-transparent bg-transparent px-1 py-0.5 text-[15px] font-medium text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 hover:border-white/10 focus:border-primary-500/50 focus:bg-white/[0.03]"
             />
             <div className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-500">
               <span className="max-w-56 truncate">{sourceName}</span>
@@ -1292,14 +1295,14 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           <button
             onClick={() => void save()}
             disabled={saving}
-            className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-zinc-200 disabled:opacity-60"
+            className="rounded-full bg-gradient-to-r from-[#ff5d1c] to-[#ff8a3d] px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-primary-500/25 transition-all hover:shadow-primary-500/40 hover:brightness-110 disabled:opacity-60"
           >
             {saving ? "Saving…" : "Render & save"}
           </button>
           <button
             onClick={toggleFullscreen}
             aria-label="Toggle fullscreen"
-            className="rounded-lg border border-white/10 bg-white/5 p-2 text-zinc-300 hover:bg-white/10 hover:text-white"
+            className="rounded-full border border-white/10 bg-white/[0.04] p-2 text-zinc-300 backdrop-blur transition-colors hover:bg-white/10 hover:text-white"
           >
             {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           </button>
@@ -1343,7 +1346,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           >
             <div
               ref={canvasBoxRef}
-              className="relative overflow-hidden rounded-lg bg-black shadow-2xl"
+              className="relative overflow-hidden rounded-xl bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.07),0_30px_90px_-20px_rgba(0,0,0,0.95)]"
               style={{
                 aspectRatio: `${dims.w} / ${dims.h}`,
                 maxWidth: "100%",
@@ -1651,32 +1654,32 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             <button
               onClick={() => stepFrame(-1)}
               aria-label="Previous frame"
-              className="rounded-full p-2 text-zinc-300 hover:bg-white/10"
+              className="rounded-full bg-white/[0.04] p-2 text-zinc-300 ring-1 ring-white/[0.06] transition-colors hover:bg-white/10 hover:text-white"
             >
               <SkipBack className="h-4 w-4" />
             </button>
             <button
               onClick={restart}
               aria-label="Restart"
-              className="rounded-full p-2 text-zinc-300 hover:bg-white/10"
+              className="rounded-full bg-white/[0.04] p-2 text-zinc-300 ring-1 ring-white/[0.06] transition-colors hover:bg-white/10 hover:text-white"
             >
               <RotateCcw className="h-4 w-4" />
             </button>
             <button
               onClick={togglePlay}
               aria-label={playing ? "Pause" : "Play"}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-black shadow-lg hover:bg-zinc-200"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-[#ff6a2b] to-[#ff8a3d] text-white shadow-lg shadow-primary-500/30 transition-all hover:shadow-primary-500/50 hover:brightness-110"
             >
               {playing ? <Pause className="h-5 w-5" /> : <Play className="ml-0.5 h-5 w-5" />}
             </button>
             <button
               onClick={() => stepFrame(1)}
               aria-label="Next frame"
-              className="rounded-full p-2 text-zinc-300 hover:bg-white/10"
+              className="rounded-full bg-white/[0.04] p-2 text-zinc-300 ring-1 ring-white/[0.06] transition-colors hover:bg-white/10 hover:text-white"
             >
               <SkipForward className="h-4 w-4" />
             </button>
-            <span className="ml-2 text-xs tabular-nums text-zinc-400">
+            <span className="ml-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1 text-xs tabular-nums text-zinc-300">
               {formatClock(clipTime)} / {formatClock(clipDuration)}
             </span>
             <div className="ml-3 flex items-center gap-2">
@@ -1710,8 +1713,8 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
 
         {/* ---------- Right panel ---------- */}
-        <aside className="flex w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#161619]">
-          <div className="flex items-center gap-1 border-b border-white/10 px-4 py-3">
+        <aside className="flex w-[380px] shrink-0 flex-col border-l border-white/[0.07] bg-gradient-to-b from-[#17171b] to-[#121215]">
+          <div className="flex items-center gap-1 border-b border-white/[0.07] px-3 py-2.5">
             {(
               [
                 { key: "frame", label: "Frame", icon: FrameIcon },
@@ -1726,10 +1729,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                   if (key === "music" && musicTracks === null) void loadMusicCatalog(musicTabMood);
                 }}
                 className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                  "flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-all",
                   tab === key
-                    ? "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/40"
-                    : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                    ? "bg-white/[0.08] text-white shadow-sm ring-1 ring-white/[0.08]"
+                    : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
                 )}
               >
                 <Icon className="h-4 w-4" />
@@ -1739,10 +1742,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             <button
               onClick={() => setTab("brand")}
               className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                "flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-all",
                 tab === "brand"
-                  ? "bg-primary-500/15 text-primary-300 ring-1 ring-primary-500/40"
-                  : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                  ? "bg-white/[0.08] text-white shadow-sm ring-1 ring-white/[0.08]"
+                  : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
               )}
             >
               <span className="flex h-4 w-4 items-center justify-center rounded-full border-2 border-current text-[9px] font-bold">
@@ -2592,11 +2595,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       </div>
 
       {/* ---------- Toolbar ---------- */}
-      <div className="flex items-center gap-2 border-t border-white/10 px-5 py-2">
+      <div className="flex items-center gap-2 border-t border-white/[0.07] bg-white/[0.015] px-5 py-2">
         <button
           onClick={() => void handleSplit()}
           disabled={saving}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-zinc-200 hover:bg-white/10 disabled:opacity-50"
+          className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.07] disabled:opacity-50"
         >
           <Scissors className="h-4 w-4" />
           Split at {formatClock(clamp(playheadSource - startTime, 0, clipDuration))}
@@ -2605,7 +2608,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         <button
           onClick={() => void handleDuplicate()}
           disabled={saving}
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-zinc-200 hover:bg-white/10 disabled:opacity-50"
+          className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.07] disabled:opacity-50"
         >
           <span className="text-[13px]">⧉</span>
           Duplicate
@@ -2643,7 +2646,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       </div>
 
       {/* ---------- Timeline ---------- */}
-      <div className="border-t border-white/10 bg-[#0d0d0f] px-2 pb-2">
+      <div className="border-t border-white/[0.07] bg-[#09090c] px-2 pb-2">
         <ClipTimeline
           duration={clipDuration}
           runway={120}

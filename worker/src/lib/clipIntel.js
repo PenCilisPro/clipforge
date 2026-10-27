@@ -68,7 +68,14 @@ export const CONFIG = {
   WINDOW_OVERLAP: 45,             // 45-second overlap [mine, in [A]'s 30-60 range]
   FINDER_MIN_PER_CHUNK: 8,        // [A] "propose 8-15 per chunk"
   FINDER_MAX_PER_CHUNK: 15,
-  JUDGE_BATCH_MAX: 60,            // judge sees ALL candidates; batched at this size
+  // Judge batches must fit the model's output budget. Each scorecard the
+  // judge returns (reasoning + 5 dimension scores + enums + 5 titles + 3
+  // hook captions) costs ~200-250 output tokens, so 60 candidates per call
+  // need ~15K tokens — the response gets TRUNCATED mid-JSON, every batch
+  // fails to parse, all candidates go unjudged, and analysis collapses to
+  // the placeholder fallback. 20 × ~250 ≈ 5K tokens fits the 8192-token
+  // budget chatComplete now sends explicitly.
+  JUDGE_BATCH_MAX: 20,
   CHUNK_CONCURRENCY: 3,
   TRANSCRIPT_CHAR_CAP: 120_000,
   MODEL_TIMEOUT_MS: 240_000,
@@ -135,18 +142,28 @@ export const CONFIG = {
 
   // ---- scene stitching — skip whole boring scenes inside one clip [mine] ----
   SCENE_STITCH: true,
-  MAX_SCENES: 3,
+  MAX_SCENES: 5,
   SCENE_MIN_SKIP: 2.0,
   SCENE_MAX_SKIP: 45,
   SCENE_MIN_LEN: 2.5,
 
-  // ---- best-moment scouting — kept from v2.4 ----
+  // ---- best-moment scouting / multi-moment merge ----
+  // v3.1: the scout is a composer — it may merge up to MAX_SCENES-1 scouted
+  // moments from anywhere in the video into one clip (montage), not just
+  // patch a missing opening/payoff. Limits bound how far material may sit
+  // from the clip and how much speaking time may be added; the merged edit
+  // is always re-judged by the full code gate before it replaces the
+  // original, so a bad merge can only lose, never ship.
   SCOUT_SHOTS: true,
-  SCOUT_BOARD_MAX: 40,
+  SCOUT_BOARD_MAX: 60,
   SCOUT_MIN_LEN: 2.0,
-  SCOUT_MAX_LEN: 20,
-  SCOUT_MAX_SKIP: 120,
-  SCOUT_MAX_ADDED_SEC: 14,
+  SCOUT_MAX_LEN: 30,
+  SCOUT_MAX_SKIP: 240,
+  SCOUT_MAX_ADDED_SEC: 30,
+
+  // ---- creator style preferences (project "moment style" picks) ----
+  STYLE_BONUS: 0.35,              // per matched style, added to the weighted total
+  STYLE_BONUS_CAP: 0.7,
 };
 
 // [A] weights — hook and emotion dominate. Code applies them; the judge only
@@ -178,6 +195,43 @@ const CLIP_TYPES = new Set(["story", "hot_take", "insight", "humor", "emotional"
 const HOOK_TYPES = new Set(["bold_claim", "curiosity_gap", "direct_question", "conflict_confession", "shocking_fact", "mid_action", "none"]);
 // [A] emotion types — "don't ask for emotional clips, give the AI a list".
 const EMOTION_TYPES = new Set(["surprise", "humor", "outrage", "vulnerability", "inspiration", "tension", "awe", "none"]);
+
+// Creator style preferences — the New Project page's "style of the project"
+// picks. Each style maps onto the clip types / emotions the finder and judge
+// already speak, so preference biasing rides the existing rubric instead of
+// inventing a parallel taxonomy. The prompts carry the intent; code adds a
+// small, capped ranking bonus when a clip actually delivers the feel.
+export const MOMENT_STYLES = {
+  funny:          { label: "Funny",           types: ["humor"],                    emotions: ["humor", "surprise"] },
+  wholesome:      { label: "Wholesome",       types: ["story"],                    emotions: ["inspiration", "vulnerability"] },
+  sad:            { label: "Sad & emotional", types: ["emotional", "story"],       emotions: ["vulnerability", "tension"] },
+  hype:           { label: "Hype",            types: ["hot_take"],                 emotions: ["surprise", "awe"] },
+  inspiring:      { label: "Inspiring",       types: ["how_to", "story"],          emotions: ["inspiration"] },
+  dramatic:       { label: "Dramatic",        types: ["controversy", "story"],     emotions: ["tension"] },
+  informative:    { label: "Informative",     types: ["insight", "how_to"],        emotions: ["awe"] },
+  controversial:  { label: "Controversial",   types: ["controversy", "hot_take"],  emotions: ["outrage"] },
+};
+const STYLE_KEYS = Object.keys(MOMENT_STYLES);
+const STYLE_MAX = 4;
+
+/** Whitelist + cap user-chosen styles (unknown keys dropped, deduped, max 4). */
+export function normalizeStylePrefs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const v of raw) {
+    const key = String(v ?? "").trim().toLowerCase();
+    if (STYLE_KEYS.includes(key) && !out.includes(key)) out.push(key);
+    if (out.length >= STYLE_MAX) break;
+  }
+  return out;
+}
+
+/** Prompt paragraph for the requested styles — "" when none are set. */
+function styleNote(styles) {
+  if (!Array.isArray(styles) || styles.length === 0) return "";
+  const labels = styles.map((k) => MOMENT_STYLES[k].label).join(", ");
+  return `CREATOR STYLE FOCUS: the creator asked for moments that feel like: ${labels}. Favor candidates that genuinely deliver those feelings, and mark their type and primary_emotion honestly. Still surface other exceptional moments, but style-matched candidates win ties and get priority when the clip count is limited.`;
+}
 
 const JUDGE_SCORE_KEYS = ["hook", "emotion", "clarity", "payoff", "share"];
 
@@ -434,6 +488,8 @@ HOOK LINES: hook_candidates (when present) lists sentence IDs whose text already
 
 You must propose between {{FINDER_MIN}} and {{FINDER_MAX}} candidates IF the window has that many usable moments. If the window has fewer, propose what exists. If nothing in the window is good, return an empty array. Do not force clips.
 
+{{STYLE_NOTE}}
+
 Return ONLY this JSON:
 {"candidates": [{
   "start_id": "S12", "end_id": "S25",
@@ -540,6 +596,8 @@ ALSO RETURN for each candidate:
 
 GENRE RUBRIC: {{GENRE_NOTE}}
 
+{{STYLE_NOTE}}
+
 CALIBRATION EXAMPLES (taste anchors, not from this transcript):
 - "hey guys welcome back to the channel" opening, decent story after: hook 2, everything else capped by the dead opening — publish no.
 - "I lied to my entire team about the launch date." then the story, payoff at 70%: hook 8 (conflict_confession), emotion 7, clarity 9, payoff 8, share 7 — publish yes.
@@ -559,7 +617,7 @@ Return ONLY this JSON:
   "unfixable": false
 }]}`;
 
-function buildJudgeRequest({ candidates, sentences, tagMap, genre, creatorProfile, patterns }) {
+function buildJudgeRequest({ candidates, sentences, tagMap, genre, creatorProfile, patterns, styles = [] }) {
   const byIdx = new Map(sentences.map((s) => [s.idx, s]));
   const items = candidates.map((c, i) => {
     // Context: two sentences on each side, so the judge can judge context
@@ -592,6 +650,9 @@ function buildJudgeRequest({ candidates, sentences, tagMap, genre, creatorProfil
   };
   if (creatorProfile) req.creator_profile = creatorProfile;
   if (patterns.length) req.engagement_patterns = patterns;
+  if (Array.isArray(styles) && styles.length) {
+    req.style_preferences = styles.map((k) => MOMENT_STYLES[k]?.label ?? k);
+  }
   return JSON.stringify(req, null, 2);
 }
 
@@ -1429,7 +1490,20 @@ function evaluateCandidate(raw, ctx) {
   const matchedPatterns = [...new Set((Array.isArray(raw.matched_patterns) ? raw.matched_patterns : []).map(String))]
     .filter((id) => ctx.patternIds.has(id));
   const bonus = Math.min(CONFIG.PATTERN_BONUS_CAP, CONFIG.PATTERN_BONUS * matchedPatterns.length);
-  const total = round2(clampNum(base - penaltySum + bonus, 0, 10));
+  // Creator style preferences: a small, capped nudge toward the requested
+  // moment styles — the prompts carry the intent, this only breaks ranking
+  // ties toward what the user actually asked for.
+  const clipTypeEarly = CLIP_TYPES.has(raw.type) ? raw.type : "story";
+  const styleMatched = (Array.isArray(ctx.stylePrefs) && ctx.stylePrefs.length)
+    ? ctx.stylePrefs.filter((k) => {
+        const def = MOMENT_STYLES[k];
+        if (!def) return false;
+        return def.types.includes(clipTypeEarly) ||
+          (primaryEmotion !== "none" && def.emotions.includes(primaryEmotion));
+      })
+    : [];
+  const styleBonus = Math.min(CONFIG.STYLE_BONUS_CAP, CONFIG.STYLE_BONUS * styleMatched.length);
+  const total = round2(clampNum(base - penaltySum + bonus + styleBonus, 0, 10));
 
   if (ctx.strict && hardFails.length) {
     const note = worstTitleProblems.length ? `title names facts not in transcript: ${worstTitleProblems.join(", ")}` : hardFails.join(", ");
@@ -1529,6 +1603,11 @@ function evaluateCandidate(raw, ctx) {
         penalty_reasons: penaltyWhy,
         base: round2(base),
         pattern_bonus: bonus,
+        style: {
+          requested: Array.isArray(ctx.stylePrefs) ? ctx.stylePrefs : [],
+          matched: styleMatched,
+          bonus: round2(styleBonus),
+        },
         matched_patterns: matchedPatterns,
         total,
         checks: {
@@ -1734,7 +1813,7 @@ function hookGateRescue(raw, ctx, { rejectionReasons = null, currentHook = null 
  * Rank sentences by "moment" value — the lines anywhere in the video that
  * could strengthen a clip: reveals, numbers, emotional peaks, strong takes.
  */
-function momentHints(sentences, exclude, max = CONFIG.SCOUT_BOARD_MAX) {
+function momentHints(sentences, exclude, max = CONFIG.SCOUT_BOARD_MAX, styles = []) {
   const scored = [];
   for (const s of sentences) {
     if (exclude && s.idx >= exclude.from && s.idx <= exclude.to) continue;
@@ -1756,12 +1835,23 @@ function momentHints(sentences, exclude, max = CONFIG.SCOUT_BOARD_MAX) {
     if (/\d/.test(text)) add(1, "number");
     if (words.length > 32) sc -= 1;
     if (GREETING_RE.test(normalize(text)) || HOUSEKEEPING_RE.test(text) || FLAT_OPEN_RE.test(text)) sc -= 3;
-    if (sc >= 2) scored.push({ t: s.start, id: s.id, sc, signals });
+    // Style-matched moments get a small board boost so style-driven scouting
+    // surfaces them first (the model still decides what merges coherently).
+    const styleTags = [];
+    if (Array.isArray(styles) && styles.length) {
+      if (styles.includes("funny") && LAUGHTER_RE.test(text)) styleTags.push("funny");
+      if ((styles.includes("controversial") || styles.includes("dramatic")) && ARGUE_RE.test(text)) styleTags.push("controversial");
+      if (styles.includes("hype") && HYPE_RE.test(text)) styleTags.push("hype");
+      if ((styles.includes("wholesome") || styles.includes("inspiring")) && (FEELING_RE.test(text) || USEFUL_RE.test(text))) styleTags.push("uplifting");
+      if ((styles.includes("sad") || styles.includes("dramatic")) && (FEELING_RE.test(text) || TRAIL_OFF_RE.test(text))) styleTags.push("emotional");
+      if (styleTags.length) sc += 1.5;
+    }
+    if (sc >= 2) scored.push({ t: s.start, id: s.id, sc, signals: styleTags.length ? [...signals, ...styleTags] : signals });
   }
   return scored.sort((a, b) => b.sc - a.sc).slice(0, max);
 }
 
-function buildScoutRequest({ clip, sentences, board, headroomSec, creatorProfile, patterns }) {
+function buildScoutRequest({ clip, sentences, board, headroomSec, creatorProfile, patterns, styles = [] }) {
   const scenes = Array.isArray(clip.intel_json?.scenes) && clip.intel_json.scenes.length >= 2
     ? clip.intel_json.scenes
     : [{ start_id: clip.start_id, end_id: clip.end_id }];
@@ -1793,17 +1883,26 @@ function buildScoutRequest({ clip, sentences, board, headroomSec, creatorProfile
   };
   if (creatorProfile) req.creator_profile = creatorProfile;
   if (patterns.length) req.engagement_patterns = patterns;
+  if (Array.isArray(styles) && styles.length) {
+    req.style_preferences = {
+      note: "the creator asked for these moment styles — prefer board entries and merges that deliver them",
+      styles: styles.map((k) => MOMENT_STYLES[k]?.label ?? k),
+    };
+  }
   req.scout_board = board;
   return JSON.stringify(req, null, 2);
 }
 
-const SCOUT_SYSTEM_PROMPT = `You are a short-form editor improving an already-picked clip. You receive the clip (title, spoken hook, scenes, kept text with sentence IDs, duration) plus a scout_board: code-ranked moments from the REST of the video that could strengthen it, and headroom_sec: how much speaking time the merged clip may still gain. Scout for shots elsewhere in the video that make THIS clip stronger, so the merged result is one clip built from the best moments with nothing boring in between.
-- Return ONLY this JSON: {"add_scenes": [{"start_id": "S12", "end_id": "S14", "why": "one sentence"}], "scout_notes": "optional one-liner"}. An empty add_scenes is a valid and often correct answer — never add a shot just to fill headroom.
-- Scout for, in order of value: 1) a stronger opening — a line that creates the question faster or harder than the clip's current first scene. 2) the missing payoff — the shot elsewhere that actually delivers what the hook promises; it must land as the last scene. 3) proof or escalation — a number, demo, reaction or concrete detail that makes the existing story hit harder.
-- Every shot must survive without the material between it and the clip: no dangling reference, no pronoun whose subject is skipped, no mid-story fragment whose setup stays behind. Say in "why" how the shot connects to the clip.
-- A shot may sit before, between or after the clip's existing scenes — original transcript order, never overlapping, never starting after the payoff. Each shot spans 2-20 s of speaking time and the total added time stays within headroom_sec.
-- The merged clip must still be one coherent thought with the hook first and the payoff last. If nothing on the board truly helps, return no shots.
-- If a board entry delivers what the hook promises better than the clip's current payoff does, crown it: return its sentence as payoff_id. The merged clip must then end on that payoff.`;
+const SCOUT_SYSTEM_PROMPT = `You are a short-form editor composing one clip out of the best moments of a long video. You receive the clip (title, spoken hook, scenes, kept text with sentence IDs, duration), a scout_board: code-ranked moments from the REST of the video — including strong moments that did not survive as standalone clips, which are ideal merge material — and headroom_sec: how much speaking time the merged clip may still gain.
+
+Your job: scout MULTIPLE moments from anywhere on the board and merge them with the clip's existing scenes so the result is ONE clip built from the best moments with nothing boring in between. Think montage: a stronger opening, the missing payoff, proof or escalation, a reaction beat — every scene must earn its place.
+- Return ONLY this JSON: {"add_scenes": [{"start_id": "S12", "end_id": "S14", "why": "one sentence"}], "scout_notes": "optional one-liner"}. An empty add_scenes is a valid answer when the clip is already the best version of itself — never add a shot just to fill headroom.
+- Merge, in order of value: 1) a stronger opening — a line that creates the question faster or harder than the clip's current first scene. 2) the missing payoff — the moment elsewhere that actually delivers what the hook promises; it must land as the last scene. 3) proof or escalation — a number, demo, reaction or concrete detail that makes the story hit harder. 4) a contrast or reaction beat that keeps the middle alive.
+- Every scene must survive without the material between the scenes: no dangling reference, no pronoun whose subject is skipped, no mid-story fragment whose setup stays behind. Say in "why" how the scene connects.
+- Scenes stay in original transcript order, never overlap, and never start after the payoff. Each scouted scene spans 2-30 s of speaking time and the total added time stays within headroom_sec.
+- The merged clip must still be one coherent thought with the hook first and the payoff last. If nothing on the board truly helps, return no scenes.
+- If a board entry delivers what the hook promises better than the clip's current payoff does, crown it: return its sentence as payoff_id. The merged clip must then end on that payoff.
+- style_preferences (when present): the creator asked for these moment styles — prefer board entries that match them, as long as the merge stays coherent.`;
 
 function parseScoutResponse(content) {
   const cleaned = String(content ?? "").replace(/```(?:json)?/gi, "").trim();
@@ -1818,13 +1917,14 @@ function parseScoutResponse(content) {
 }
 
 /**
- * Scout one picked clip. The model may propose up to 2 additional shots from
- * anywhere in the video (they become extra scenes); code validates them,
- * merges the scene list, re-runs the FULL gate on the merged edit and keeps
- * the merge only when the clip still passes and does not score worse than
- * the original. Never throws — a scout failure returns the original clip.
+ * Scout one picked clip — the multi-moment composer. The model may propose up
+ * to MAX_SCENES-1 additional moments from anywhere in the video (they become
+ * extra scenes); code validates them, merges the scene list, re-runs the FULL
+ * gate on the merged edit and keeps the merge only when the clip still passes
+ * and does not score worse than the original. Never throws — a scout failure
+ * returns the original clip.
  */
-async function scoutClip(clip, { sentences, shared, creatorProfile, patterns, diagnostics }) {
+async function scoutClip(clip, { sentences, shared, creatorProfile, patterns, diagnostics, extraMoments = [] }) {
   const setScout = (meta) => {
     clip.intel_json = { ...(clip.intel_json ?? {}), scout: { attempted: true, ...meta } };
     return clip;
@@ -1846,9 +1946,16 @@ async function scoutClip(clip, { sentences, shared, creatorProfile, patterns, di
     if (budget < CONFIG.SCOUT_MIN_LEN) {
       return setScout({ accepted: false, why: "no headroom left for a scouted shot", board_size: 0 });
     }
-    const board = momentHints(sentences, { from: firstSent.idx, to: lastSent.idx });
+    // Board = code-ranked moments from the rest of the video, plus the strong
+    // candidates that did not ship standalone (prime merge material) — style
+    // boosts apply so style-driven scouting sees matching moments first.
+    const hints = momentHints(sentences, { from: firstSent.idx, to: lastSent.idx }, CONFIG.SCOUT_BOARD_MAX, shared.stylePrefs);
+    const extra = (Array.isArray(extraMoments) ? extraMoments : []).filter(
+      (m) => m && !(m.t >= firstSent.start && m.t <= lastSent.end)
+    );
+    const board = [...extra, ...hints].slice(0, CONFIG.SCOUT_BOARD_MAX);
 
-    const userPrompt = buildScoutRequest({ clip, sentences, board, headroomSec: headroom, creatorProfile, patterns });
+    const userPrompt = buildScoutRequest({ clip, sentences, board, headroomSec: headroom, creatorProfile, patterns, styles: shared.stylePrefs });
     let parsed;
     try {
       const content = await chatComplete(SCOUT_SYSTEM_PROMPT, userPrompt, {
@@ -2086,10 +2193,11 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-function prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns }) {
+function prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns, stylePrefs }) {
   const { sentences, words, punctuated } = segmentSentences(transcriptJson?.words ?? []);
   if (sentences.length === 0) throw new Error("no transcript words to analyze");
   const patterns = (Array.isArray(engagementPatterns) ? engagementPatterns : []).filter((p) => p?.id);
+  const styles = normalizeStylePrefs(stylePrefs);
   return {
     sentences,
     words,
@@ -2100,6 +2208,11 @@ function prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPat
       bounds: LENGTH_BOUNDS[clipLengthPref] ?? LENGTH_BOUNDS.ai_optimized,
       hasProfile: Boolean(creatorProfile && Object.keys(creatorProfile).length),
       patternIds: new Set(patterns.map((p) => String(p.id))),
+      stylePrefs: styles,
+      styleSets: {
+        types: new Set(styles.flatMap((k) => MOMENT_STYLES[k].types)),
+        emotions: new Set(styles.flatMap((k) => MOMENT_STYLES[k].emotions)),
+      },
     },
     patterns,
   };
@@ -2123,21 +2236,25 @@ export async function detectViralClips({
   engagementPatterns = [],
   audioSignals = null,
   onDiagnostics = null,
+  stylePrefs = [],
 }) {
-  const { sentences, words, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns });
+  const { sentences, words, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns, stylePrefs });
   const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : words[words.length - 1].end;
   const target = Math.max(1, Math.floor(Number(maxClips) || 5));
 
   const tagMap = computeEmotionTags(sentences, audioSignals);
   const genre = detectGenre(sentences);
 
+  const styleNoteText = styleNote(shared.stylePrefs);
   const finderPrompt = FINDER_SYSTEM_PROMPT
     .replaceAll("{{MIN_DURATION}}", String(shared.bounds.min))
     .replaceAll("{{MAX_DURATION}}", String(shared.bounds.max))
     .replaceAll("{{FINDER_MIN}}", String(CONFIG.FINDER_MIN_PER_CHUNK))
-    .replaceAll("{{FINDER_MAX}}", String(CONFIG.FINDER_MAX_PER_CHUNK));
+    .replaceAll("{{FINDER_MAX}}", String(CONFIG.FINDER_MAX_PER_CHUNK))
+    .replaceAll("{{STYLE_NOTE}}", styleNoteText);
   const judgePrompt = JUDGE_SYSTEM_PROMPT
-    .replaceAll("{{GENRE_NOTE}}", GENRE_NOTES[genre.genre] ?? GENRE_NOTES.generic);
+    .replaceAll("{{GENRE_NOTE}}", GENRE_NOTES[genre.genre] ?? GENRE_NOTES.generic)
+    .replaceAll("{{STYLE_NOTE}}", styleNoteText);
 
   const chunks = chunkSentences(sentences, duration);
   const diagnostics = {
@@ -2190,7 +2307,7 @@ export async function detectViralClips({
   for (let i = 0; i < candidates.length; i += CONFIG.JUDGE_BATCH_MAX) {
     const batch = candidates.slice(i, i + CONFIG.JUDGE_BATCH_MAX);
     try {
-      const userPrompt = buildJudgeRequest({ candidates: batch, sentences, tagMap, genre, creatorProfile, patterns });
+      const userPrompt = buildJudgeRequest({ candidates: batch, sentences, tagMap, genre, creatorProfile, patterns, styles: shared.stylePrefs });
       const content = await chatComplete(judgePrompt, userPrompt, {
         timeoutMs: CONFIG.MODEL_TIMEOUT_MS,
         temperature: CONFIG.MODEL_TEMPERATURE,
@@ -2381,9 +2498,37 @@ export async function detectViralClips({
   let ranked = dedupeClips(sameIdeaPass);
   let picked = pickWithTypeCap(ranked, target);
 
-  // ---- SCOUT (kept from v2.4) ----
+  // ---- SCOUT (multi-moment composer) ----
+  // Strong candidates that did not ship standalone are prime merge material:
+  // ranked-but-unpicked clips and just-below-threshold moments both go on the
+  // board so the scout can compose one clip out of several scouted moments.
   if (CONFIG.SCOUT_SHOTS && picked.length > 0) {
-    const scoutDeps = { sentences, shared, creatorProfile, patterns, diagnostics };
+    const pickedStarts = new Set(picked.map((c) => c.start_id));
+    const extraMoments = [];
+    const pushMoment = (c, signal) => {
+      const a = sentences[parseId(c.start_id) - 1];
+      const b = sentences[parseId(c.end_id) - 1];
+      if (!a || !b) return;
+      const span = b.end - a.start;
+      if (span < CONFIG.SCOUT_MIN_LEN || span > CONFIG.SCOUT_MAX_LEN) return;
+      if (extraMoments.some((m) => m.id === a.id)) return;
+      extraMoments.push({
+        t: round2(a.start),
+        id: a.id,
+        end_id: b.id,
+        span_sec: round2(span),
+        sc: Math.round((c.total ?? 0) * 10) / 10,
+        signals: [signal],
+        text: String(c.title ?? c.hook ?? a.text ?? "").slice(0, 120),
+      });
+    };
+    for (const c of ranked) {
+      if (!pickedStarts.has(c.start_id)) pushMoment(c, "strong_moment_unpicked");
+    }
+    for (const c of diagnostics.belowThreshold) {
+      if ((c.total ?? 0) >= 4.5) pushMoment(c, "strong_moment_below_threshold");
+    }
+    const scoutDeps = { sentences, shared, creatorProfile, patterns, diagnostics, extraMoments };
     const scouted = await mapLimit(picked, CONFIG.CHUNK_CONCURRENCY, (clip) =>
       scoutClip(clip, scoutDeps).catch(() => clip)
     );
@@ -2433,8 +2578,9 @@ export async function scoreKnownClip({
   creatorProfile = null,
   engagementPatterns = [],
   audioSignals = null,
+  stylePrefs = [],
 }) {
-  const { sentences, words, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns });
+  const { sentences, words, shared, patterns } = prepare({ transcriptJson, clipLengthPref, creatorProfile, engagementPatterns, stylePrefs });
   const s0 = sentences[parseId(startId) - 1];
   const s1 = sentences[parseId(endId) - 1];
   if (!s0 || !s1 || s0.idx > s1.idx) throw new Error(`invalid clip range ${startId}-${endId}`);
@@ -2442,7 +2588,8 @@ export async function scoreKnownClip({
   const tagMap = computeEmotionTags(sentences, audioSignals);
   const genre = detectGenre(sentences);
   const judgePrompt = JUDGE_SYSTEM_PROMPT
-    .replaceAll("{{GENRE_NOTE}}", GENRE_NOTES[genre.genre] ?? GENRE_NOTES.generic);
+    .replaceAll("{{GENRE_NOTE}}", GENRE_NOTES[genre.genre] ?? GENRE_NOTES.generic)
+    .replaceAll("{{STYLE_NOTE}}", styleNote(shared.stylePrefs));
 
   const windowSentences = sentences.filter((s) => s.end >= s0.start - 60 && s.start <= s1.end + 30);
   const candidate = {
@@ -2454,7 +2601,7 @@ export async function scoreKnownClip({
     hook: s0.text,
     why: "",
   };
-  const userPrompt = buildJudgeRequest({ candidates: [candidate], sentences: windowSentences, tagMap, genre, creatorProfile, patterns });
+  const userPrompt = buildJudgeRequest({ candidates: [candidate], sentences: windowSentences, tagMap, genre, creatorProfile, patterns, styles: shared.stylePrefs });
 
   const content = await chatComplete(judgePrompt, userPrompt, {
     timeoutMs: CONFIG.MODEL_TIMEOUT_MS,

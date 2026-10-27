@@ -21,39 +21,90 @@ STRICT RULES:
 7. Score 90+ only for exceptional, highly shareable moments. Rank clips by virality_score, best first.
 8. Return at most the number of clips requested. If the transcript is too short or bland, return fewer clips.`;
 
+// Retry only transient provider failures: rate limits (429) and server
+// errors (5xx). Config mistakes (401 invalid key, 400 bad model) and the
+// per-call timeout abort immediately — retrying those burns minutes on a
+// failure that would repeat identically. Delays are env-tunable for tests.
+const RETRY_DELAYS_MS = String(process.env.ZAI_RETRY_DELAYS_MS ?? "2000,6000")
+  .split(",")
+  .map((n) => Number(n) || 0);
+
 /**
  * One bounded chat completion against the z.ai OpenAI-compatible API.
  * Shared by viral-clip detection and B-roll planning.
+ *
+ * Two reliability rules the pipeline depends on:
+ * 1. max_tokens is ALWAYS sent. GLM's unspecified default output cap is far
+ *    below what the multi-candidate JSON responses need — the clip
+ *    intelligence finder asks for 8-15 candidates per window and the judge
+ *    returns a detailed scorecard per candidate; a response truncated at the
+ *    default cap fails JSON parsing, which failed analysis on EVERY video
+ *    and silently degraded the product to the evenly spaced placeholder
+ *    clips (the 60/65/70/… virality scores).
+ * 2. 429/5xx/network errors are retried with a short backoff — the free
+ *    tier rate-limits bursts (the finder runs windows 3 at a time) and a
+ *    single 429 used to sink the whole analysis into the fallback.
  */
-export async function chatComplete(systemPrompt, userPrompt, { timeoutMs = 120_000, temperature = 0.4 } = {}) {
+export async function chatComplete(systemPrompt, userPrompt, { timeoutMs = 120_000, temperature = 0.4, maxTokens } = {}) {
   if (!env.zaiApiKey) {
     throw new Error("ZAI_API_KEY is not configured");
   }
+  const maxTokensOut = Math.max(256, Number(maxTokens ?? env.zaiMaxTokens) || 8192);
 
-  const res = await fetch(`${env.zaiBaseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.zaiApiKey}`,
-    },
-    body: JSON.stringify({
-      model: env.zaiModel,
-      temperature,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    }),
-    // Bound the call — a stalled provider must not wedge the pipeline.
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let lastError = null;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      console.warn(
+        `[z.ai] transient failure (attempt ${attempt}/${RETRY_DELAYS_MS.length}) — retrying in ` +
+          `${RETRY_DELAYS_MS[attempt - 1]}ms: ${String(lastError?.message ?? lastError).slice(0, 200)}`
+      );
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt - 1]));
+    }
+    try {
+      const res = await fetch(`${env.zaiBaseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.zaiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: env.zaiModel,
+          temperature,
+          max_tokens: maxTokensOut,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+        // Bound the call — a stalled provider must not wedge the pipeline.
+        signal: AbortSignal.timeout(timeoutMs),
+      });
 
-  if (!res.ok) {
-    throw new Error(`z.ai API failed (${res.status}): ${(await res.text()).slice(0, 400)}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data?.choices?.[0]?.message?.content ?? "";
+      }
+
+      const bodyText = (await res.text()).slice(0, 400);
+      lastError = new Error(`z.ai API failed (${res.status}, model ${env.zaiModel}): ${bodyText}`);
+      lastError.status = res.status;
+      // 429 (rate limit) and 5xx (provider hiccup) fall through to a retry;
+      // everything else is a config error that will repeat identically.
+      if (res.status !== 429 && res.status < 500) throw lastError;
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        // The call ran out of its own time budget — not retried (three
+        // 240 s timeouts would stall the analyze stage past its job
+        // timeout). analyze.js's outer one-retry covers transient stalls.
+        throw new Error(
+          `z.ai request timed out after ${Math.round(timeoutMs / 1000)}s (model ${env.zaiModel})`
+        );
+      }
+      if (err?.status) throw err; // non-retryable HTTP error, rethrown as-is
+      lastError = err; // network-level failure (DNS, reset, fetch failed) — retry
+    }
   }
-
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content ?? "";
+  throw lastError ?? new Error("z.ai request failed");
 }
 
 /** Parse a JSON array out of a model response, tolerating code fences. */

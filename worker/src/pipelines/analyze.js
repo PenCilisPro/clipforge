@@ -26,6 +26,7 @@ export async function processAnalyze(job) {
       .from("projects")
       .select(
         `id, transcript_json, duration_seconds, clip_length_pref, clip_count_tier,
+         style_prefs,
          caption_style, caption_font, caption_color, caption_stroke,
          caption_stroke_color, caption_stroke_size, caption_shadow,
          caption_shadow_color, caption_shadow_size, video_fit, video_background_blur`
@@ -56,6 +57,18 @@ export async function processAnalyze(job) {
     const durationSeconds = Number(project.duration_seconds ?? 0);
     const clipLengthPref = project.clip_length_pref ?? "ai_optimized";
 
+    // Diagnosability: when this stage degrades to placeholder sample clips
+    // (their scores are the evenly spaced 60/65/70/… the dashboard shows),
+    // the cause must be visible in the logs without spelunking. A missing
+    // ZAI_API_KEY is the most common reason; provider truncation/rate
+    // limits are the rest — chatComplete now reports both loudly.
+    console.log(
+      `[analyze] clip intelligence via ${env.zaiModel} @ ${env.zaiBaseUrl}` +
+        (env.zaiApiKey
+          ? ""
+          : " — ZAI_API_KEY IS NOT SET: every video will get placeholder sample clips until it is configured")
+    );
+
     let suggestions;
     try {
       suggestions = await detectViralClips({
@@ -63,6 +76,7 @@ export async function processAnalyze(job) {
         durationSeconds,
         maxClips: CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
         clipLengthPref,
+        stylePrefs: project.style_prefs ?? [],
       });
     } catch (err) {
       // One retry — long-transcript calls occasionally time out or return
@@ -74,6 +88,7 @@ export async function processAnalyze(job) {
           durationSeconds,
           maxClips: CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
           clipLengthPref,
+          stylePrefs: project.style_prefs ?? [],
         });
       } catch (retryErr) {
         // AI selection is an enhancement, not a hard dependency — a missing,
@@ -83,7 +98,8 @@ export async function processAnalyze(job) {
         suggestions = buildSampleClips(
           durationSeconds,
           clipLengthPref,
-          CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips
+          CLIP_COUNT_MAX[project.clip_count_tier] ?? env.maxClips,
+          retryErr.message
         );
       }
     }
@@ -93,6 +109,11 @@ export async function processAnalyze(job) {
     const clipRows = [];
     const projectUserId = await getProjectUser(projectId);
     for (const suggestion of suggestions) {
+      // Multi-moment clips: surface the merge on the dashboard — the edit
+      // list's scene count is how many distinct moments the clip is built
+      // from (1 = contiguous, >1 = the scout merged moments together).
+      const sceneCount = Number(suggestion.intel_json?.edit?.scene_count ?? 0);
+      const mergeTag = sceneCount > 1 ? `[built from ${sceneCount} moments] ` : "";
       const { data: clipRow, error: insertError } = await supabaseAdmin
         .from("clips")
         .insert({
@@ -103,7 +124,7 @@ export async function processAnalyze(job) {
           start_time: suggestion.start,
           end_time: suggestion.end,
           virality_score: suggestion.virality_score,
-          reason: suggestion.reason,
+          reason: `${mergeTag}${suggestion.reason ?? ""}`.trim(),
           hashtags: suggestion.hashtags,
           // Full Clip Intelligence rubric (scores/penalties/hook_type/risks)
           // stored for the tuning loop — compare against real view data later.
@@ -158,7 +179,7 @@ const SAMPLE_CLIP_LENGTHS = {
   ai_optimized: 35,
 };
 
-function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", count = 3) {
+function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", count = 3, failureReason = "") {
   const total = durationSeconds > 0 ? durationSeconds : 600;
   const len = SAMPLE_CLIP_LENGTHS[clipLengthPref] ?? 35;
   const margin = Math.min(30, total * 0.1);
@@ -176,7 +197,12 @@ function buildSampleClips(durationSeconds, clipLengthPref = "ai_optimized", coun
       title: `Sample highlight ${i + 1}`,
       hook: "AI selection unavailable — evenly spaced placeholder highlight.",
       virality_score: 60 + i * 5,
-      reason: "Evenly-spaced fallback clip (AI provider missing or erroring).",
+      // The reason field is the only place a dashboard user can see WHY the
+      // AI did not run — carry the real provider error, not a generic label.
+      reason:
+        "Placeholder clip — the AI did not analyze this video" +
+        (failureReason ? ` (cause: ${failureReason})` : "") +
+        ". Check the worker logs and the ZAI_API_KEY configuration.",
       hashtags: ["clipforge", "highlights"],
     }));
 }

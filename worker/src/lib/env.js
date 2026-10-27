@@ -48,6 +48,12 @@ export const env = {
   zaiApiKey: process.env.ZAI_API_KEY,
   zaiBaseUrl: process.env.ZAI_API_BASE_URL ?? "https://api.z.ai/api/paas/v4",
   zaiModel: process.env.ZAI_MODEL ?? "glm-4.5-flash",
+  // Output budget per z.ai call. When max_tokens is unspecified, GLM's
+  // default output cap truncates the multi-candidate JSON the clip
+  // intelligence finder/judge stages return — parsing then fails on EVERY
+  // video and analysis silently degrades to the placeholder sample clips
+  // (the evenly spaced 60/65/70/… virality scores).
+  zaiMaxTokens: Number(process.env.ZAI_MAX_TOKENS) || 8192,
 
   // B-roll stock footage providers (either one works; Pexels preferred)
   pexelsApiKey: process.env.PEXELS_API_KEY,

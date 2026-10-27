@@ -30,6 +30,8 @@ export interface Project {
   created_at: string;
   project_mode?: ProjectMode;
   clip_length_pref?: string;
+  /** Moment styles the AI scouts for (max 4; see MOMENT_STYLES in the worker). */
+  style_prefs?: string[];
   broll_enabled?: boolean;
   music_url?: string | null;
   music_storage_path?: string | null;

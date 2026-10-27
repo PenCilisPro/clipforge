@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, Clapperboard, FileText, Link2, Loader2, Music, Sparkles, Type, Upload } from "lucide-react";
+import { ArrowLeft, Clapperboard, CloudRain, FileText, Flame, Heart, Laugh, Lightbulb, Link2, Loader2, Megaphone, Music, Sparkles, Sun, Type, Upload } from "lucide-react";
 
 import { apiFetch } from "@/lib/api";
 import { cn, formatDuration, safeUploadName } from "@/lib/utils";
@@ -62,6 +62,19 @@ const MOODS = [
   "background",
 ];
 
+// Moment styles the AI scouts for — kept in sync with the backend's
+// MOMENT_STYLES whitelist (backend/src/routes/projects.js). Max 4 per project.
+const MOMENT_STYLES = [
+  { key: "funny", label: "Funny", hint: "Punchlines, banter, laughing fits", icon: Laugh },
+  { key: "wholesome", label: "Wholesome", hint: "Warm, heartfelt, feel-good moments", icon: Heart },
+  { key: "sad", label: "Sad & emotional", hint: "Vulnerable, tearjerker, heavy moments", icon: CloudRain },
+  { key: "hype", label: "Hype", hint: "High-energy, shocking, adrenaline moments", icon: Flame },
+  { key: "inspiring", label: "Inspiring", hint: "Motivating, uplifting, comebacks", icon: Sun },
+  { key: "dramatic", label: "Dramatic", hint: "Tense, confrontational, story arcs", icon: Sparkles },
+  { key: "informative", label: "Informative", hint: "Insights, how-tos, useful takeaways", icon: Lightbulb },
+  { key: "controversial", label: "Controversial", hint: "Hot takes that spark the comments", icon: Megaphone },
+];
+
 interface MusicTrack {
   id: string;
   name: string;
@@ -87,6 +100,8 @@ export default function NewProjectPage() {
   // Render preferences
   const [clipCountTier, setClipCountTier] = useState("1-5");
   const [clipLength, setClipLength] = useState("ai_optimized");
+  // Style of the project — the moment vibes the AI should scout for.
+  const [stylePrefs, setStylePrefs] = useState<string[]>([]);
   const [brollEnabled, setBrollEnabled] = useState(true);
   const [plan, setPlan] = useState<string>("free");
   const [isAdmin, setIsAdmin] = useState(false);
@@ -152,6 +167,17 @@ export default function NewProjectPage() {
       : {};
   }
 
+  function toggleStyle(key: string) {
+    setStylePrefs((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key);
+      if (prev.length >= 4) {
+        toast.info("Up to 4 styles per project");
+        return prev;
+      }
+      return [...prev, key];
+    });
+  }
+
   async function createProject(body: Record<string, unknown>) {
     await apiFetch("/api/projects", {
       method: "POST",
@@ -159,6 +185,7 @@ export default function NewProjectPage() {
         mode,
         clip_count_tier: clipCountTier,
         clip_length_pref: clipLength,
+        style_prefs: stylePrefs,
         broll_enabled: brollEnabled,
         ...captionStyle,
         ...musicFields(),
@@ -503,6 +530,55 @@ export default function NewProjectPage() {
                 ))}
               </SelectContent>
             </Select>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Style of the project</CardTitle>
+            <CardDescription>
+              Pick the kind of moments the AI should scout for — it will hunt
+              the video for those vibes and can stitch several moments into one
+              clip. Optional, up to 4 styles.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {MOMENT_STYLES.map(({ key, label, hint, icon: Icon }) => {
+                const selected = stylePrefs.includes(key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => toggleStyle(key)}
+                    title={hint}
+                    aria-pressed={selected}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                      selected
+                        ? "border-primary-500 bg-primary-500/10 text-primary-300"
+                        : "border-border text-muted-foreground hover:border-primary-500/40 hover:text-foreground"
+                    )}
+                  >
+                    <Icon
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        selected ? "text-primary-400" : "text-muted-foreground"
+                      )}
+                    />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {stylePrefs.length > 0 && (
+              <p className="mt-2.5 text-xs text-muted-foreground">
+                Scouting for:{" "}
+                {stylePrefs
+                  .map((k) => MOMENT_STYLES.find((s) => s.key === k)?.label ?? k)
+                  .join(", ")}
+              </p>
+            )}
           </CardContent>
         </Card>
 

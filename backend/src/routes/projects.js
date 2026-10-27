@@ -18,6 +18,11 @@ const router = Router();
 const CLIP_LENGTH_PREFS = ["10-14", "15-30", "31-45", "60+", "ai_optimized"];
 // Tiers above "1-5" require a paid plan (pro/business) or an admin account.
 const CLIP_COUNT_TIERS = ["1-5", "6-10", "11-15"];
+// Moment styles the AI scouts for (analyze → clipIntel stylePrefs). Kept in
+// sync with worker/src/lib/clipIntel.js MOMENT_STYLES.
+const MOMENT_STYLES = [
+  "funny", "wholesome", "sad", "hype", "inspiring", "dramatic", "informative", "controversial",
+];
 const MUSIC_MOODS = [
   "upbeat", "chill", "dramatic", "corporate", "energetic", "happy", "epic", "background",
 ];
@@ -70,6 +75,9 @@ const createSchema = z
     title: z.string().max(200).nullish(),
     clip_length_pref: z.enum(CLIP_LENGTH_PREFS).default("ai_optimized"),
     clip_count_tier: z.enum(CLIP_COUNT_TIERS).default("1-5"),
+    // Style of the project — the moment vibes the AI should scout for
+    // (wholesome, funny, sad, ...). Max 4; unknown keys rejected.
+    style_prefs: z.array(z.enum(MOMENT_STYLES)).max(4).default([]),
     broll_enabled: z.boolean().default(true),
     music_url: z
       .string()
@@ -180,6 +188,7 @@ router.post("/api/projects", requireAuth, async (req, res, next) => {
         status: "pending",
         clip_length_pref: body.clip_length_pref,
         clip_count_tier: body.clip_count_tier,
+        style_prefs: body.style_prefs ?? [],
         broll_enabled: body.broll_enabled,
         music_url: body.music_url ?? null,
         music_title: body.music_title ?? null,
