@@ -9,7 +9,8 @@ FROM node:22-alpine
 # while Node's own fetch resolved the same hosts fine. The distro binaries
 # stream R2 presigned URLs natively; fontconfig + a real font keep any
 # local libass fallback usable.
-RUN apk add --no-cache redis python3 make g++ libc6-compat ffmpeg fontconfig font-noto-core
+# after ✅
+RUN apk add --no-cache redis python3 make g++ libc6-compat ffmpeg fontconfig font-noto
 WORKDIR /app
 
 # Backend deps
