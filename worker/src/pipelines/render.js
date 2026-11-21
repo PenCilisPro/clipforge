@@ -265,6 +265,18 @@ export async function processRender(job) {
       videoY: Number.isFinite(Number(clip.video_y))
         ? Math.min(50, Math.max(-50, Number(clip.video_y)))
         : 0,
+      // CapCut-style adjust controls (editor "Adjust" panel). videoVolume
+      // applies on every provider (1 = unchanged, 0 = muted);
+      // rotate/flip/color adjust are consumed by the local/Modal
+      // filtergraph — cloud providers ignore them, mirroring zoom/pan.
+      videoVolume: Math.min(2, Math.max(0, Number(clip.video_volume ?? 1))),
+      videoRotate: [90, 180, 270].includes(Number(clip.video_rotate))
+        ? Number(clip.video_rotate)
+        : 0,
+      videoFlip: clip.video_flip === "h" || clip.video_flip === "v" ? clip.video_flip : "none",
+      videoBrightness: Math.min(50, Math.max(-50, Number(clip.video_brightness) || 0)),
+      videoContrast: Math.min(50, Math.max(-50, Number(clip.video_contrast) || 0)),
+      videoSaturation: Math.min(100, Math.max(-100, Number(clip.video_saturation) || 0)),
       // Caption placement (top/middle/bottom) + explicit px size (0 =
       // template default), and the output canvas aspect from the editor.
       captionPosition: clip.caption_position ?? "bottom",

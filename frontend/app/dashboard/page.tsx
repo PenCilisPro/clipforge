@@ -22,7 +22,6 @@ import {
   Gamepad2,
   Languages,
   Link2,
-  Loader2,
   Music4,
   Scan,
   Sparkles,
@@ -99,7 +98,6 @@ export default function DashboardHome() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"clips" | "transcript">("clips");
-  const [creating, setCreating] = useState(false);
   const [promoHidden, setPromoHidden] = useState(true);
   const [showAllRecipes, setShowAllRecipes] = useState(false);
 
@@ -184,24 +182,14 @@ export default function DashboardHome() {
     toast.info(`${chip.label} is coming soon — stay tuned!`);
   }
 
-  async function createFromUrl() {
+  function createFromUrl() {
     const link = url.trim();
-    if (!link || creating) return;
-    setCreating(true);
-    try {
-      const { project } = await apiFetch<{ project: Project }>("/api/projects", {
-        method: "POST",
-        body: { source_type: "url", source_url: link, mode },
-      });
-      toast.success(
-        mode === "transcript" ? "Transcribing — transcript will appear on the project page" : "Clips incoming — follow progress on the project page"
-      );
-      router.push(`/dashboard/projects/${project.id}`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to create project");
-    } finally {
-      setCreating(false);
-    }
+    if (!link) return;
+    // Hand off to the create-project page with everything prefilled — the
+    // user reviews clip settings there before the pipeline starts.
+    router.push(
+      `/dashboard/new?tab=url&mode=${mode}&url=${encodeURIComponent(link)}`
+    );
   }
 
   return (
@@ -329,9 +317,9 @@ export default function DashboardHome() {
                   required
                 />
               </div>
-              <Button type="submit" size="lg" className="h-11" disabled={creating}>
-                {creating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                {creating ? "Forging…" : mode === "transcript" ? "Transcribe in 1 click" : "Get clips in 1 click"}
+              <Button type="submit" size="lg" className="h-11">
+                <Sparkles />
+                {mode === "transcript" ? "Transcribe in 1 click" : "Get clips in 1 click"}
               </Button>
             </form>
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted-foreground">

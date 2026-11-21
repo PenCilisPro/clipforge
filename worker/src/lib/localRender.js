@@ -691,12 +691,42 @@ export function buildFilterGraph({
   videoScale = 100,
   videoX = 0,
   videoY = 0,
+  // CapCut-style adjust controls (editor "Adjust" panel): rotate/flip the
+  // frame and a color-adjust eq stage. Applied BEFORE the fit/zoom logic so
+  // the scale/crop/pad branches see the rotated frame's true dimensions.
+  videoRotate = 0,
+  videoFlip = "none",
+  videoBrightness = 0,
+  videoContrast = 0,
+  videoSaturation = 0,
   // Scene cuts: the video chain starts at the concat output instead of the
   // raw input. "[0:v]" (contiguous) when there is no cut list. The value is a
   // full padded reference, so the cut path passes "[vcut]" verbatim.
   cutVideoIn = "[0:v]",
 }) {
   const parts = [];
+
+  // ---- adjust: rotate / flip / color -----------------------------------------
+  // Runs ahead of fit + zoom so every downstream branch (blur backdrop,
+  // letterbox, cover crop, b-roll overlay) operates on the adjusted frame.
+  // At the defaults the whole stage is skipped, keeping untouched clips'
+  // graphs byte-identical.
+  const brightness = Math.min(50, Math.max(-50, Number(videoBrightness) || 0)) / 100;
+  const contrast = 1 + Math.min(50, Math.max(-50, Number(videoContrast) || 0)) / 100;
+  const saturation = 1 + Math.min(100, Math.max(-100, Number(videoSaturation) || 0)) / 100;
+  const adjustOps = [];
+  if (Number(videoRotate) === 90) adjustOps.push("transpose=2"); // 90° counter-clockwise
+  else if (Number(videoRotate) === 270) adjustOps.push("transpose=1"); // 90° clockwise
+  else if (Number(videoRotate) === 180) adjustOps.push("hflip,vflip");
+  if (videoFlip === "h") adjustOps.push("hflip");
+  if (videoFlip === "v") adjustOps.push("vflip");
+  if (brightness !== 0 || contrast !== 1 || saturation !== 1) {
+    adjustOps.push(`eq=brightness=${brightness.toFixed(3)}:contrast=${contrast.toFixed(3)}:saturation=${saturation.toFixed(3)}`);
+  }
+  if (adjustOps.length > 0) {
+    parts.push(`${cutVideoIn}${adjustOps.join(",")},setsar=1[vadj]`);
+    cutVideoIn = "[vadj]";
+  }
 
   // ---- frame zoom & pan ------------------------------------------------------
   // Zoom s applies about the canvas center; the pan offsets are % of the
@@ -878,6 +908,14 @@ async function renderOnce(spec, outputRel, { width, height, withMusic }) {
     videoScale = 100,
     videoX = 0,
     videoY = 0,
+    // CapCut-style adjust controls (editor "Adjust" panel): volume on the
+    // video's own audio (every path), rotate/flip/color via the filtergraph.
+    videoVolume = 1,
+    videoRotate = 0,
+    videoFlip = "none",
+    videoBrightness = 0,
+    videoContrast = 0,
+    videoSaturation = 0,
   } = spec;
 
   await ensureFont(captionFontKey);
@@ -994,6 +1032,11 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
     videoScale,
     videoX,
     videoY,
+    videoRotate,
+    videoFlip,
+    videoBrightness,
+    videoContrast,
+    videoSaturation,
     cutVideoIn: cut ? cut.v : "[0:v]",
   });
   // The cut filter (trim/atrim per range + concat) must be in the graph
@@ -1002,8 +1045,10 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
   if (useMusic) {
     // One filtergraph file holds the video chain and the audio mix together
     // (audio never goes through CLI escaping — paths stay relative to cwd).
+    // videoVolume attenuates the VIDEO's own audio only — the music track
+    // keeps its fixed 0.15 bed.
     const audio = [
-      `[${cut && cut.a ? "acut" : "0:a"}]volume=1.0[a0]`,
+      `[${cut && cut.a ? "acut" : "0:a"}]volume=${Number(videoVolume) === 1 ? "1.0" : Number(videoVolume).toFixed(2)}[a0]`,
       `[${musicInput}:a]volume=0.15[am]`,
       `[a0][am]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
     ].join(";\n");
@@ -1030,12 +1075,20 @@ for (const b of broll) inputs.push("-ss", fmt(Math.max(0, Number(b.start))), ...
   ];
   if (useMusic) {
     args.push("-map", "[aout]");
-  } else if (cut) {
-    // Cut path: the audio (if the source has any) comes off the concat graph.
-    if (cut.a) args.push("-map", cut.a);
-    else args.push("-map", "0:a?");
   } else {
-    args.push("-map", "0:a?");
+    if (cut) {
+      // Cut path: the audio (if the source has any) comes off the concat graph.
+      if (cut.a) args.push("-map", cut.a);
+      else args.push("-map", "0:a?");
+    } else {
+      args.push("-map", "0:a?");
+    }
+    // No music to mix: a non-default volume rides as a simple audio filter on
+    // the (optionally mapped) source audio — silently unused when the source
+    // has no audio stream at all.
+    if (Number(videoVolume) !== 1) {
+      args.push("-af", `volume=${Number(videoVolume).toFixed(2)}`);
+    }
   }
     args.push(
     "-c:v", "libx264", "-preset", RENDER_PRESET, "-crf", String(RENDER_CRF),

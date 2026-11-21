@@ -160,6 +160,8 @@ export function buildRenderSpec({
   // zoomed + blurred copy of itself (black bars when the blur is off).
   videoFit = "cover",
   videoBackgroundBlur = true,
+  // CapCut-style video volume (0 = muted, 1 = unchanged) — "100%" string.
+  videoVolume = 1,
 }) {
   const font = captionFont(captionFontKey);
   const def = captionStyleDef(captionStyle);
@@ -196,7 +198,8 @@ export function buildRenderSpec({
   // Main talking-head video. "cover" crops the landscape source into the
   // 9:16 canvas (equivalent of Shotstack fit:"crop"); "contain" letterboxes
   // the full frame (on the blurred background, or on the black fill_color).
-  // The explicit duration drives the composition length.
+  // The explicit duration drives the composition length. videoVolume carries
+  // the editor's Adjust slider (0 = muted, 1 = unchanged → "100%").
   elements.push({
     type: "video",
     name: "Video-1",
@@ -207,6 +210,7 @@ export function buildRenderSpec({
     trim_start: Math.max(0, sourceTrimSeconds),
     trim_duration: durationSeconds,
     fit: videoFit === "contain" ? "contain" : "cover",
+    volume: `${Math.round(Math.min(2, Math.max(0, Number(videoVolume) || 0)) * 100)}%`,
   });
 
   // B-roll cutaways over the main video (muted, fade in/out).

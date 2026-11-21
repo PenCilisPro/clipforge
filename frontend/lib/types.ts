@@ -157,6 +157,13 @@ export interface Clip {
   video_scale?: number;
   video_x?: number;
   video_y?: number;
+  /** CapCut-style adjust controls (editor "Adjust" panel). */
+  video_volume?: number;
+  video_rotate?: number;
+  video_flip?: "none" | "h" | "v";
+  video_brightness?: number;
+  video_contrast?: number;
+  video_saturation?: number;
   /** "Words per screen" regrouping (0 = off — use SRT lines as edited). */
   caption_words?: number | null;
   /** Caption wrap width as % of canvas width. */

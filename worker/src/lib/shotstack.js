@@ -53,6 +53,8 @@ export function buildEditJson({
   // for interface parity but degrades to black bars here.
   videoFit = "cover",
   videoBackgroundBlur = true,
+  // CapCut-style video volume (0 = muted, 1 = unchanged) — supported natively.
+  videoVolume = 1,
 }) {
   void videoBackgroundBlur;
   const { width, height } = aspectDimensions(outputAspect);
@@ -63,7 +65,7 @@ export function buildEditJson({
           type: "video",
           src: sourceVideoUrl,
           trim: sourceTrimSeconds,
-          volume: 1,
+          volume: Math.min(2, Math.max(0, Number(videoVolume) || 0)),
         },
         start: 0,
         length: durationSeconds,

@@ -95,6 +95,19 @@ const effectShape = {
   video_scale: z.coerce.number().finite().min(50).max(300).optional(),
   video_x: z.coerce.number().finite().min(-50).max(50).optional(),
   video_y: z.coerce.number().finite().min(-50).max(50).optional(),
+  // CapCut-style adjust controls. Volume applies on every render provider
+  // (0 = muted); rotate/flip/color adjust render via the local/Modal
+  // filtergraph, mirroring how zoom/pan and text overlays are tiered.
+  video_volume: z.coerce.number().finite().min(0).max(2).optional(),
+  video_rotate: z.coerce
+    .number()
+    .int()
+    .refine((v) => [0, 90, 180, 270].includes(v), "Rotate must be 0/90/180/270")
+    .optional(),
+  video_flip: z.enum(["none", "h", "v"]).optional(),
+  video_brightness: z.coerce.number().int().min(-50).max(50).optional(),
+  video_contrast: z.coerce.number().int().min(-50).max(50).optional(),
+  video_saturation: z.coerce.number().int().min(-100).max(100).optional(),
   // Output canvas: 9:16 (TikTok/Shorts), 16:9 (X/Twitter), 1:1 (Square).
   output_aspect: z.enum(["9:16", "16:9", "1:1"]).optional(),
 };
@@ -319,6 +332,12 @@ router.post("/api/clips/:id/edit", requireAuth, renderRateLimit, async (req, res
       "video_scale",
       "video_x",
       "video_y",
+      "video_volume",
+      "video_rotate",
+      "video_flip",
+      "video_brightness",
+      "video_contrast",
+      "video_saturation",
       "output_aspect",
       "video_fit",
     ]) {
@@ -373,6 +392,7 @@ const CLIP_COPY_COLUMNS =
   "caption_style, caption_font, caption_color, caption_stroke, caption_stroke_color, caption_stroke_size, " +
   "caption_shadow, caption_shadow_color, caption_shadow_size, caption_position, caption_size, caption_word_spacing, caption_letter_spacing, caption_words, caption_width, caption_anim, caption_x, caption_y, output_aspect, " +
   "video_fit, video_background_blur, video_scale, video_x, video_y, " +
+  "video_volume, video_rotate, video_flip, video_brightness, video_contrast, video_saturation, " +
   "srt_override, broll_json, text_overlays";
 
 // B-roll segments: stock-provider URLs or the user's own uploaded MP4,
@@ -484,6 +504,12 @@ router.post("/api/clips/:id/split", requireAuth, renderRateLimit, async (req, re
         caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_volume: clip.video_volume ?? 1,
+        video_rotate: clip.video_rotate ?? 0,
+        video_flip: clip.video_flip ?? "none",
+        video_brightness: clip.video_brightness ?? 0,
+        video_contrast: clip.video_contrast ?? 0,
+        video_saturation: clip.video_saturation ?? 0,
         video_scale: clip.video_scale ?? 100,
         video_x: clip.video_x ?? 0,
         video_y: clip.video_y ?? 0,
@@ -577,6 +603,12 @@ router.post("/api/clips/:id/duplicate", requireAuth, renderRateLimit, async (req
         caption_width: clip.caption_width ?? 90,
         video_fit: clip.video_fit,
         video_background_blur: clip.video_background_blur,
+        video_volume: clip.video_volume ?? 1,
+        video_rotate: clip.video_rotate ?? 0,
+        video_flip: clip.video_flip ?? "none",
+        video_brightness: clip.video_brightness ?? 0,
+        video_contrast: clip.video_contrast ?? 0,
+        video_saturation: clip.video_saturation ?? 0,
         video_scale: clip.video_scale ?? 100,
         video_x: clip.video_x ?? 0,
         video_y: clip.video_y ?? 0,

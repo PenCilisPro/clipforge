@@ -123,7 +123,7 @@ function NewProjectForm() {
   // Caption defaults — applied to every clip this project creates.
   const [captionStyle, setCaptionStyle] = useState<CaptionStyleValue>(DEFAULT_CAPTION_STYLE);
 
-  // Deep-link prefill from the dashboard home (?tab=upload&url=…&title=…).
+  // Deep-link prefill from the dashboard home (?tab=upload&url=…&title=…&mode=…).
   useEffect(() => {
     const tabParam = searchParams.get("tab");
     if (tabParam === "upload" || tabParam === "url") setTab(tabParam);
@@ -131,6 +131,8 @@ function NewProjectForm() {
     if (urlParam) setUrl(urlParam);
     const titleParam = searchParams.get("title");
     if (titleParam) setTitle(titleParam);
+    const modeParam = searchParams.get("mode");
+    if (modeParam === "transcript" || modeParam === "clips") setMode(modeParam);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 

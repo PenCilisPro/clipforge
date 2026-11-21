@@ -18,6 +18,10 @@ import { useRouter } from "next/navigation";
 import {
   ChevronDown,
   ChevronLeft,
+  Contrast,
+  Droplets,
+  FlipHorizontal2,
+  FlipVertical2,
   Frame as FrameIcon,
   Info,
   Maximize,
@@ -25,10 +29,13 @@ import {
   Pause,
   Play,
   RotateCcw,
+  RotateCw,
   Scissors,
   Search,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
+  Sun,
   Type as TypeIcon,
   Volume2,
   VolumeX,
@@ -264,6 +271,17 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoX, setVideoX] = useState(0);
   const [videoY, setVideoY] = useState(0);
   const [panning, setPanning] = useState(false);
+
+  // Video adjust (CapCut-style "Adjust" panel). videoVolume is 0-2 (1 =
+  // unchanged, 0 = muted); rotate is 0/90/180/270; flip is none/h/v;
+  // brightness/contrast are -50..50 and saturation -100..100 (rendered by
+  // the local/Modal eq filter; volume applies on every provider).
+  const [videoVolume, setVideoVolume] = useState(1);
+  const [videoRotate, setVideoRotate] = useState(0);
+  const [videoFlip, setVideoFlip] = useState<"none" | "h" | "v">("none");
+  const [videoBrightness, setVideoBrightness] = useState(0);
+  const [videoContrast, setVideoContrast] = useState(0);
+  const [videoSaturation, setVideoSaturation] = useState(0);
   // Which preview element's selection box is pinned (tap = press once, not hold).
   const [activeBox, setActiveBox] = useState<"caption" | "frame" | null>(null);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
@@ -396,6 +414,16 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         setVideoScale(clamp(Number((found as any).video_scale) || 100, 50, 300));
         setVideoX(clamp(Number((found as any).video_x) || 0, -50, 50));
         setVideoY(clamp(Number((found as any).video_y) || 0, -50, 50));
+        setVideoVolume(clamp(Number((found as any).video_volume ?? 1), 0, 2));
+        setVideoRotate([90, 180, 270].includes(Number((found as any).video_rotate)) ? Number((found as any).video_rotate) : 0);
+        setVideoFlip(
+          (found as any).video_flip === "h" || (found as any).video_flip === "v"
+            ? (found as any).video_flip
+            : "none"
+        );
+        setVideoBrightness(clamp(Number((found as any).video_brightness) || 0, -50, 50));
+        setVideoContrast(clamp(Number((found as any).video_contrast) || 0, -50, 50));
+        setVideoSaturation(clamp(Number((found as any).video_saturation) || 0, -100, 100));
         const loadedOverlays = (found as any).text_overlays;
         setOverlays(
           Array.isArray(loadedOverlays)
@@ -522,13 +550,23 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // Sync volume/mute to the element.
+  // Sync volume/mute to the element. The saved Adjust volume seeds the
+  // preview slider on load (rendered volume = preview volume unless the
+  // user moves the slider).
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     video.volume = volume;
     video.muted = muted;
   }, [volume, muted]);
+
+  // Seed the preview volume slider from the clip's saved Adjust volume.
+  useEffect(() => {
+    setVolume(clamp(videoVolume, 0, 1));
+    setMuted(videoVolume === 0);
+    // Only on load — user slider moves after that are preview-local.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip?.id]);
 
   // ---------- Handlers ----------
   // Fresh-window refs: the tick always reads current values, and the
@@ -1107,6 +1145,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           video_scale: videoScale,
           video_x: Number(videoX.toFixed(2)),
           video_y: Number(videoY.toFixed(2)),
+          video_volume: Number(videoVolume.toFixed(2)),
+          video_rotate: videoRotate,
+          video_flip: videoFlip,
+          video_brightness: videoBrightness,
+          video_contrast: videoContrast,
+          video_saturation: videoSaturation,
           text_overlays: overlays.map((o) => ({
             ...o,
             x: Number(o.x.toFixed(2)),
@@ -1310,10 +1354,10 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       </header>
 
 
-      {/* ---------- Main: preview + right panel ---------- */}
-      <div className="flex min-h-0 flex-1">
+      {/* ---------- Main: preview + right panel (stacks on mobile) ---------- */}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {/* Preview */}
-        <section className="flex min-w-0 flex-1 flex-col px-5">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col px-3 sm:px-5">
           <div className="flex items-center justify-between pb-2 text-xs text-zinc-400">
             <span className="tabular-nums">
               {aspect} · {dims.w} × {dims.h}
@@ -1382,9 +1426,21 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                       panning ? "cursor-grabbing" : "cursor-grab"
                     )}
                     style={{
+                      // Right-to-left = render order: flip → rotate → fit/zoom → pan.
                       transform: `translate(${videoX.toFixed(2)}%, ${videoY.toFixed(2)}%) scale(${
                         videoScale / 100
+                      }) rotate(${videoRotate}deg) scaleX(${videoFlip === "h" ? -1 : 1}) scaleY(${
+                        videoFlip === "v" ? -1 : 1
                       })`,
+                      // Adjust panel's color controls mirror the local/Modal eq stage.
+                      ...(videoBrightness !== 0 || videoContrast !== 0 || videoSaturation !== 0
+                        ? {
+                            filter: `brightness(${(1 + videoBrightness / 100).toFixed(3)}) contrast(${(
+                              1 +
+                              videoContrast / 100
+                            ).toFixed(3)}) saturate(${(1 + videoSaturation / 100).toFixed(3)})`,
+                          }
+                        : {}),
                     }}
                     onLoadedMetadata={(e) => {
                       e.currentTarget.currentTime = startTime;
@@ -1713,7 +1769,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
 
         {/* ---------- Right panel ---------- */}
-        <aside className="flex w-[380px] shrink-0 flex-col border-l border-white/[0.07] bg-gradient-to-b from-[#17171b] to-[#121215]">
+        <aside className="flex max-h-[46vh] w-full shrink-0 flex-col overflow-hidden border-t border-white/[0.07] bg-gradient-to-b from-[#17171b] to-[#121215] md:max-h-none md:w-[380px] md:border-l md:border-t-0">
           <div className="flex items-center gap-1 border-b border-white/[0.07] px-3 py-2.5">
             {(
               [
@@ -1917,6 +1973,160 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     >
                       Reset
                     </button>
+                  </div>
+                </div>
+
+                {/* CapCut-style Adjust: volume (all providers) + rotate/flip/color */}
+                <div className="border-t border-white/10 pt-4">
+                  <div className="flex items-center justify-between pb-3">
+                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      <SlidersHorizontal className="h-3.5 w-3.5" /> Adjust
+                    </p>
+                    <button
+                      onClick={() => {
+                        setVideoVolume(1);
+                        setVideoRotate(0);
+                        setVideoFlip("none");
+                        setVideoBrightness(0);
+                        setVideoContrast(0);
+                        setVideoSaturation(0);
+                      }}
+                      disabled={
+                        videoVolume === 1 &&
+                        videoRotate === 0 &&
+                        videoFlip === "none" &&
+                        videoBrightness === 0 &&
+                        videoContrast === 0 &&
+                        videoSaturation === 0
+                      }
+                      className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-white/15 disabled:opacity-40"
+                    >
+                      Reset all
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    {/* Volume + mute */}
+                    <div>
+                      <div className="flex items-center gap-2 pb-2">
+                        <button
+                          onClick={() => setVideoVolume((v) => (v === 0 ? 1 : 0))}
+                          aria-label={videoVolume === 0 ? "Unmute video" : "Mute video"}
+                          className="rounded-md p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
+                        >
+                          {videoVolume === 0 ? (
+                            <VolumeX className="h-3.5 w-3.5" />
+                          ) : (
+                            <Volume2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        <span className="text-xs text-zinc-300">Volume</span>
+                        <span className="ml-auto text-[10px] tabular-nums text-zinc-500">
+                          {Math.round(videoVolume * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={200}
+                        step={5}
+                        value={Math.round(videoVolume * 100)}
+                        onChange={(e) => setVideoVolume(Number(e.target.value) / 100)}
+                        className="h-1 w-full accent-primary-500"
+                        aria-label="Video volume"
+                      />
+                    </div>
+
+                    {/* Rotate + flip */}
+                    <div>
+                      <p className="pb-2 text-xs text-zinc-300">Rotate & flip</p>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        <button
+                          onClick={() => setVideoRotate((r) => (r + 270) % 360)}
+                          className={cn(
+                            "flex items-center justify-center gap-1 rounded-lg border py-2 text-[10px] transition-colors",
+                            videoRotate === 90
+                              ? "border-primary-500/70 bg-primary-500/15 text-white"
+                              : "border-white/10 text-zinc-400 hover:bg-white/5"
+                          )}
+                          title="Rotate 90° counter-clockwise"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" /> 90°
+                        </button>
+                        <button
+                          onClick={() => setVideoRotate((r) => (r + 90) % 360)}
+                          className={cn(
+                            "flex items-center justify-center gap-1 rounded-lg border py-2 text-[10px] transition-colors",
+                            videoRotate === 270
+                              ? "border-primary-500/70 bg-primary-500/15 text-white"
+                              : "border-white/10 text-zinc-400 hover:bg-white/5"
+                          )}
+                          title="Rotate 90° clockwise"
+                        >
+                          <RotateCw className="h-3.5 w-3.5" /> 90°
+                        </button>
+                        <button
+                          onClick={() => setVideoFlip((f) => (f === "h" ? "none" : "h"))}
+                          className={cn(
+                            "flex items-center justify-center gap-1 rounded-lg border py-2 text-[10px] transition-colors",
+                            videoFlip === "h"
+                              ? "border-primary-500/70 bg-primary-500/15 text-white"
+                              : "border-white/10 text-zinc-400 hover:bg-white/5"
+                          )}
+                          title="Flip horizontally"
+                        >
+                          <FlipHorizontal2 className="h-3.5 w-3.5" /> Flip
+                        </button>
+                        <button
+                          onClick={() => setVideoFlip((f) => (f === "v" ? "none" : "v"))}
+                          className={cn(
+                            "flex items-center justify-center gap-1 rounded-lg border py-2 text-[10px] transition-colors",
+                            videoFlip === "v"
+                              ? "border-primary-500/70 bg-primary-500/15 text-white"
+                              : "border-white/10 text-zinc-400 hover:bg-white/5"
+                          )}
+                          title="Flip vertically"
+                        >
+                          <FlipVertical2 className="h-3.5 w-3.5" /> Flip
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Color adjust sliders */}
+                    <div className="space-y-3">
+                      {(
+                        [
+                          { label: "Brightness", icon: Sun, value: videoBrightness, set: setVideoBrightness, min: -50, max: 50 },
+                          { label: "Contrast", icon: Contrast, value: videoContrast, set: setVideoContrast, min: -50, max: 50 },
+                          { label: "Saturation", icon: Droplets, value: videoSaturation, set: setVideoSaturation, min: -100, max: 100 },
+                        ] as const
+                      ).map((row) => (
+                        <div key={row.label}>
+                          <div className="flex items-center gap-2 pb-1.5">
+                            <row.icon className="h-3.5 w-3.5 text-zinc-500" />
+                            <span className="text-xs text-zinc-300">{row.label}</span>
+                            <span className="ml-auto text-[10px] tabular-nums text-zinc-500">
+                              {row.value > 0 ? `+${row.value}` : row.value}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={row.min}
+                            max={row.max}
+                            step={1}
+                            value={row.value}
+                            onChange={(e) => row.set(Number(e.target.value))}
+                            className="h-1 w-full accent-primary-500"
+                            aria-label={row.label}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="text-[10px] leading-relaxed text-zinc-600">
+                      Volume applies on every render provider. Rotate, flip and
+                      color adjust are baked in by the Local/Modal renderer.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -2595,7 +2805,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       </div>
 
       {/* ---------- Toolbar ---------- */}
-      <div className="flex items-center gap-2 border-t border-white/[0.07] bg-white/[0.015] px-5 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-white/[0.015] px-3 py-2 sm:px-5">
         <button
           onClick={() => void handleSplit()}
           disabled={saving}
@@ -2614,7 +2824,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           Duplicate
         </button>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => setZoom((z) => clamp(z / 1.5, 4, 160))}
             aria-label="Zoom out"
@@ -2629,7 +2839,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             step={1}
             value={zoom}
             onChange={(e) => setZoom(Number(e.target.value))}
-            className="h-1 w-40 accent-primary-500"
+            className="h-1 w-24 accent-primary-500 sm:w-40"
             aria-label="Timeline zoom"
           />
           <button
