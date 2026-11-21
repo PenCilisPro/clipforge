@@ -120,3 +120,57 @@ export async function apiFetch<T = unknown>(
 
   return res.json() as Promise<T>;
 }
+
+/**
+ * Streaming variant of apiFetch: resolves with the raw Response so the
+ * caller can consume res.body incrementally (SSE). Mirrors the 401
+ * force-refresh retry; no transport retries (a POST stream must not
+ * double-send) and no deadline (a long stream is the point).
+ */
+export async function apiFetchStream(
+  path: string,
+  options: { method?: string; body?: unknown } = {}
+): Promise<Response> {
+  const supabase = createClient();
+  let refreshedOn401 = false;
+  let res!: Response;
+
+  while (true) {
+    const session = (await supabase.auth.getSession()).data.session;
+    if (!session) throw new Error("Not signed in");
+
+    res = await fetch(`${API_URL}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+
+    if (res.status === 401 && !refreshedOn401) {
+      refreshedOn401 = true;
+      try {
+        await supabase.auth.refreshSession();
+      } catch {
+        // Refresh itself failed — fall through and surface the 401.
+      }
+      continue;
+    }
+    break;
+  }
+
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data?.error) message = data.error;
+      if (typeof data?.code === "string") message += ` [${data.code}]`;
+    } catch {
+      // ignore body parse failures
+    }
+    throw new ApiError(message, res.status);
+  }
+
+  return res;
+}

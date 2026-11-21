@@ -1,38 +1,38 @@
 "use client";
 
-import { Star } from "lucide-react";
+import { Mic, Radio, GraduationCap, Briefcase } from "lucide-react";
 
 import { FadeIn } from "@/components/landing/fade-in";
 import { Card, CardContent } from "@/components/ui/card";
 
-const TESTIMONIALS = [
+/**
+ * Honest "Built for" section — real use cases the product handles, no
+ * invented quotes or subscriber counts.
+ */
+const USE_CASES = [
   {
-    quote:
-      "I used to spend every Sunday cutting my podcast into shorts. ClipForge does it before I finish my coffee — and its picks honestly outperform mine.",
-    name: "Maya Chen",
-    role: "Podcast Host, 200K subscribers",
-    initials: "MC",
+    icon: Mic,
+    title: "Podcasters",
+    description:
+      "Drop in your latest episode — ClipForge finds the hooks, cuts the clips and burns word-by-word captions while you record the next one.",
   },
   {
-    quote:
-      "We turned one 90-minute webinar into 14 clips and scheduled the whole month in an afternoon. The word-by-word captions get stopped on every time.",
-    name: "Jordan Okafor",
-    role: "Head of Content, B2B SaaS",
-    initials: "JO",
+    icon: Radio,
+    title: "Streamers",
+    description:
+      "Turn long streams and gaming sessions into vertical highlight clips sized for TikTok, Reels and Shorts — no timeline scrubbing required.",
   },
   {
-    quote:
-      "The virality scoring is scarily good. The clips it ranked 90+ were exactly the ones that hit a million views on TikTok.",
-    name: "Sofia Reyes",
-    role: "YouTube Educator, 1.2M subscribers",
-    initials: "SR",
+    icon: GraduationCap,
+    title: "Educators",
+    description:
+      "One webinar becomes a month of shareable clips. Key moments get hook-first edits with captions, ready to schedule or download.",
   },
   {
-    quote:
-      "No editing software, no freelancers, no render queue on my laptop. Paste link, wait, download, done. It just works.",
-    name: "Liam Gallagher",
-    role: "Creator & Agency Owner",
-    initials: "LG",
+    icon: Briefcase,
+    title: "Agencies & teams",
+    description:
+      "Batch-process client recordings, keep caption styling on-brand, and publish to every channel from one dashboard on a schedule.",
   },
 ];
 
@@ -42,39 +42,26 @@ export function Testimonials() {
       <div className="container">
         <FadeIn className="mx-auto max-w-2xl text-center">
           <h2 className="text-3xl font-bold tracking-tight md:text-4xl">
-            Creators ship more with ClipForge
+            Built for people who ship content
           </h2>
           <p className="mt-3 text-muted-foreground">
-            Thousands of podcasters, streamers and marketers post daily with
-            clips cut by ClipForge.
+            If you record long videos and need short ones, the pipeline is
+            already wired for your workflow.
           </p>
         </FadeIn>
 
         <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {TESTIMONIALS.map((t, i) => (
-            <FadeIn key={t.name} delay={i * 0.08}>
+          {USE_CASES.map((useCase, i) => (
+            <FadeIn key={useCase.title} delay={i * 0.08}>
               <Card className="flex h-full flex-col">
                 <CardContent className="flex flex-1 flex-col pt-6">
-                  <div className="flex gap-0.5">
-                    {Array.from({ length: 5 }).map((_, s) => (
-                      <Star
-                        key={s}
-                        className="h-3.5 w-3.5 fill-primary-500 text-primary-500"
-                      />
-                    ))}
-                  </div>
-                  <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
-                    “{t.quote}”
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-500/10">
+                    <useCase.icon className="h-5 w-5 text-primary-500" />
+                  </span>
+                  <h3 className="mt-4 text-sm font-semibold">{useCase.title}</h3>
+                  <p className="mt-2 flex-1 text-sm leading-relaxed text-muted-foreground">
+                    {useCase.description}
                   </p>
-                  <div className="mt-5 flex items-center gap-3">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full score-gradient text-xs font-bold text-white">
-                      {t.initials}
-                    </span>
-                    <div>
-                      <p className="text-sm font-semibold">{t.name}</p>
-                      <p className="text-xs text-muted-foreground">{t.role}</p>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
             </FadeIn>

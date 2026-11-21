@@ -5,7 +5,7 @@
  * promo banner, plan-upgrade bar, a central "get clips in 1 click" input
  * card, AI tools/recipe chips, demo projects and the user's projects below.
  */
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProjectCard } from "@/components/dashboard/project-card";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
 import { Reveal } from "@/components/dashboard/reveal";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
@@ -93,25 +94,37 @@ const TOOL_CHIPS: ToolChip[] = [
 
 export default function DashboardHome() {
   const router = useRouter();
+  const urlInputRef = useRef<HTMLInputElement>(null);
   const [firstName, setFirstName] = useState<string>("there");
+  const [userId, setUserId] = useState<string | null>(null);
   const [plan, setPlan] = useState<string>("free");
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"clips" | "transcript">("clips");
   const [promoHidden, setPromoHidden] = useState(true);
   const [showAllRecipes, setShowAllRecipes] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(true);
 
+  // Per-user dismissal flags (keyed by uid so a shared browser stays tidy).
   useEffect(() => {
     setPromoHidden(localStorage.getItem(PROMO_KEY) === "1");
   }, []);
 
-  // Profile bits for the greeting + upgrade bar.
+  // Profile bits for the greeting + upgrade bar + onboarding key.
   useEffect(() => {
-    apiFetch<{ profile: { display_name?: string | null; plan?: string } }>("/api/me")
+    apiFetch<{ profile: { id?: string; display_name?: string | null; plan?: string } }>(
+      "/api/me"
+    )
       .then(({ profile }) => {
         const name = profile.display_name?.trim();
         if (name) setFirstName(name.split(" ")[0]);
         if (profile.plan) setPlan(profile.plan);
+        if (profile.id) {
+          setUserId(profile.id);
+          setOnboardingDismissed(
+            localStorage.getItem(`cf-onboarding-dismissed-${profile.id}`) === "1"
+          );
+        }
       })
       .catch(() => {});
   }, []);
@@ -168,6 +181,65 @@ export default function DashboardHome() {
   }, []);
 
   const newestProjectId = useMemo(() => projects?.[0]?.id ?? null, [projects]);
+
+  // Onboarding: shown to NEW accounts only (no projects at first load) until
+  // dismissed — existing accounts are marked eligible=false and never see it.
+  // Once the pipeline completes the card celebrates, then auto-dismisses.
+  const [onboardingEligible, setOnboardingEligible] = useState<boolean | null>(null);
+  const eligibilityCheckedRef = useRef(false);
+  const pipelineDone = (projects ?? []).some((p) => p.status === "done");
+  const onboardingSteps = useMemo(
+    () => [
+      {
+        key: "link",
+        label: "Paste a video link and create your first project",
+        done: (projects?.length ?? 0) > 0,
+      },
+      {
+        key: "pipeline",
+        label: "Watch the pipeline transcribe, analyze and render",
+        done: pipelineDone,
+      },
+      {
+        key: "share",
+        label: "Open your project to download or schedule the clips",
+        // The CTA unlocks with the finished render — completing all three.
+        done: pipelineDone,
+      },
+    ],
+    [projects, pipelineDone]
+  );
+  const allStepsDone = onboardingSteps.every((s) => s.done);
+  const showOnboarding = onboardingEligible === true && !onboardingDismissed;
+
+  function dismissOnboarding() {
+    setOnboardingDismissed(true);
+    if (userId) localStorage.setItem(`cf-onboarding-dismissed-${userId}`, "1");
+  }
+
+  // Decide eligibility on the first real projects load: an account that
+  // already has projects skips onboarding permanently.
+  useEffect(() => {
+    if (projects === null || eligibilityCheckedRef.current) return;
+    eligibilityCheckedRef.current = true;
+    const dismissed = userId
+      ? localStorage.getItem(`cf-onboarding-dismissed-${userId}`) === "1"
+      : false;
+    if (projects.length > 0 || dismissed) {
+      setOnboardingEligible(false);
+      setOnboardingDismissed(true);
+    } else {
+      setOnboardingEligible(true);
+    }
+  }, [projects, userId]);
+
+  // Celebrate + auto-dismiss shortly after the first render finishes.
+  useEffect(() => {
+    if (!allStepsDone || !showOnboarding) return;
+    const t = setTimeout(dismissOnboarding, 9000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allStepsDone, showOnboarding]);
 
   function handleChip(chip: ToolChip) {
     if (chip.href) {
@@ -309,6 +381,7 @@ export default function DashboardHome() {
               <div className="relative flex-1">
                 <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
+                  ref={urlInputRef}
                   type="url"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
@@ -345,6 +418,19 @@ export default function DashboardHome() {
           </div>
         </div>
       </Reveal>
+
+      {/* First-run onboarding — hidden once any project renders or it's dismissed */}
+      <OnboardingCard
+        active={showOnboarding}
+        steps={onboardingSteps}
+        onDismiss={dismissOnboarding}
+        onOpenProject={dismissOnboarding}
+        newestProjectId={newestProjectId}
+        onPasteLink={() => {
+          urlInputRef.current?.focus();
+          urlInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}
+      />
 
       {/* AI tools & quick recipes */}
       <Reveal delay={0.1}>
@@ -429,12 +515,16 @@ export default function DashboardHome() {
             ))}
           </div>
         ) : projects.length === 0 ? (
-          <div className="mt-4 rounded-xl border border-dashed p-10 text-center">
-            <p className="font-medium">No projects yet</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Paste a link above and ClipForge will find the viral moments for you.
-            </p>
-          </div>
+          // While onboarding is visible the checklist card above covers the
+          // empty state — avoid repeating it twice on one screen.
+          showOnboarding ? null : (
+            <div className="mt-4 rounded-xl border border-dashed p-10 text-center">
+              <p className="font-medium">No projects yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Paste a link above and ClipForge will find the viral moments for you.
+              </p>
+            </div>
+          )
         ) : (
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             {projects.map((project, i) => (

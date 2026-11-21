@@ -2,7 +2,11 @@
 
 import { FadeIn } from "@/components/landing/fade-in";
 
-const LOGOS = ["Podium", "Wavecast", "CreatorLab", "Streamly", "ReelReach"];
+/**
+ * Honest "works with" strip — the source types the downloader actually
+ * supports. No invented customer logos.
+ */
+const SOURCES = ["YouTube", "Twitch", "Zoom", "Vimeo", "Podcast hosts"];
 
 export function TrustBar() {
   return (
@@ -10,15 +14,15 @@ export function TrustBar() {
       <div className="container">
         <FadeIn>
           <p className="text-center text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Powering clips for teams and creators at
+            Works with
           </p>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-x-12 gap-y-4">
-            {LOGOS.map((logo) => (
+            {SOURCES.map((source) => (
               <span
-                key={logo}
-                className="select-none text-xl font-bold tracking-tight text-muted-foreground/50 transition-colors hover:text-muted-foreground"
+                key={source}
+                className="select-none text-xl font-bold tracking-tight text-muted-foreground/60 transition-colors hover:text-foreground"
               >
-                {logo}
+                {source}
               </span>
             ))}
           </div>

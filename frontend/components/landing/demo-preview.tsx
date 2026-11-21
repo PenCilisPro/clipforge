@@ -5,6 +5,14 @@ import { Check } from "lucide-react";
 import { FadeIn } from "@/components/landing/fade-in";
 import { Badge } from "@/components/ui/badge";
 
+/**
+ * Real footage (public CC sample), played in both frames with the product's
+ * animated caption overlay on the vertical "after" — the same mechanism the
+ * renderer burns in. Muted loops autoplay inline.
+ */
+const DEMO_VIDEO =
+  "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+
 export function DemoPreview() {
   return (
     <section id="demo" className="py-20 md:py-28">
@@ -27,13 +35,16 @@ export function DemoPreview() {
                 <span className="text-sm font-semibold">Before</span>
                 <Badge variant="secondary">Raw 16:9 source</Badge>
               </div>
-              <div className="relative aspect-video overflow-hidden rounded-lg bg-gradient-to-br from-zinc-700 to-zinc-900">
-                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-medium text-zinc-400">
-                  No captions · landscape · 60 min long
-                </div>
-                <div className="absolute bottom-2 left-2 right-2 h-1 overflow-hidden rounded-full bg-zinc-600">
-                  <div className="h-full w-1/4 rounded-full bg-zinc-400" />
-                </div>
+              <div className="relative aspect-video overflow-hidden rounded-lg bg-zinc-900">
+                <video
+                  src={DEMO_VIDEO}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  preload="metadata"
+                  className="h-full w-full object-cover"
+                />
               </div>
               <ul className="mt-3 space-y-1.5 text-sm text-muted-foreground">
                 <li className="flex items-center gap-2">
@@ -65,7 +76,16 @@ export function DemoPreview() {
                   92 virality score
                 </Badge>
               </div>
-              <div className="relative mx-auto aspect-[9/16] max-w-[240px] overflow-hidden rounded-xl bg-gradient-to-b from-zinc-700 via-zinc-800 to-zinc-900">
+              <div className="relative mx-auto aspect-[9/16] max-w-[240px] overflow-hidden rounded-xl bg-zinc-900">
+                <video
+                  src={DEMO_VIDEO}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  preload="metadata"
+                  className="h-full w-full object-cover"
+                />
                 <span className="score-gradient absolute right-1.5 top-1.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold text-white">
                   0:34
                 </span>
@@ -77,7 +97,7 @@ export function DemoPreview() {
                         className={
                           i === 2
                             ? "animate-caption rounded bg-primary-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white"
-                            : "rounded px-1.5 py-0.5 text-[10px] font-extrabold text-white drop-shadow"
+                            : "rounded bg-black/40 px-1.5 py-0.5 text-[10px] font-extrabold text-white drop-shadow"
                         }
                         style={{ animationDelay: `${i * 0.14}s` }}
                       >

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ArrowRight, PlayCircle, Sparkles, Star } from "lucide-react";
+import { ArrowRight, PlayCircle, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -12,18 +12,24 @@ const CLIP_PREVIEWS = [
     score: 92,
     words: ["THE", "$10M", "MISTAKE", "NOBODY", "TALKS"],
     highlight: 1,
+    video:
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
   },
   {
     title: "Why your first\n100 videos flopped",
     score: 87,
     words: ["WHY", "YOUR", "FIRST", "100", "VIDEOS"],
     highlight: 2,
+    video:
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
   },
   {
     title: "This changed how\nI hire forever",
     score: 81,
     words: ["THIS", "CHANGED", "HOW", "I", "HIRE"],
     highlight: 0,
+    video:
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
   },
 ];
 
@@ -100,12 +106,8 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.4 }}
           className="mt-6 flex items-center gap-2 text-sm text-muted-foreground"
         >
-          <span className="flex">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Star key={i} className="h-4 w-4 fill-primary-500 text-primary-500" />
-            ))}
-          </span>
-          Trusted by 10,000+ creators
+          <Sparkles className="h-4 w-4 text-primary-500" />
+          Free plan available — no credit card required
         </motion.div>
 
         {/* Hero visual: long video -> vertical clips */}
@@ -156,7 +158,7 @@ export function Hero() {
               <div className="h-px w-16 bg-gradient-to-r from-primary-500 to-transparent lg:h-16 lg:w-px lg:bg-gradient-to-b" />
             </div>
 
-            {/* vertical clips mock */}
+            {/* vertical clips — real looping footage with the caption overlay */}
             <div className="grid w-full max-w-md grid-cols-3 gap-3">
               {CLIP_PREVIEWS.map((clip, idx) => (
                 <div
@@ -164,7 +166,16 @@ export function Hero() {
                   className="animate-float rounded-xl border bg-card p-1.5 shadow-lg"
                   style={{ animationDelay: `${idx * 0.6}s` }}
                 >
-                  <div className="relative aspect-[9/16] overflow-hidden rounded-lg bg-gradient-to-b from-zinc-700 via-zinc-800 to-zinc-900">
+                  <div className="relative aspect-[9/16] overflow-hidden rounded-lg bg-zinc-900">
+                    <video
+                      src={clip.video}
+                      autoPlay
+                      muted
+                      loop
+                      playsInline
+                      preload="metadata"
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
                     <span className="score-gradient absolute right-1 top-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold text-white">
                       {clip.score}
                     </span>
@@ -175,7 +186,7 @@ export function Hero() {
                           className={
                             wi === clip.highlight
                               ? "animate-caption rounded bg-primary-500 px-1 py-0.5 text-[9px] font-extrabold text-white"
-                              : "rounded px-1 py-0.5 text-[9px] font-extrabold text-white drop-shadow"
+                              : "rounded bg-black/40 px-1 py-0.5 text-[9px] font-extrabold text-white drop-shadow"
                           }
                           style={{ animationDelay: `${wi * 0.12}s` }}
                         >

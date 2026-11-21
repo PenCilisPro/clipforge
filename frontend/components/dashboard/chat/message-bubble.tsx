@@ -73,7 +73,14 @@ const markdownComponents = {
   },
 };
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+export function MessageBubble({
+  message,
+  streaming = false,
+}: {
+  message: ChatMessage;
+  /** True while tokens are still arriving — shows a blinking caret. */
+  streaming?: boolean;
+}) {
   const isUser = message.role === "user";
   return (
     <motion.div
@@ -123,9 +130,17 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             {isUser ? (
               message.content
             ) : (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {message.content}
-              </ReactMarkdown>
+              <>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {message.content}
+                </ReactMarkdown>
+                {streaming && (
+                  <span
+                    aria-hidden
+                    className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-[2px] animate-pulse rounded-sm bg-primary-500"
+                  />
+                )}
+              </>
             )}
           </div>
         )}

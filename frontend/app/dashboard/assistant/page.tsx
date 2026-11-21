@@ -9,7 +9,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Bot, PanelLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiFetchStream } from "@/lib/api";
 import {
   chatUuid,
   loadStore,
@@ -75,6 +75,7 @@ export default function AssistantPage() {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [streamingId, setStreamingId] = useState<string | null>(null);
   const [credits, setCredits] = useState<number | null>(null);
   const [railOpen, setRailOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -109,6 +110,14 @@ export default function AssistantPage() {
   function updateThread(id: string, updater: (t: ChatThread) => ChatThread) {
     const next = storeRef.current.threads.map((t) => (t.id === id ? updater(t) : t));
     commit({ threads: next, activeId: storeRef.current.activeId });
+  }
+
+  /** State-only update used while tokens stream in — localStorage is
+   *  written once when the stream completes, not on every token. */
+  function updateThreadTransient(id: string, updater: (t: ChatThread) => ChatThread) {
+    const next = storeRef.current.threads.map((t) => (t.id === id ? updater(t) : t));
+    storeRef.current = { threads: next, activeId: storeRef.current.activeId };
+    setThreads(next);
   }
 
   function handleNew() {
@@ -151,41 +160,107 @@ export default function AssistantPage() {
       images: images.length > 0 ? images : undefined,
       createdAt: Date.now(),
     };
+    // The assistant bubble is inserted empty and fills in as tokens stream.
+    const assistantId = chatUuid();
     updateThread(threadId, (t) => ({
       ...t,
       title: isFirstMessage ? titleFromMessage(text || "Photos") : t.title,
       updatedAt: Date.now(),
-      messages: [...t.messages, optimistic],
+      messages: [
+        ...t.messages,
+        optimistic,
+        { id: assistantId, role: "assistant" as const, content: "", createdAt: Date.now() },
+      ],
     }));
     setSending(true);
+    setStreamingId(assistantId);
+    let partial = "";
     try {
       const snapshot = storeRef.current.threads.find((t) => t.id === threadId);
       if (!snapshot) throw new Error("Thread vanished");
-      const { reply, credits_remaining } = await apiFetch<{
-        reply: string;
-        credits_remaining: number | null;
-      }>("/api/chat", {
-        method: "POST",
-        body: { messages: toApiMessages(snapshot) },
+      const apiMessages = toApiMessages({
+        ...snapshot,
+        messages: snapshot.messages.filter((m) => m.id !== assistantId),
       });
-      if (credits_remaining != null) setCredits(credits_remaining);
-      updateThread(threadId, (t) => ({
-        ...t,
-        updatedAt: Date.now(),
-        messages: [
-          ...t.messages,
-          { id: chatUuid(), role: "assistant", content: reply, createdAt: Date.now() },
-        ],
-      }));
+      const res = await apiFetchStream("/api/chat", {
+        method: "POST",
+        body: { messages: apiMessages },
+      });
+
+      // Read the backend's SSE lines: {t: "token"} deltas, {done, credits_remaining}
+      // and possibly {error}. Split across chunk boundaries safely.
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamError: string | null = null;
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line.startsWith("data:")) continue;
+            try {
+              const event = JSON.parse(line.slice(5).trim());
+              if (typeof event.t === "string" && event.t) {
+                partial += event.t;
+                updateThreadTransient(threadId, (t) => ({
+                  ...t,
+                  messages: t.messages.map((m) =>
+                    m.id === assistantId ? { ...m, content: partial } : m
+                  ),
+                }));
+              } else if (event.error) {
+                streamError = String(event.error);
+              } else if (event.done) {
+                if (event.credits_remaining != null) setCredits(Number(event.credits_remaining));
+              }
+            } catch {
+              // Keepalive/comment line — ignore.
+            }
+          }
+        }
+      }
+
+      if (streamError && !partial) {
+        // Nothing arrived — remove both messages so the user can retry clean.
+        updateThread(threadId, (t) => ({
+          ...t,
+          messages: t.messages.filter((m) => m.id !== optimistic.id && m.id !== assistantId),
+        }));
+        toast.error(streamError);
+      } else {
+        // Keep whatever streamed (partial text survives an upstream hiccup)
+        // and persist the final thread to localStorage.
+        if (streamError) toast.error(streamError);
+        updateThread(threadId, (t) => ({
+          ...t,
+          updatedAt: Date.now(),
+          messages: t.messages.map((m) => (m.id === assistantId ? { ...m, content: partial } : m)),
+        }));
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "The assistant is unavailable");
-      // Drop the optimistic message so the user can retry cleanly.
-      updateThread(threadId, (t) => ({
-        ...t,
-        messages: t.messages.filter((m) => m.id !== optimistic.id),
-      }));
+      if (partial) {
+        // Tokens already landed — keep them; the reply just ended early.
+        updateThread(threadId, (t) => ({
+          ...t,
+          updatedAt: Date.now(),
+          messages: t.messages.map((m) => (m.id === assistantId ? { ...m, content: partial } : m)),
+        }));
+      } else {
+        // Drop both messages so the user can retry cleanly.
+        updateThread(threadId, (t) => ({
+          ...t,
+          messages: t.messages.filter((m) => m.id !== optimistic.id && m.id !== assistantId),
+        }));
+      }
     } finally {
       setSending(false);
+      setStreamingId(null);
     }
   }
 
@@ -316,9 +391,20 @@ export default function AssistantPage() {
               </div>
             )}
             {activeThread?.messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                streaming={message.id === streamingId}
+              />
             ))}
-            <AnimatePresence>{sending && <ThinkingDots />}</AnimatePresence>
+            {/* Dots only until the first token lands — the streaming bubble
+                with its caret takes over from there. */}
+            <AnimatePresence>
+              {sending &&
+                !activeThread?.messages.some(
+                  (m) => m.id === streamingId && m.content.length > 0
+                ) && <ThinkingDots />}
+            </AnimatePresence>
             <div ref={bottomRef} />
           </div>
 

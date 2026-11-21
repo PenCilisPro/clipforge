@@ -46,8 +46,12 @@ function hasImages(messages) {
   );
 }
 
-/** Chat with the assistant GLM model (any signed-in user). */
+/** Chat with the assistant GLM model (any signed-in user). Streams tokens
+ *  as server-sent events; a full JSON response is kept for pre-stream
+ *  failures (validation, credits, upstream 4xx/5xx) so the client can show
+ *  the same error toasts as before. */
 router.post("/api/chat", requireAuth, async (req, res, next) => {
+  let sseStarted = false;
   try {
     if (!env.chatApiKey) {
       return res
@@ -90,12 +94,13 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
         model,
         temperature: 0.6,
         max_tokens: 1024,
+        stream: true,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           ...messages.map((m) => ({ role: m.role, content: m.content })),
         ],
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
     if (!aiRes.ok) {
       const detail = (await aiRes.text()).slice(0, 300);
@@ -104,22 +109,85 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
         .status(502)
         .json({ error: "The assistant is unavailable right now — try again shortly." });
     }
-
-    const reply = (await aiRes.json())?.choices?.[0]?.message?.content;
-    if (!reply) {
+    if (!aiRes.body) {
       return res.status(502).json({ error: "The assistant returned an empty reply." });
     }
 
-    // Charge atomically — a read-then-write here would race on concurrent
-    // messages and overdraw credits. Null result means insufficient credits.
+    // Switch the response to server-sent events. A JSON body with status 200
+    // would also work for the client, but SSE lets tokens land as they come.
+    sseStarted = true;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      // Nginx/proxies buffer responses unless told otherwise.
+      "X-Accel-Buffering": "no",
+    });
+
+    const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+    // Upstream streams OpenAI-style SSE lines: `data: {delta…}` … `data: [DONE]`.
+    // Chunks can split lines, so carry the remainder across reads.
+    let buffer = "";
+    let reply = "";
+    let upstreamError = null;
+    const reader = aiRes.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed?.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) {
+            reply += delta;
+            send({ t: delta });
+          }
+        } catch {
+          // Non-JSON keepalive/comment line — ignore.
+        }
+      }
+    }
+
+    if (!reply.trim()) {
+      upstreamError = "The assistant returned an empty reply.";
+    }
+
+    if (upstreamError) {
+      send({ error: upstreamError });
+      res.end();
+      return;
+    }
+
+    // Charge atomically once the reply is fully delivered — a read-then-write
+    // would race on concurrent messages and overdraw credits.
     const { data: left, error: chargeError } = await supabaseAdmin.rpc("deduct_credits", {
       p_user_id: req.user.id,
       p_amount: 1,
     });
     if (chargeError) console.error("[chat] credit charge failed:", chargeError.message);
 
-    res.json({ reply, credits_remaining: left != null ? Number(left) : null });
+    send({ done: true, credits_remaining: left != null ? Number(left) : null });
+    res.end();
   } catch (err) {
+    if (sseStarted) {
+      // Headers are already out — report the failure inside the stream.
+      try {
+        res.write(`data: ${JSON.stringify({ error: "The assistant stream failed." })}\n\n`);
+        res.end();
+      } catch {
+        // Client already gone.
+      }
+      return;
+    }
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: err.issues[0]?.message ?? "Invalid chat body" });
     }
