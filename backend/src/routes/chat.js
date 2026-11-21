@@ -13,12 +13,38 @@ Help users with how to use the app, content-creation tips, and troubleshooting. 
 
 const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
-  content: z.string().trim().min(1).max(4000),
+  // Plain string, or OpenAI-style content parts when the user attached
+  // photos (text + image_url parts). GLM vision models accept both shapes.
+  content: z.union([
+    z.string().trim().min(1).max(4000),
+    z
+      .array(
+        z.union([
+          z.object({
+            type: z.literal("text"),
+            text: z.string().trim().min(1).max(4000),
+          }),
+          z.object({
+            type: z.literal("image_url"),
+            image_url: z.object({ url: z.string().url().max(4000) }),
+          }),
+        ])
+      )
+      .min(1)
+      .max(8),
+  ]),
 });
 
 const chatSchema = z.object({
   messages: z.array(messageSchema).min(1).max(24),
 });
+
+/** Does any message carry image parts? */
+function hasImages(messages) {
+  return messages.some(
+    (m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")
+  );
+}
 
 /** Chat with the assistant GLM model (any signed-in user). */
 router.post("/api/chat", requireAuth, async (req, res, next) => {
@@ -30,6 +56,14 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
     }
 
     const { messages } = chatSchema.parse(req.body);
+    // Image understanding runs on a separate vision model (text-only on the
+    // default chat model would silently ignore the pictures).
+    if (hasImages(messages) && !env.chatVisionModel) {
+      return res
+        .status(501)
+        .json({ error: "Image understanding isn't configured yet — text still works." });
+    }
+    const model = hasImages(messages) ? env.chatVisionModel : env.chatModel;
 
     // Each assistant reply costs 1 credit — block users who are out.
     // (Monthly plan allotments are applied first when due.)
@@ -53,7 +87,7 @@ router.post("/api/chat", requireAuth, async (req, res, next) => {
         Authorization: `Bearer ${env.chatApiKey}`,
       },
       body: JSON.stringify({
-        model: env.chatModel,
+        model,
         temperature: 0.6,
         max_tokens: 1024,
         messages: [

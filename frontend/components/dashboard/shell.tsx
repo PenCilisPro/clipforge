@@ -7,6 +7,7 @@ import {
   Bot,
   CalendarClock,
   Clapperboard,
+  House,
   Link2,
   MessageSquare,
   PlusCircle,
@@ -19,15 +20,16 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
 import { UserMenu } from "@/components/dashboard/user-menu";
+import { NotificationsBell } from "@/components/dashboard/notifications-bell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { isAdminEmail } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  // The first tab users see after login — the New Project page.
+  // The dashboard launcher — the first tab users see after login.
+  { label: "Home", href: "/dashboard", icon: House },
   { label: "New Project", href: "/dashboard/new", icon: PlusCircle },
-  { label: "Projects", href: "/dashboard", icon: Clapperboard },
   { label: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
   { label: "Calendar", href: "/dashboard/calendar", icon: CalendarClock },
   { label: "AI Assistant", href: "/dashboard/assistant", icon: Bot },
@@ -161,6 +163,24 @@ export function DashboardShell({
             <span>Welcome back, {user.displayName.split(" ")[0]}</span>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="px-2 font-medium text-foreground sm:px-3"
+              title="Your remaining credits"
+            >
+              <Link href="/dashboard/billing">
+                <Zap className="h-4 w-4 text-primary-500" />
+                <span className="tabular-nums">{profile.creditsRemaining}</span>
+              </Link>
+            </Button>
+            <Button asChild size="sm" className="hidden px-3 sm:inline-flex">
+              <Link href="/dashboard/billing">
+                <PlusCircle className="h-4 w-4" /> Add credits
+              </Link>
+            </Button>
+            <NotificationsBell />
             <Button asChild variant="ghost" size="sm" className="px-2 sm:px-3">
               <Link href="/pricing">
                 <Tag className="h-4 w-4" />

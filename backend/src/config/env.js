@@ -104,6 +104,8 @@ export const env = {
     process.env.ZAI_API_BASE_URL ??
     "https://api.z.ai/api/paas/v4",
   chatModel: process.env.CHAT_MODEL ?? "glm-4.5-flash",
+  // Vision model used when a chat message carries images (GLM-4.5V family).
+  chatVisionModel: process.env.CHAT_VISION_MODEL ?? "glm-4.5v",
   pexelsApiKey: process.env.PEXELS_API_KEY,
   pixabayApiKey: process.env.PIXABAY_API_KEY,
 };

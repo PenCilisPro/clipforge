@@ -1,41 +1,133 @@
 "use client";
 
-import { useEffect, useState } from "react";
+/**
+ * Dashboard home — OpusClip-style launcher in ClipForge's brand orange:
+ * promo banner, plan-upgrade bar, a central "get clips in 1 click" input
+ * card, AI tools/recipe chips, demo projects and the user's projects below.
+ */
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
+import { AnimatePresence, motion } from "framer-motion";
+import { toast } from "sonner";
+import {
+  ArrowRight,
+  Bot,
+  Captions,
+  Clapperboard,
+  Crop,
+  Crown,
+  FileText,
+  Gamepad2,
+  Languages,
+  Link2,
+  Loader2,
+  Music4,
+  Scan,
+  Sparkles,
+  Trophy,
+  Upload,
+  Wand2,
+  X,
+} from "lucide-react";
 
 import { auth } from "@/lib/firebase";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProjectCard } from "@/components/dashboard/project-card";
 import { Reveal } from "@/components/dashboard/reveal";
 import { createClient } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
 import type { Project } from "@/lib/types";
 
-export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[] | null>(null);
+const PROMO_KEY = "cf-promo-dismissed";
 
+/** Well-known Creative Commons sample videos (downloads cost no credits). */
+const DEMO_PROJECTS = [
+  {
+    label: "Gaming stream highlights",
+    icon: Gamepad2,
+    gradient: "from-violet-600/70 via-purple-600/50 to-fuchsia-500/40",
+    url: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    title: "Demo: Gaming stream",
+  },
+  {
+    label: "Sports commentary",
+    icon: Trophy,
+    gradient: "from-emerald-600/70 via-teal-600/50 to-cyan-500/40",
+    url: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
+    title: "Demo: Sports commentary",
+  },
+  {
+    label: "Music interview",
+    icon: Music4,
+    gradient: "from-primary-600/70 via-primary-500/50 to-amber-500/40",
+    url: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+    title: "Demo: Music interview",
+  },
+];
+
+type ToolChip = {
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  /** Where a working tool navigates; null = "Soon". */
+  href: string | null;
+  description: string;
+};
+
+const TOOL_CHIPS: ToolChip[] = [
+  { label: "Preset templates", icon: Wand2, href: "/dashboard/new", description: "Start from a caption template" },
+  { label: "Captions", icon: Captions, href: "/dashboard/new", description: "Animated word-by-word captions" },
+  { label: "Clip gaming streams", icon: Gamepad2, href: "/dashboard/new", description: "Tune the AI for gameplay footage" },
+  { label: "Auto-edit talking videos", icon: Bot, href: "/dashboard/new", description: "Best for podcasts & interviews" },
+  { label: "Reframe to 9:16", icon: Crop, href: "/dashboard/new", description: "Every render is vertical by default" },
+  { label: "AI B-roll", icon: Clapperboard, href: null, description: "Planned in the clip editor" },
+  { label: "Social edits", icon: Link2, href: "/dashboard/connections", description: "Connect YouTube, TikTok, Instagram…" },
+  { label: "Google Drive import", icon: Upload, href: null, description: "Import straight from Drive" },
+  { label: "Upscale resolution", icon: Scan, href: null, description: "Enhance to higher resolution" },
+  { label: "Clean up recording", icon: Sparkles, href: null, description: "Remove noise & filler words" },
+  { label: "Translate & dub", icon: Languages, href: null, description: "Dub clips into other languages" },
+];
+
+export default function DashboardHome() {
+  const router = useRouter();
+  const [firstName, setFirstName] = useState<string>("there");
+  const [plan, setPlan] = useState<string>("free");
+  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<"clips" | "transcript">("clips");
+  const [creating, setCreating] = useState(false);
+  const [promoHidden, setPromoHidden] = useState(true);
+  const [showAllRecipes, setShowAllRecipes] = useState(false);
+
+  useEffect(() => {
+    setPromoHidden(localStorage.getItem(PROMO_KEY) === "1");
+  }, []);
+
+  // Profile bits for the greeting + upgrade bar.
+  useEffect(() => {
+    apiFetch<{ profile: { display_name?: string | null; plan?: string } }>("/api/me")
+      .then(({ profile }) => {
+        const name = profile.display_name?.trim();
+        if (name) setFirstName(name.split(" ")[0]);
+        if (profile.plan) setPlan(profile.plan);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Projects list — backend first, Firestore fallback (unchanged logic).
   useEffect(() => {
     const supabase = createClient();
     let cancelled = false;
 
-    // Primary path: the backend's admin-SDK read. One round trip returns
-    // projects AND their clip counts, and it doesn't share a transport with
-    // the Firestore client on this page.
     async function loadViaBackend(): Promise<Project[]> {
-      const { projects } = await apiFetch<{ projects: Project[] }>(
-        "/api/projects"
-      );
+      const { projects } = await apiFetch<{ projects: Project[] }>("/api/projects");
       return projects ?? [];
     }
 
-    // Fallback path: the Firestore shim. Its transport intermittently dies
-    // with "INTERNAL ASSERTION FAILED: Unexpected state", and embed counts
-    // cost one query per project, so it's slow — but it works when the
-    // backend is unreachable. Race it with a timeout so a hang can't leave
-    // the skeletons up forever.
     async function loadViaFirestore(): Promise<Project[]> {
       const result = await Promise.race([
         supabase
@@ -53,15 +145,13 @@ export default function ProjectsPage() {
 
     async function load() {
       try {
-        const projects = await loadViaBackend();
-        if (!cancelled) setProjects(projects);
-        dropRealtime();
+        const loaded = await loadViaBackend();
+        if (!cancelled) setProjects(loaded);
       } catch (backendErr) {
         console.warn("Backend project read failed, using Firestore:", backendErr);
         try {
-          const projects = await loadViaFirestore();
-          if (!cancelled) setProjects(projects);
-          ensureRealtime();
+          const loaded = await loadViaFirestore();
+          if (!cancelled) setProjects(loaded);
         } catch (e) {
           console.error("Failed to load projects:", e);
           if (!cancelled) setProjects((prev) => (prev === null ? [] : prev));
@@ -69,96 +159,309 @@ export default function ProjectsPage() {
       }
     }
 
-    // The query needs the Firebase session (apiFetch attaches the ID token);
-    // load once auth is ready. Don't also call load() unconditionally —
-    // that duplicated every request and the pre-auth call stalled on the
-    // shim's 3s auth wait.
     const unsub = onAuthStateChanged(auth, (user) => {
       if (user) load();
     });
 
-    // Realtime refresh is a fallback-only affordance: while the backend is
-    // healthy it's the source of truth and the page reloads on demand, so
-    // keeping a Firestore onSnapshot channel open just wedges the flaky
-    // client transport ("INTERNAL ASSERTION FAILED") and re-triggers load()
-    // in a loop. Subscribe only after a backend failure, drop it on recovery.
-    let channel: ReturnType<typeof supabase.channel> | undefined;
-    function ensureRealtime() {
-      if (channel) return;
-      channel = supabase
-        .channel("projects-list")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "projects" },
-          () => load()
-        )
-        .subscribe();
-    }
-    function dropRealtime() {
-      if (channel) {
-        supabase.removeChannel(channel);
-        channel = undefined;
-      }
-    }
-
     return () => {
       cancelled = true;
       unsub();
-      dropRealtime();
     };
   }, []);
 
-  return (
-    <Reveal className="mx-auto max-w-5xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Projects</h1>
-          <p className="text-sm text-muted-foreground">
-            Paste a link or upload a video to forge new clips.
-          </p>
-        </div>
-        <Button asChild>
-          <Link href="/dashboard/new">
-            <Plus /> New Project
-          </Link>
-        </Button>
-      </div>
+  const newestProjectId = useMemo(() => projects?.[0]?.id ?? null, [projects]);
 
-      {projects === null ? (
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
-          {[1, 2, 3, 4].map((i) => (
-            <Skeleton key={i} className="h-36 rounded-xl" />
-          ))}
-        </div>
-      ) : projects.length === 0 ? (
-        <div className="mt-16 rounded-xl border border-dashed p-12 text-center">
-          <p className="font-medium">No projects yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Create your first project and ClipForge will find the viral moments
-            for you.
-          </p>
-          <Button asChild className="mt-5">
-            <Link href="/dashboard/new">
-              <Plus /> Create Project
+  function handleChip(chip: ToolChip) {
+    if (chip.href) {
+      router.push(chip.href);
+      return;
+    }
+    if (chip.label === "AI B-roll" && newestProjectId) {
+      router.push(`/dashboard/projects/${newestProjectId}`);
+      toast.info("AI B-roll lives in the clip editor — open any ready clip.");
+      return;
+    }
+    toast.info(`${chip.label} is coming soon — stay tuned!`);
+  }
+
+  async function createFromUrl() {
+    const link = url.trim();
+    if (!link || creating) return;
+    setCreating(true);
+    try {
+      const { project } = await apiFetch<{ project: Project }>("/api/projects", {
+        method: "POST",
+        body: { source_type: "url", source_url: link, mode },
+      });
+      toast.success(
+        mode === "transcript" ? "Transcribing — transcript will appear on the project page" : "Clips incoming — follow progress on the project page"
+      );
+      router.push(`/dashboard/projects/${project.id}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create project");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-8">
+      {/* Promo banner */}
+      <AnimatePresence>
+        {!promoHidden && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.3 }}
+            className="relative overflow-hidden rounded-xl border border-primary-500/40 bg-gradient-to-r from-primary-500/15 via-primary-500/10 to-transparent px-4 py-3"
+          >
+            <Link
+              href="/dashboard/assistant"
+              className="group flex items-center gap-2 text-sm"
+            >
+              <Sparkles className="h-4 w-4 shrink-0 text-primary-500" />
+              <span className="flex-1">
+                <span className="font-medium">The new ClipForge is live:</span>{" "}
+                <span className="text-muted-foreground">
+                  multi-chat AI assistant, manual timeline editor & transcript exports.
+                </span>{" "}
+                <span className="inline-flex items-center gap-0.5 font-medium text-primary-600 dark:text-primary-400">
+                  Try it <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                </span>
+              </span>
             </Link>
-          </Button>
-        </div>
-      ) : (
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
-          {projects.map((project, i) => (
-            <Reveal key={project.id} delay={i * 0.06}>
-              <ProjectCard
-                project={project}
-                onDeleted={(id) =>
-                  setProjects((prev) =>
-                    prev ? prev.filter((p) => p.id !== id) : prev
-                  )
-                }
-              />
-            </Reveal>
-          ))}
-        </div>
+            <button
+              type="button"
+              aria-label="Dismiss banner"
+              className="absolute right-2 top-2 rounded p-1 text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setPromoHidden(true);
+                localStorage.setItem(PROMO_KEY, "1");
+              }}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Plan upgrade bar (free plan only) */}
+      {plan === "free" && (
+        <Reveal>
+          <div className="flex flex-wrap items-center justify-center gap-3 rounded-xl border bg-muted/50 px-4 py-2.5 text-sm">
+            <Crown className="h-4 w-4 text-primary-500" />
+            <span className="text-muted-foreground">
+              Unlock watermark-free exports and more clips per video.
+            </span>
+            <Button asChild size="sm" variant="outline" className="border-primary-500/60 text-primary-600 hover:bg-primary-500/10 dark:text-primary-400">
+              <Link href="/dashboard/upgrade">Upgrade plan</Link>
+            </Button>
+          </div>
+        </Reveal>
       )}
-    </Reveal>
+
+      {/* Main input card */}
+      <Reveal delay={0.05}>
+        <div className="mx-auto w-full max-w-2xl">
+          <div className="mb-3 flex items-end justify-between">
+            <div className="flex gap-1 rounded-lg bg-muted p-1">
+              <button
+                type="button"
+                onClick={() => setMode("clips")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                  mode === "clips"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Clapperboard className="h-4 w-4" /> Clip long video
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("transcript")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                  mode === "transcript"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <FileText className="h-4 w-4" /> Transcript only
+              </button>
+            </div>
+            {newestProjectId ? (
+              <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
+                <Link href={`/dashboard/projects/${newestProjectId}`}>
+                  <Wand2 /> Open editor
+                </Link>
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                disabled
+                title="Create a project first"
+              >
+                <Wand2 /> Open editor
+              </Button>
+            )}
+          </div>
+
+          <div className="rounded-2xl border bg-card p-4 shadow-sm">
+            <form
+              className="flex flex-col gap-2 sm:flex-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                createFromUrl();
+              }}
+            >
+              <div className="relative flex-1">
+                <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="Paste a YouTube, Twitch or podcast link"
+                  className="h-11 pl-9"
+                  required
+                />
+              </div>
+              <Button type="submit" size="lg" className="h-11" disabled={creating}>
+                {creating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                {creating ? "Forging…" : mode === "transcript" ? "Transcribe in 1 click" : "Get clips in 1 click"}
+              </Button>
+            </form>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted-foreground">
+              <Link
+                href="/dashboard/new?tab=upload"
+                className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-600 dark:hover:text-primary-400"
+              >
+                <Upload className="h-4 w-4" /> Upload a file
+              </Link>
+              <Link
+                href={`/dashboard/new?url=${encodeURIComponent(DEMO_PROJECTS[0].url)}&title=${encodeURIComponent(DEMO_PROJECTS[0].title)}`}
+                className="inline-flex items-center gap-1.5 transition-colors hover:text-primary-600 dark:hover:text-primary-400"
+              >
+                <Sparkles className="h-4 w-4" /> Try a sample project
+              </Link>
+              <span className="inline-flex items-center gap-1.5 cursor-default">
+                <Upload className="h-4 w-4" /> Google Drive
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase text-muted-foreground">
+                  Soon
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </Reveal>
+
+      {/* AI tools & quick recipes */}
+      <Reveal delay={0.1}>
+        <div className="text-center">
+          <div className="mx-auto flex max-w-3xl flex-wrap justify-center gap-2">
+            {(showAllRecipes ? TOOL_CHIPS : TOOL_CHIPS.slice(0, 7)).map((chip, i) => (
+              <motion.button
+                key={chip.label}
+                type="button"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.03, duration: 0.25 }}
+                onClick={() => handleChip(chip)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm transition-colors",
+                  chip.href
+                    ? "hover:border-primary-500/60 hover:text-primary-600 dark:hover:text-primary-400"
+                    : "text-muted-foreground"
+                )}
+                title={chip.description}
+              >
+                <chip.icon className="h-3.5 w-3.5 text-primary-500" />
+                {chip.label}
+                {!chip.href && (
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase text-muted-foreground">
+                    Soon
+                  </span>
+                )}
+              </motion.button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowAllRecipes((v) => !v)}
+            className="mt-3 inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-primary-600 dark:hover:text-primary-400"
+          >
+            {showAllRecipes ? "Show fewer" : "See all Recipes"}
+            <ArrowRight className={cn("h-3.5 w-3.5 transition-transform", showAllRecipes && "rotate-90")} />
+          </button>
+        </div>
+      </Reveal>
+
+      {/* Demo projects */}
+      <Reveal delay={0.15}>
+        <section>
+          <h2 className="text-sm font-semibold text-muted-foreground">Start from a demo project</h2>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            {DEMO_PROJECTS.map((demo) => (
+              <Link
+                key={demo.title}
+                href={`/dashboard/new?url=${encodeURIComponent(demo.url)}&title=${encodeURIComponent(demo.title)}`}
+                className="group overflow-hidden rounded-xl border transition-colors hover:border-primary-500/60"
+              >
+                <div
+                  className={cn(
+                    "relative flex h-28 items-end bg-gradient-to-br p-3",
+                    demo.gradient
+                  )}
+                >
+                  <demo.icon className="absolute right-3 top-3 h-5 w-5 text-white/70" />
+                  <p className="text-sm font-semibold text-white drop-shadow">{demo.label}</p>
+                </div>
+                <div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground">
+                  Use as starting point
+                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:text-primary-500" />
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      </Reveal>
+
+      {/* Your projects */}
+      <section>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-muted-foreground">Your projects</h2>
+        </div>
+        {projects === null ? (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-36 rounded-xl" />
+            ))}
+          </div>
+        ) : projects.length === 0 ? (
+          <div className="mt-4 rounded-xl border border-dashed p-10 text-center">
+            <p className="font-medium">No projects yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Paste a link above and ClipForge will find the viral moments for you.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {projects.map((project, i) => (
+              <Reveal key={project.id} delay={i * 0.05}>
+                <ProjectCard
+                  project={project}
+                  onDeleted={(id) =>
+                    setProjects((prev) => (prev ? prev.filter((p) => p.id !== id) : prev))
+                  }
+                />
+              </Reveal>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }

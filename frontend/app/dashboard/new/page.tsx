@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Suspense, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ArrowLeft, Clapperboard, CloudRain, FileText, Flame, Heart, Laugh, Lightbulb, Link2, Loader2, Megaphone, Music, Sparkles, Sun, Type, Upload } from "lucide-react";
@@ -84,12 +85,26 @@ interface MusicTrack {
   image: string | null;
 }
 
+/**
+ * Wraps the form in Suspense — useSearchParams() requires it during
+ * static prerendering in the App Router.
+ */
 export default function NewProjectPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-2xl py-16" />}>
+      <NewProjectForm />
+    </Suspense>
+  );
+}
+
+function NewProjectForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
+  const [tab, setTab] = useState<"url" | "upload">("url");
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
@@ -107,6 +122,17 @@ export default function NewProjectPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   // Caption defaults — applied to every clip this project creates.
   const [captionStyle, setCaptionStyle] = useState<CaptionStyleValue>(DEFAULT_CAPTION_STYLE);
+
+  // Deep-link prefill from the dashboard home (?tab=upload&url=…&title=…).
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam === "upload" || tabParam === "url") setTab(tabParam);
+    const urlParam = searchParams.get("url");
+    if (urlParam) setUrl(urlParam);
+    const titleParam = searchParams.get("title");
+    if (titleParam) setTitle(titleParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   useEffect(() => {
     (async () => {
@@ -281,7 +307,7 @@ export default function NewProjectPage() {
         vertical captioned clips.
       </p>
 
-      <Tabs defaultValue="url" className="mt-6">
+      <Tabs value={tab} onValueChange={(v) => setTab(v === "upload" ? "upload" : "url")} className="mt-6">
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="url">
             <Link2 className="mr-2 h-4 w-4" /> Paste a link

@@ -98,6 +98,10 @@ const config: Config = {
           "0%, 100%": { transform: "scale(1)" },
           "50%": { transform: "scale(1.06)" },
         },
+        "chat-dot": {
+          "0%, 60%, 100%": { transform: "translateY(0)", opacity: "0.4" },
+          "30%": { transform: "translateY(-4px)", opacity: "1" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -105,6 +109,7 @@ const config: Config = {
         float: "float 4s ease-in-out infinite",
         "pulse-glow": "pulse-glow 2.4s ease-in-out infinite",
         caption: "caption 1.6s ease-in-out infinite",
+        "chat-dot": "chat-dot 1.2s ease-in-out infinite",
       },
     },
   },
