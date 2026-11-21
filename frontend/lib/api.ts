@@ -129,7 +129,7 @@ export async function apiFetch<T = unknown>(
  */
 export async function apiFetchStream(
   path: string,
-  options: { method?: string; body?: unknown } = {}
+  options: { method?: string; body?: unknown; signal?: AbortSignal } = {}
 ): Promise<Response> {
   const supabase = createClient();
   let refreshedOn401 = false;
@@ -146,6 +146,7 @@ export async function apiFetchStream(
         Authorization: `Bearer ${session.access_token}`,
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
     });
 
     if (res.status === 401 && !refreshedOn401) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -30,9 +30,35 @@ export function ClipCard({ clip }: { clip: Clip }) {
   const [retryLoading, setRetryLoading] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [captionOpen, setCaptionOpen] = useState(false);
+  // Lazy playback: 30 ready clips used to fire 30 presigned fetches +
+  // mount 30 <video preload> elements on one page. Only cards that actually
+  // scroll into view mint their URL.
+  const [inView, setInView] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || inView) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setInView(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "300px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [inView]);
 
   useEffect(() => {
     let cancelled = false;
+    if (!inView) return;
 
     async function loadUrl() {
       if (!clip.storage_path || clip.status !== "ready") return;
@@ -51,7 +77,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
     return () => {
       cancelled = true;
     };
-  }, [clip.storage_path, clip.status]);
+  }, [clip.storage_path, clip.status, inView]);
 
   async function handleDownload() {
     if (!clip.storage_path) return;
@@ -102,7 +128,7 @@ export function ClipCard({ clip }: { clip: Clip }) {
   const duration = clip.end_time - clip.start_time;
 
   return (
-    <Card className="flex h-full flex-col overflow-hidden">
+    <Card ref={cardRef} className="flex h-full flex-col overflow-hidden">
       <div className="relative aspect-[9/16] max-h-72 w-full overflow-hidden bg-zinc-900">
         {clip.status === "ready" && videoUrl ? (
           <video

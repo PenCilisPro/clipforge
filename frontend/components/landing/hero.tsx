@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 
 const CLIP_PREVIEWS = [
   {
-    title: "The $10M mistake\nnobody talks about",
+    title: "The $10K mistake\nnobody talks about",
     score: 92,
-    words: ["THE", "$10M", "MISTAKE", "NOBODY", "TALKS"],
+    words: ["THE", "$10K", "MISTAKE", "NOBODY", "TALKS"],
     highlight: 1,
     video:
       "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
@@ -176,9 +176,6 @@ export function Hero() {
                       preload="metadata"
                       className="absolute inset-0 h-full w-full object-cover"
                     />
-                    <span className="score-gradient absolute right-1 top-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold text-white">
-                      {clip.score}
-                    </span>
                     <div className="absolute inset-x-1.5 bottom-3 flex flex-wrap justify-center gap-0.5">
                       {clip.words.map((w, wi) => (
                         <span

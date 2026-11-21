@@ -73,7 +73,7 @@ export function DemoPreview() {
               <div className="mb-3 mt-1 flex items-center justify-between">
                 <span className="text-sm font-semibold">After</span>
                 <Badge className="score-gradient border-transparent text-white">
-                  92 virality score
+                  ClipForge edit
                 </Badge>
               </div>
               <div className="relative mx-auto aspect-[9/16] max-w-[240px] overflow-hidden rounded-xl bg-zinc-900">
@@ -86,9 +86,6 @@ export function DemoPreview() {
                   preload="metadata"
                   className="h-full w-full object-cover"
                 />
-                <span className="score-gradient absolute right-1.5 top-1.5 rounded-md px-1.5 py-0.5 text-[10px] font-bold text-white">
-                  0:34
-                </span>
                 <div className="absolute inset-x-2 bottom-4 flex flex-wrap justify-center gap-1">
                   {["THIS", "ONE", "MISTAKE", "COST", "ME", "$10K"].map(
                     (w, i) => (

@@ -4,21 +4,25 @@ import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { PIPELINE_STAGES, type Job, type ProjectMode, type ProjectStatus } from "@/lib/types";
+import { PIPELINE_STAGES, type Clip, type Job, type ProjectMode, type ProjectStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
  * Shows the pipeline stages with live status derived from the jobs table.
  * Transcript-only projects only ever run download + transcribe.
+ * When `clips` is provided, the render stage's slice of the progress bar is
+ * the real fraction of clips that finished rendering — no invented +12%.
  */
 export function PipelineTracker({
   jobs,
   projectStatus,
   mode = "clips",
+  clips,
 }: {
   jobs: Job[];
   projectStatus: ProjectStatus;
   mode?: ProjectMode;
+  clips?: Clip[];
 }) {
   const stages =
     mode === "transcript"
@@ -35,14 +39,23 @@ export function PipelineTracker({
     };
   });
 
+  // Honest fraction: each stage contributes 1/N of the bar. The render stage
+  // contributes its real per-clip completion ratio when clip data exists.
   const completed = stageState.filter((s) => s.status === "completed").length;
+  const stageFraction = 100 / stageState.length;
+  const renderFraction = (() => {
+    if (!clips || clips.length === 0) return null;
+    const done = clips.filter((c) => c.status === "ready").length;
+    return (done / clips.length) * stageFraction;
+  })();
+
   const progress =
     projectStatus === "done"
       ? 100
       : projectStatus === "failed"
-        ? Math.max(10, (completed / stageState.length) * 100)
-        : (completed / stageState.length) * 100 +
-          (stageState.some((s) => s.status === "active") ? 12 : 0);
+        ? Math.max(5, completed * stageFraction)
+        : completed * stageFraction +
+          (renderFraction ?? (stageState.some((s) => s.status === "active") ? stageFraction / 2 : 0));
 
   const visible =
     projectStatus !== "done" ||

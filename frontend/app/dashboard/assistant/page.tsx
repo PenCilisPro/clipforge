@@ -79,6 +79,7 @@ export default function AssistantPage() {
   const [credits, setCredits] = useState<number | null>(null);
   const [railOpen, setRailOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const storeRef = useRef<{ threads: ChatThread[]; activeId: string | null }>({
     threads: [],
     activeId: null,
@@ -182,9 +183,12 @@ export default function AssistantPage() {
         ...snapshot,
         messages: snapshot.messages.filter((m) => m.id !== assistantId),
       });
+      const abort = new AbortController();
+      abortRef.current = abort;
       const res = await apiFetchStream("/api/chat", {
         method: "POST",
         body: { messages: apiMessages },
+        signal: abort.signal,
       });
 
       // Read the backend's SSE lines: {t: "token"} deltas, {done, credits_remaining}
@@ -243,9 +247,15 @@ export default function AssistantPage() {
         }));
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "The assistant is unavailable");
-      if (partial) {
-        // Tokens already landed — keep them; the reply just ended early.
+      const aborted = err instanceof Error && err.name === "AbortError";
+      if (aborted) {
+        toast.info("Stopped — the reply was cut off here");
+      } else {
+        toast.error(err instanceof Error ? err.message : "The assistant is unavailable");
+      }
+      if (partial || aborted) {
+        // Tokens already landed (or the user stopped mid-stream) — keep them;
+        // the reply just ended early.
         updateThread(threadId, (t) => ({
           ...t,
           updatedAt: Date.now(),
@@ -259,9 +269,15 @@ export default function AssistantPage() {
         }));
       }
     } finally {
+      abortRef.current = null;
       setSending(false);
       setStreamingId(null);
     }
+  }
+
+  /** Stop button: cut the stream, keep whatever already streamed. */
+  function stopStreaming() {
+    abortRef.current?.abort();
   }
 
   return (
@@ -408,7 +424,12 @@ export default function AssistantPage() {
             <div ref={bottomRef} />
           </div>
 
-          <Composer sending={sending} credits={credits} onSend={send} />
+          <Composer
+            sending={sending}
+            credits={credits}
+            onSend={send}
+            onStop={stopStreaming}
+          />
         </CardContent>
       </Card>
     </div>

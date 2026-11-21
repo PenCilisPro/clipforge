@@ -379,7 +379,17 @@ export default function CalendarPage() {
                             variant="ghost"
                             className="text-destructive"
                             disabled={busy}
-                            onClick={() => handleCancel(post)}
+                            onClick={() => {
+                              // A scheduled post publishes for real — cancel
+                              // must never fire on one stray click.
+                              if (
+                                window.confirm(
+                                  `Cancel this ${post.platform} post? It will not be published.`
+                                )
+                              ) {
+                                void handleCancel(post);
+                              }
+                            }}
                           >
                             <Trash2 /> Cancel
                           </Button>

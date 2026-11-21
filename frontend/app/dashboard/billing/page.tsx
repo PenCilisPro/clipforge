@@ -162,7 +162,9 @@ export default function BillingPage() {
                       <span className="text-2xl font-extrabold">
                         ${Number(plan.annual_price)}
                       </span>
-                      <span className="text-xs text-muted-foreground">/month</span>
+                      <span className="text-xs text-muted-foreground">
+                        /month, billed annually
+                      </span>
                     </div>
                   </CardHeader>
                   <CardContent className="flex h-full flex-col justify-between gap-3">
@@ -185,7 +187,7 @@ export default function BillingPage() {
                         ? "Your plan"
                         : requesting === plan.plan_key
                           ? "Sending…"
-                          : "Request upgrade"}
+                          : "Request this plan"}
                     </Button>
                   </CardContent>
                 </Card>
@@ -194,9 +196,13 @@ export default function BillingPage() {
           })}
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Upgrades are processed by the ClipForge team — hit "Request upgrade"
-          (it sends us a billing request) and we'll apply it to your account. You
-          can also{" "}
+          How upgrades work: hit "Request this plan" and we'll confirm the price
+          with you by email before anything changes — no automatic charges.
+          To cancel, email{" "}
+          <a href="mailto:support@clipforge.app" className="underline">
+            support@clipforge.app
+          </a>
+          . You can also{" "}
           <Link href="/dashboard/upgrade" className="underline">
             apply for a free upgrade
           </Link>{" "}

@@ -7,7 +7,8 @@
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, User } from "lucide-react";
+import { Bot, Check, Copy, User } from "lucide-react";
+import { useState } from "react";
 
 import type { ChatMessage } from "@/lib/assistant-store";
 import { cn } from "@/lib/utils";
@@ -56,7 +57,7 @@ const markdownComponents = {
   ),
   pre: (props: React.HTMLAttributes<HTMLPreElement>) => (
     <pre
-      className="my-1.5 overflow-x-auto rounded-lg bg-zinc-900 p-2.5 text-[11px] leading-relaxed text-zinc-100"
+      className="my-1.5 overflow-x-auto rounded-lg bg-zinc-900 p-2.5 text-[11px] leading-relaxed text-zinc-100 dark:bg-zinc-900"
       {...props}
     />
   ),
@@ -82,6 +83,7 @@ export function MessageBubble({
   streaming?: boolean;
 }) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -121,7 +123,7 @@ export function MessageBubble({
         {message.content && (
           <div
             className={cn(
-              "rounded-2xl px-3.5 py-2.5 text-sm",
+              "group relative rounded-2xl px-3.5 py-2.5 text-sm",
               isUser
                 ? "rounded-tr-sm whitespace-pre-wrap bg-primary-500/15"
                 : "rounded-tl-sm bg-muted [&_a]:break-all"
@@ -139,6 +141,30 @@ export function MessageBubble({
                     aria-hidden
                     className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-[2px] animate-pulse rounded-sm bg-primary-500"
                   />
+                )}
+                {/* Copy on hover — daily-use staple, invisible while streaming */}
+                {!streaming && (
+                  <button
+                    type="button"
+                    aria-label="Copy reply"
+                    title="Copy"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(message.content);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1500);
+                      } catch {
+                        // Clipboard blocked — do nothing.
+                      }
+                    }}
+                    className="absolute -top-2 right-2 hidden rounded-md border bg-background p-1 text-muted-foreground shadow-sm transition-colors hover:text-foreground group-hover:block"
+                  >
+                    {copied ? (
+                      <Check className="h-3 w-3 text-emerald-500" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                  </button>
                 )}
               </>
             )}

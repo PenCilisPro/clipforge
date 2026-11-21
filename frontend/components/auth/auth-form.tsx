@@ -52,6 +52,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const [oauthLoading, setOauthLoading] = useState(false);
 
   const isSignup = mode === "signup";
+  const [agreed, setAgreed] = useState(false);
 
   // Surface OAuth errors coming back from /auth/callback (?error=oauth).
   useEffect(() => {
@@ -64,6 +65,10 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (isSignup && !agreed) {
+      toast.error("Please accept the Terms and Privacy Policy first");
+      return;
+    }
     setLoading(true);
 
     try {
@@ -71,20 +76,28 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       if (isSignup) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        toast.success("Account created!", {
-          description: "You can now log in with your email and password.",
+        // Straight into the app: signing in here saves the dead-end
+        // "go back to /login" hop (only reached if auto-login fails).
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
         });
-        router.push("/login");
+        if (signInError) {
+          toast.success("Account created!", {
+            description: "You can now log in with your email and password.",
+          });
+          router.push("/login");
+        } else {
+          toast.success("Account created — welcome to ClipForge!");
+          router.push("/dashboard");
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
         if (error) throw error;
-        // Land straight on the New Project page after login. The dashboard is
-        // client-side (Firebase session in IndexedDB), so no refresh is needed
-        // — and refresh() this early after push() crashes the React tree.
-        router.push("/dashboard/new");
+        router.push("/dashboard");
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Something went wrong");
@@ -153,7 +166,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={6}
+                minLength={8}
                 autoComplete={
                   isSignup
                     ? PASSWORD_AUTOCOMPLETE_HINT.signup
@@ -162,10 +175,33 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
               />
               {isSignup && (
                 <p className="text-xs text-muted-foreground">
-                  At least 6 characters.
+                  At least 8 characters.
                 </p>
               )}
             </div>
+
+            {isSignup && (
+              <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => setAgreed(e.target.checked)}
+                  required
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--primary)]"
+                />
+                <span>
+                  I agree to the{" "}
+                  <Link href="/terms" className="font-medium text-primary-500 hover:underline">
+                    Terms
+                  </Link>{" "}
+                  and{" "}
+                  <Link href="/privacy" className="font-medium text-primary-500 hover:underline">
+                    Privacy Policy
+                  </Link>
+                  .
+                </span>
+              </label>
+            )}
 
             <Button type="submit" className="w-full" size="lg" disabled={loading}>
               {loading && <Loader2 className="animate-spin" />}

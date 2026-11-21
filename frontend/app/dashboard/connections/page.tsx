@@ -173,7 +173,17 @@ export default function ConnectionsPage() {
                       variant="ghost"
                       className="text-destructive"
                       disabled={disconnectingId !== null}
-                      onClick={() => handleDisconnect(connection, platform.label)}
+                      onClick={() => {
+                        // Scheduled posts for this channel would fail after
+                        // disconnect — never on one stray click.
+                        if (
+                          window.confirm(
+                            `Disconnect ${platform.label}? Scheduled posts for it will no longer publish.`
+                          )
+                        ) {
+                          void handleDisconnect(connection, platform.label);
+                        }
+                      }}
                     >
                       {disconnectingId === connection.id ? (
                         <Loader2 className="animate-spin" />
@@ -219,8 +229,7 @@ export default function ConnectionsPage() {
         </p>
         <p className="mt-1">
           The first channel per platform is free for everyone. Connecting
-          additional channels — and scheduled uploads — require a Pro
-          subscription (or admin access).
+          additional channels — and scheduled uploads — are Pro plan features.
         </p>
       </div>
     </div>

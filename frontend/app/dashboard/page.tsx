@@ -264,6 +264,49 @@ export default function DashboardHome() {
     );
   }
 
+  // Returning users get their projects right under the input card — the
+  // marketing sections (recipes, demos) step aside once they've shipped.
+  const veteran = (projects?.length ?? 0) > 0;
+
+  const projectsBlock = (
+    <section>
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-muted-foreground">Your projects</h2>
+      </div>
+      {projects === null ? (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          {[1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-36 rounded-xl" />
+          ))}
+        </div>
+      ) : projects.length === 0 ? (
+        // While onboarding is visible the checklist card covers the empty
+        // state — avoid repeating it twice on one screen.
+        showOnboarding ? null : (
+          <div className="mt-4 rounded-xl border border-dashed p-10 text-center">
+            <p className="font-medium">No projects yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Paste a link above and ClipForge will find the viral moments for you.
+            </p>
+          </div>
+        )
+      ) : (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          {projects.map((project, i) => (
+            <Reveal key={project.id} delay={i * 0.05}>
+              <ProjectCard
+                project={project}
+                onDeleted={(id) =>
+                  setProjects((prev) => (prev ? prev.filter((p) => p.id !== id) : prev))
+                }
+              />
+            </Reveal>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
   return (
     <div className="mx-auto max-w-5xl space-y-8">
       {/* Promo banner */}
@@ -432,6 +475,9 @@ export default function DashboardHome() {
         }}
       />
 
+      {/* Veterans get their work right under the input card */}
+      {veteran && projectsBlock}
+
       {/* AI tools & quick recipes */}
       <Reveal delay={0.1}>
         <div className="text-center">
@@ -473,73 +519,40 @@ export default function DashboardHome() {
         </div>
       </Reveal>
 
-      {/* Demo projects */}
-      <Reveal delay={0.15}>
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground">Start from a demo project</h2>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            {DEMO_PROJECTS.map((demo) => (
-              <Link
-                key={demo.title}
-                href={`/dashboard/new?url=${encodeURIComponent(demo.url)}&title=${encodeURIComponent(demo.title)}`}
-                className="group overflow-hidden rounded-xl border transition-colors hover:border-primary-500/60"
-              >
-                <div
-                  className={cn(
-                    "relative flex h-28 items-end bg-gradient-to-br p-3",
-                    demo.gradient
-                  )}
+      {/* Demo projects — onboarding material; veterans don't need it */}
+      {!veteran && (
+        <Reveal delay={0.15}>
+          <section>
+            <h2 className="text-sm font-semibold text-muted-foreground">Start from a demo project</h2>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              {DEMO_PROJECTS.map((demo) => (
+                <Link
+                  key={demo.title}
+                  href={`/dashboard/new?url=${encodeURIComponent(demo.url)}&title=${encodeURIComponent(demo.title)}`}
+                  className="group overflow-hidden rounded-xl border transition-colors hover:border-primary-500/60"
                 >
-                  <demo.icon className="absolute right-3 top-3 h-5 w-5 text-white/70" />
-                  <p className="text-sm font-semibold text-white drop-shadow">{demo.label}</p>
-                </div>
-                <div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground">
-                  Use as starting point
-                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:text-primary-500" />
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      </Reveal>
-
-      {/* Your projects */}
-      <section>
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-muted-foreground">Your projects</h2>
-        </div>
-        {projects === null ? (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} className="h-36 rounded-xl" />
-            ))}
-          </div>
-        ) : projects.length === 0 ? (
-          // While onboarding is visible the checklist card above covers the
-          // empty state — avoid repeating it twice on one screen.
-          showOnboarding ? null : (
-            <div className="mt-4 rounded-xl border border-dashed p-10 text-center">
-              <p className="font-medium">No projects yet</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Paste a link above and ClipForge will find the viral moments for you.
-              </p>
+                  <div
+                    className={cn(
+                      "relative flex h-28 items-end bg-gradient-to-br p-3",
+                      demo.gradient
+                    )}
+                  >
+                    <demo.icon className="absolute right-3 top-3 h-5 w-5 text-white/70" />
+                    <p className="text-sm font-semibold text-white drop-shadow">{demo.label}</p>
+                  </div>
+                  <div className="flex items-center justify-between px-3 py-2 text-xs text-muted-foreground">
+                    Use as starting point
+                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:text-primary-500" />
+                  </div>
+                </Link>
+              ))}
             </div>
-          )
-        ) : (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            {projects.map((project, i) => (
-              <Reveal key={project.id} delay={i * 0.05}>
-                <ProjectCard
-                  project={project}
-                  onDeleted={(id) =>
-                    setProjects((prev) => (prev ? prev.filter((p) => p.id !== id) : prev))
-                  }
-                />
-              </Reveal>
-            ))}
-          </div>
-        )}
-      </section>
+          </section>
+        </Reveal>
+      )}
+
+      {/* Newcomers find their projects at the bottom, below the tour */}
+      {!veteran && projectsBlock}
     </div>
   );
 }

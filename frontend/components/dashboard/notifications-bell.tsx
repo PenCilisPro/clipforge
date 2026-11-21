@@ -22,6 +22,7 @@ export function NotificationsBell() {
   const [alerts, setAlerts] = useState<Project[]>([]);
   const [lastSeen, setLastSeen] = useState<number | null>(null);
   const loadedOnce = useRef(false);
+  const openedAtRef = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,11 +55,24 @@ export function NotificationsBell() {
       void load();
     }
     if (next) {
+      openedAtRef.current = Date.now();
+    } else if (Date.now() - openedAtRef.current > 1500) {
+      // Only mark read when the dropdown was actually looked at — opening
+      // and instantly closing it used to wipe the unread badge.
       const now = Date.now();
       localStorage.setItem(SEEN_KEY, String(now));
       setLastSeen(now);
     }
   }
+
+  // Poll while mounted so a render finishing elsewhere updates the badge —
+  // the badge used to go stale until a full page reload.
+  useEffect(() => {
+    const id = setInterval(() => {
+      void load();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [load]);
 
   // Dismiss on outside click.
   useEffect(() => {

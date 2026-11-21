@@ -7,7 +7,7 @@
  */
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { FileText, ImagePlus, Loader2, Paperclip, Send, X } from "lucide-react";
+import { FileText, ImagePlus, Loader2, Paperclip, Send, Square, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { uploadToR2, publicAssetUrl } from "@/lib/storage";
@@ -39,10 +39,13 @@ export function Composer({
   sending,
   credits,
   onSend,
+  onStop,
 }: {
   sending: boolean;
   credits: number | null;
   onSend: (text: string, images: ChatImage[]) => void;
+  /** While a reply streams: cut it and keep what landed. */
+  onStop?: () => void;
 }) {
   const [input, setInput] = useState("");
   const [images, setImages] = useState<ChatImage[]>([]);
@@ -189,14 +192,28 @@ export function Composer({
           className="max-h-32 min-h-9 flex-1 resize-none"
           disabled={sending}
         />
-        <Button
-          type="submit"
-          size="icon"
-          className="shrink-0"
-          disabled={busy || (!input.trim() && images.length === 0)}
-        >
-          {sending ? <Loader2 className="animate-spin" /> : <Send />}
-        </Button>
+        {sending && onStop ? (
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="shrink-0"
+            onClick={onStop}
+            aria-label="Stop generating"
+            title="Stop generating"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+          </Button>
+        ) : (
+          <Button
+            type="submit"
+            size="icon"
+            className="shrink-0"
+            disabled={busy || (!input.trim() && images.length === 0)}
+          >
+            {uploading ? <Loader2 className="animate-spin" /> : <Send />}
+          </Button>
+        )}
       </div>
       <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
         {credits != null

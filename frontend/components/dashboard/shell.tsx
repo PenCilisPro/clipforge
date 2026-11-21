@@ -224,7 +224,7 @@ export function DashboardShell({
               </Link>
             </Button>
             <NotificationsBell />
-            <Button asChild variant="ghost" size="sm" className="px-2 sm:px-3">
+            <Button asChild variant="ghost" size="sm" className="hidden px-2 sm:inline-flex sm:px-3">
               <Link href="/pricing">
                 <Tag className="h-4 w-4" />
                 <span className="hidden sm:inline">Pricing</span>

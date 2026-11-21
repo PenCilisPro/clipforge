@@ -75,22 +75,27 @@ export function ThreadRail({
                       {relativeTime(thread.updatedAt)}
                     </span>
                   </span>
-                  <span
-                    role="button"
-                    tabIndex={-1}
+                  <button
+                    type="button"
                     aria-label={`Delete chat "${thread.title}"`}
                     className={cn(
-                      "rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100",
+                      "rounded p-1 text-muted-foreground transition-opacity hover:text-destructive md:opacity-0 group-hover:opacity-100",
                       active && "opacity-100"
                     )}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDelete(thread.id);
+                      // A conversation is unrecoverable — never on one click.
+                      if (
+                        window.confirm(
+                          `Delete the chat "${thread.title}"? This can't be undone.`
+                        )
+                      ) {
+                        onDelete(thread.id);
+                      }
                     }}
-                    onKeyDown={(e) => e.stopPropagation()}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                  </span>
+                  </button>
                 </button>
               </motion.div>
             );

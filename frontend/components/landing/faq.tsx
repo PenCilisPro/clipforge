@@ -43,7 +43,7 @@ const DEFAULT_FAQS = [
   },
   {
     q: "Can I cancel or change my plan anytime?",
-    a: "Absolutely. Upgrade, downgrade or cancel from your billing page at any time. Changes take effect at the next billing cycle and unused credits roll over for 30 days after cancellation.",
+    a: "Yes. Plan changes and upgrades are handled by our team — request one from your Billing page and we'll apply it to your account, or cancel by emailing support@clipforge.app. Unused credits stay available until the end of your billing period.",
   },
 ];
 

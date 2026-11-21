@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { onAuthStateChanged } from "firebase/auth";
-import { ArrowLeft, Check, Copy, Download, FileText, Loader2 } from "lucide-react";
+import {
+  ArrowDownWideNarrow,
+  ArrowLeft,
+  Check,
+  Copy,
+  Download,
+  FileText,
+  Loader2,
+  RefreshCcw,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { apiFetch, API_URL, ApiError } from "@/lib/api";
@@ -73,6 +82,70 @@ export default function ProjectDetailPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [downloadingFormat, setDownloadingFormat] = useState<TranscriptFormat | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Clips grid toolbar state — sort/filter/bulk-retry for volume triage.
+  const [clipSort, setClipSort] = useState<"default" | "score" | "status">("default");
+  const [clipFilter, setClipFilter] = useState<"all" | "ready" | "rendering" | "failed">("all");
+  const [retryingAll, setRetryingAll] = useState(false);
+
+  const failedCount = useMemo(
+    () => (clips ?? []).filter((c) => c.status === "failed").length,
+    [clips]
+  );
+
+  const visibleClips = useMemo(() => {
+    let list = [...(clips ?? [])];
+    if (clipFilter !== "all") {
+      list = list.filter((c) =>
+        clipFilter === "rendering"
+          ? c.status === "rendering" || c.status === "queued"
+          : c.status === clipFilter
+      );
+    }
+    if (clipSort === "score") {
+      list.sort((a, b) => (b.virality_score ?? -1) - (a.virality_score ?? -1));
+    } else if (clipSort === "status") {
+      const order = { failed: 0, queued: 1, rendering: 2, ready: 3 } as const;
+      list.sort((a, b) => order[a.status] - order[b.status]);
+    }
+    return list;
+  }, [clips, clipFilter, clipSort]);
+
+  /** Re-queue every failed clip (bulk triage for 30-clip projects). */
+  async function retryAllFailed() {
+    if (!clips || retryingAll) return;
+    const failed = clips.filter((c) => c.status === "failed");
+    if (failed.length === 0) return;
+    setRetryingAll(true);
+    try {
+      let ok = 0;
+      for (const clip of failed) {
+        try {
+          await apiFetch(`/api/clips/${clip.id}/regenerate`, {
+            method: "POST",
+            body: { caption_style: clip.caption_style ?? "karaoke" },
+          });
+          ok += 1;
+        } catch {
+          // One stubborn clip shouldn't abort the batch.
+        }
+      }
+      toast.success(
+        ok === failed.length
+          ? `Re-queued ${ok} failed clip${ok === 1 ? "" : "s"} for render`
+          : `Re-queued ${ok}/${failed.length} — the rest failed again, try individually`
+      );
+      // Refresh statuses straight away instead of waiting for the poller.
+      const { project } = await apiFetch<{
+        project: Project & { clips?: Clip[] };
+      }>(`/api/projects/${projectId}`);
+      if (project?.clips) setClips(project.clips);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Bulk retry failed");
+    } finally {
+      setRetryingAll(false);
+    }
+  }
 
   const isTranscriptProject = project?.project_mode === "transcript";
 
@@ -408,6 +481,7 @@ export default function ProjectDetailPage() {
         jobs={jobs}
         projectStatus={project.status}
         mode={project.project_mode ?? "clips"}
+        clips={clips ?? undefined}
       />
 
       {isTranscriptProject ? (
@@ -494,6 +568,83 @@ export default function ProjectDetailPage() {
             )}
           </h2>
 
+          {/* Sort / filter / bulk-retry toolbar (matters once clips pile up) */}
+          {clips && clips.length > 3 && (
+            <div className="mb-4 flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <ArrowDownWideNarrow className="h-3.5 w-3.5" /> Sort
+              </span>
+              {(
+                [
+                  { key: "default", label: "Timeline" },
+                  { key: "score", label: "Virality" },
+                  { key: "status", label: "Status" },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.key}
+                  onClick={() => setClipSort(option.key)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    clipSort === option.key
+                      ? "border-primary-500 text-primary-600 dark:text-primary-400"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+              <span className="mx-2 h-4 w-px bg-border" />
+              {(
+                [
+                  { key: "all", label: "All" },
+                  { key: "ready", label: "Ready" },
+                  { key: "rendering", label: "Rendering" },
+                  { key: "failed", label: "Failed" },
+                ] as const
+              ).map((option) => {
+                const count =
+                  option.key === "all"
+                    ? clips.length
+                    : clips.filter((c) =>
+                        option.key === "rendering"
+                          ? c.status === "rendering" || c.status === "queued"
+                          : c.status === option.key
+                      ).length;
+                return (
+                  <button
+                    key={option.key}
+                    onClick={() => setClipFilter(option.key)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                      clipFilter === option.key
+                        ? "border-primary-500 text-primary-600 dark:text-primary-400"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {option.label} {count > 0 && `· ${count}`}
+                  </button>
+                );
+              })}
+              {failedCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-7 border-destructive/50 text-xs text-destructive hover:bg-destructive/10"
+                  onClick={() => void retryAllFailed()}
+                  disabled={retryingAll}
+                >
+                  {retryingAll ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="h-3.5 w-3.5" />
+                  )}
+                  Retry all failed ({failedCount})
+                </Button>
+              )}
+            </div>
+          )}
+
           {clips === null ? null : clips.length === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-sm text-muted-foreground">
@@ -502,9 +653,15 @@ export default function ProjectDetailPage() {
                   : "No clips were generated for this project."}
               </CardContent>
             </Card>
+          ) : visibleClips.length === 0 ? (
+            <Card>
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                No clips match this filter.
+              </CardContent>
+            </Card>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {clips.map((clip) => (
+              {visibleClips.map((clip) => (
                 <ClipCard key={clip.id} clip={clip} />
               ))}
             </div>

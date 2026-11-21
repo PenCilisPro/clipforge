@@ -18,6 +18,8 @@ interface ClipTimelineProps {
   playhead: number;
   /** Live trim updates while dragging (clip-relative times). */
   onTrim: (start: number, end: number) => void;
+  /** Fired on trim-drag start (before any change) — undo snapshot point. */
+  onTrimStart?: () => void;
   /** Fired once when a trim drag is released. */
   onTrimCommit?: () => void;
   /** Scrub the playhead (clip-relative seconds). */
@@ -42,6 +44,7 @@ export function ClipTimeline({
   runway = 120,
   playhead,
   onTrim,
+  onTrimStart,
   onTrimCommit,
   onScrub,
   pxPerSec,
@@ -124,6 +127,7 @@ export function ClipTimeline({
   };
 
   const beginTrimDrag = (which: "start" | "end") => (e: React.PointerEvent) => {
+    onTrimStart?.();
     startDrag({ kind: "trim", which, originX: e.clientX, origStart: 0, origEnd: duration }, e);
   };
 

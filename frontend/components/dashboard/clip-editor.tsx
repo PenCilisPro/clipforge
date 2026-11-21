@@ -24,10 +24,12 @@ import {
   FlipVertical2,
   Frame as FrameIcon,
   Info,
+  Loader2,
   Maximize,
   Minimize,
   Pause,
   Play,
+  Redo2,
   RotateCcw,
   RotateCw,
   Scissors,
@@ -36,7 +38,9 @@ import {
   SkipForward,
   SlidersHorizontal,
   Sun,
+  Trash2,
   Type as TypeIcon,
+  Undo2,
   Volume2,
   VolumeX,
   ZoomIn,
@@ -282,6 +286,120 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   const [videoBrightness, setVideoBrightness] = useState(0);
   const [videoContrast, setVideoContrast] = useState(0);
   const [videoSaturation, setVideoSaturation] = useState(0);
+
+  // ---------- UNDO / REDO ----------
+  // Snapshot-based history: pushHistory() captures every editable field
+  // BEFORE a discrete user mutation (drag start, button click, slider grab).
+  // Undo/redo swap snapshots; capped at 50 entries.
+  const [historyLen, setHistoryLen] = useState({ past: 0, future: 0 });
+  const historyRef = useRef<{ past: object[]; future: object[] }>({ past: [], future: [] });
+
+  function snapshot() {
+    return {
+      cues: cues.map((c) => ({ ...c })),
+      overlays: overlays.map((o) => ({ ...o })),
+      selectedOverlayId,
+      videoScale,
+      videoX,
+      videoY,
+      videoVolume,
+      videoRotate,
+      videoFlip,
+      videoBrightness,
+      videoContrast,
+      videoSaturation,
+      font,
+      textColor,
+      captionAnim,
+      position,
+      size,
+      wordsPerCue,
+      capWidth,
+      letterSpacing,
+      wordSpacing,
+      capX,
+      capY,
+      stroke,
+      strokeColor,
+      strokeSize,
+      shadow,
+      shadowColor,
+      shadowSize,
+      aspect,
+      videoFit,
+      blur,
+      startTime,
+      endTime,
+    };
+  }
+
+  function pushHistory() {
+    const state = historyRef.current;
+    const snap = snapshot();
+    const last = state.past[state.past.length - 1];
+    // Skip no-op pushes (e.g. repeated slider events with unchanged values).
+    if (last && JSON.stringify(last) === JSON.stringify(snap)) return;
+    state.past = [...state.past.slice(-49), snap];
+    state.future = [];
+    setHistoryLen({ past: state.past.length, future: 0 });
+  }
+
+  function applySnapshot(s: ReturnType<typeof snapshot>) {
+    setCues(s.cues);
+    setOverlays(s.overlays);
+    setSelectedOverlayId(s.selectedOverlayId);
+    setVideoScale(s.videoScale);
+    setVideoX(s.videoX);
+    setVideoY(s.videoY);
+    setVideoVolume(s.videoVolume);
+    setVideoRotate(s.videoRotate);
+    setVideoFlip(s.videoFlip);
+    setVideoBrightness(s.videoBrightness);
+    setVideoContrast(s.videoContrast);
+    setVideoSaturation(s.videoSaturation);
+    setFont(s.font);
+    setTextColor(s.textColor);
+    setCaptionAnim(s.captionAnim);
+    setPosition(s.position);
+    setSize(s.size);
+    setWordsPerCue(s.wordsPerCue);
+    setCapWidth(s.capWidth);
+    setLetterSpacing(s.letterSpacing);
+    setWordSpacing(s.wordSpacing);
+    setCapX(s.capX);
+    setCapY(s.capY);
+    setStroke(s.stroke);
+    setStrokeColor(s.strokeColor);
+    setStrokeSize(s.strokeSize);
+    setShadow(s.shadow);
+    setShadowColor(s.shadowColor);
+    setShadowSize(s.shadowSize);
+    setAspect(s.aspect);
+    setVideoFit(s.videoFit);
+    setBlur(s.blur);
+    setStartTime(s.startTime);
+    setEndTime(s.endTime);
+  }
+
+  function undo() {
+    const state = historyRef.current;
+    const prev = state.past[state.past.length - 1];
+    if (!prev) return;
+    state.past = state.past.slice(0, -1);
+    state.future = [...state.future, snapshot()];
+    applySnapshot(prev as ReturnType<typeof snapshot>);
+    setHistoryLen({ past: state.past.length, future: state.future.length });
+  }
+
+  function redo() {
+    const state = historyRef.current;
+    const next = state.future[state.future.length - 1];
+    if (!next) return;
+    state.future = state.future.slice(0, -1);
+    state.past = [...state.past, snapshot()];
+    applySnapshot(next as ReturnType<typeof snapshot>);
+    setHistoryLen({ past: state.past.length, future: state.future.length });
+  }
   // Which preview element's selection box is pinned (tap = press once, not hold).
   const [activeBox, setActiveBox] = useState<"caption" | "frame" | null>(null);
   const panRef = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
@@ -633,6 +751,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // instead of one per mousemove — that was the lag).
   function onCaptionPointerDown(e: React.PointerEvent<HTMLSpanElement>) {
     e.stopPropagation();
+    pushHistory();
     e.currentTarget.setPointerCapture(e.pointerId);
     const y0 = capY ?? (position === "top" ? 12 : position === "middle" ? 50 : 90);
     dragRef.current = { px: e.clientX, py: e.clientY, x: capX ?? 50, y: y0 };
@@ -710,6 +829,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   function onScalePointerDown(e: React.PointerEvent<HTMLSpanElement>) {
     e.stopPropagation();
     e.preventDefault();
+    pushHistory();
     e.currentTarget.setPointerCapture(e.pointerId);
     const a = captionAnchor();
     if (!a) return;
@@ -758,6 +878,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
 
   function onVideoPointerDown(e: React.PointerEvent<HTMLVideoElement>) {
     if (e.button !== 0) return;
+    pushHistory();
     e.currentTarget.setPointerCapture(e.pointerId);
     panRef.current = { px: e.clientX, py: e.clientY, x: videoX, y: videoY };
     panMovedRef.current = false;
@@ -841,6 +962,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   // ---------- Text overlay drag (Shift snaps to center, like captions) ----------
   function onOverlayPointerDown(e: React.PointerEvent<HTMLSpanElement>, id: string) {
     e.stopPropagation();
+    pushHistory();
     e.currentTarget.setPointerCapture(e.pointerId);
     const ov = overlays.find((o) => o.id === id);
     if (!ov) return;
@@ -1025,11 +1147,20 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
   }
 
   function addCaptionHere() {
+    pushHistory();
     const start = clamp(clipTime, 0, Math.max(0, clipDuration - 1));
     const end = Math.min(start + 2, clipDuration);
     setCues((prev) =>
       [...prev, { id: uuid(), start, end, text: "" }].sort((a, b) => a.start - b.start)
     );
+    setResetSrt(false);
+  }
+
+  /** Delete the caption line at the playhead (the Text tab's trash button). */
+  function deleteActiveCue() {
+    if (!activeCue) return;
+    pushHistory();
+    setCues((prev) => prev.filter((c) => c.id !== activeCue.id));
     setResetSrt(false);
   }
 
@@ -1182,9 +1313,13 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
         description:
           dropped > 0
             ? `${dropped} caption line${dropped === 1 ? "" : "s"} outside the trim window will be regenerated.`
-            : "The clip will show its new look once rendering finishes.",
+            : "Keep editing — progress shows on the project page.",
       });
-      router.push(`/dashboard/projects/${projectId}`);
+      // Stay in the editor: the clip re-renders server-side while you keep
+      // working. The local preview keeps playing the previous render until
+      // the new one lands on the project page.
+      setClip((c) => (c ? { ...c, status: "queued" } : c));
+      setSaving(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save clip");
       setSaving(false);
@@ -1203,12 +1338,47 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     return () => window.removeEventListener("pointerdown", onDocDown);
   }, []);
 
-  // S splits at the playhead (ignored while typing).
+  // Editor-wide keyboard shortcuts (ignored while typing):
+  //   S = split · Space = play/pause · ←/→ = frame step ·
+  //   Delete/Backspace = remove selected overlay · Cmd/Ctrl+Z / +Shift = undo/redo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      if (e.key.toLowerCase() === "s") {
+      const typing =
+        target &&
+        (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable);
+      if (typing) return;
+
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        stepFrame(-1);
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        stepFrame(1);
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedOverlayId) {
+        e.preventDefault();
+        pushHistory();
+        setOverlays((prev) => prev.filter((o) => o.id !== selectedOverlayId));
+        setSelectedOverlayId(null);
+        return;
+      }
+      if (e.key.toLowerCase() === "s" && !meta) {
         e.preventDefault();
         void handleSplit();
       }
@@ -1216,8 +1386,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playheadSource, startTime, endTime, cues, clip, saving]);
-
+  }, [playheadSource, startTime, endTime, cues, clip, saving, selectedOverlayId, overlays]);
   const activeCue = useMemo(() => {
     const t = clipTime;
     return cues.find((c) => t >= c.start - 0.05 && t <= c.end + 0.05) ?? null;
@@ -1336,6 +1505,11 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {clip.status === "queued" && !saving && (
+            <span className="hidden items-center gap-1.5 text-xs text-primary-300 sm:flex">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Rendering…
+            </span>
+          )}
           <button
             onClick={() => void save()}
             disabled={saving}
@@ -1811,7 +1985,12 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {/* pushHistory on capture: every panel button/slider/picker press
+              snapshots the pre-change state (deduped inside pushHistory). */}
+          <div
+            className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+            onPointerDownCapture={pushHistory}
+          >
             {tab === "frame" && (
               <div className="space-y-5">
                 <div>
@@ -2151,6 +2330,15 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
                     placeholder={activeCue ? "On-video text" : "No caption at this moment"}
                     className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-primary-500/60 disabled:opacity-60"
                   />
+                  {activeCue && (
+                    <button
+                      onClick={deleteActiveCue}
+                      className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-2 py-1 text-[10px] font-medium text-zinc-300 transition-colors hover:bg-destructive/20 hover:text-destructive"
+                      title="Delete this caption line"
+                    >
+                      <Trash2 className="h-3 w-3" /> Delete this line
+                    </button>
+                  )}
                   {activeCue ? (
                     <p className="pt-1.5 text-[10px] text-zinc-600">
                       Editing the caption at the playhead · {formatClock(activeCue.start)} –{" "}
@@ -2807,6 +2995,24 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
       {/* ---------- Toolbar ---------- */}
       <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-white/[0.015] px-3 py-2 sm:px-5">
         <button
+          onClick={undo}
+          disabled={historyLen.past === 0}
+          aria-label="Undo (Cmd+Z)"
+          title="Undo (⌘Z)"
+          className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.07] disabled:opacity-40"
+        >
+          <Undo2 className="h-4 w-4" /> Undo
+        </button>
+        <button
+          onClick={redo}
+          disabled={historyLen.future === 0}
+          aria-label="Redo (Cmd+Shift+Z)"
+          title="Redo (⌘⇧Z)"
+          className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.07] disabled:opacity-40"
+        >
+          <Redo2 className="h-4 w-4" /> Redo
+        </button>
+        <button
           onClick={() => void handleSplit()}
           disabled={saving}
           className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.07] disabled:opacity-50"
@@ -2862,6 +3068,7 @@ export function ClipEditor({ projectId, clipId }: { projectId: string; clipId: s
           runway={120}
           playhead={clipTime}
           onTrim={(s, e) => trim(s + startTime, e + startTime)}
+          onTrimStart={pushHistory}
           onScrub={(t) => scrub(t + startTime)}
           pxPerSec={zoom}
           maxDuration={sourceDuration - startTime || undefined}
